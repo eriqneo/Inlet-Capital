@@ -1,5 +1,6 @@
 import { getAll } from '../../core/db.js';
 import { renderPagination } from '../../components/Pagination.js';
+import { formatDate } from '../../core/utils.js';
 
 export const renderExpenseList = async () => {
   const container = document.createElement('div');
@@ -56,7 +57,7 @@ export const renderExpenseList = async () => {
       <tr><td colspan="4" class="text-center text-muted" style="padding: 40px;">No expenses recorded yet.</td></tr>
     ` : paginatedItems.map(e => `
       <tr>
-        <td class="text-sm">${new Date(e.date).toLocaleDateString()}</td>
+        <td class="text-sm">${formatDate(e.date)}</td>
         <td><span class="badge badge-primary">${vMap[e.votehead] || e.votehead}</span></td>
         <td class="text-sm">${e.description}</td>
         <td style="text-align: right;" class="font-semibold text-danger">

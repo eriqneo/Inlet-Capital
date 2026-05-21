@@ -1,5 +1,6 @@
 import { getAll } from '../../core/db.js';
 import { renderPagination } from '../../components/Pagination.js';
+import { formatDate } from '../../core/utils.js';
 
 export const renderSavingsList = async () => {
   const container = document.createElement('div');
@@ -53,14 +54,25 @@ export const renderSavingsList = async () => {
 
     tableBody.innerHTML = paginatedItems.length === 0 ? `
       <tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">No transactions recorded.</td></tr>
-    ` : paginatedItems.map(t => `
+    ` : paginatedItems.map(t => {
+      let paymentLabel = '-';
+      if (t.amount > 0) {
+        const method = t.paymentMethod || 'mpesa';
+        const icon = method === 'mpesa' ? '📱 M-Pesa' : (method === 'card' ? '💳 Card' : '💵 Cash');
+        const refPart = t.reference && t.reference !== 'N/A' && t.reference !== 'SAVE-CASH' && !t.reference.startsWith('SAVE-D-') ? `: ${t.reference}` : '';
+        paymentLabel = `${icon}${refPart}`;
+      } else {
+        paymentLabel = t.reference || 'Withdrawal';
+      }
+
+      return `
       <tr>
-        <td class="text-sm">${new Date(t.date).toLocaleDateString()}</td>
+        <td class="text-sm">${formatDate(t.date)}</td>
         <td>
           <div class="font-semibold">${t.accountType === 'individual' ? (members.find(m => m.regNo === t.memberId)?.fullName || t.memberId) : (groups.find(g => g.groupId === t.groupId)?.name || t.groupId)}</div>
           <div class="text-xs text-muted">${t.memberId || t.groupId} | ${t.accountType.toUpperCase()}</div>
         </td>
-        <td class="text-xs text-muted">${t.reference || '-'}</td>
+        <td class="text-xs text-muted">${paymentLabel}</td>
         <td>
           <span class="badge ${t.amount > 0 ? 'badge-success' : 'badge-danger'}">
             ${t.amount > 0 ? 'DEPOSIT' : 'WITHDRAWAL'}
@@ -69,8 +81,8 @@ export const renderSavingsList = async () => {
         <td style="text-align: right;" class="font-semibold ${t.amount > 0 ? 'text-success' : 'text-danger'}">
           ${t.amount.toLocaleString()}
         </td>
-      </tr>
-    `).join('');
+      </tr>`;
+    }).join('');
 
     paginationWrapper.innerHTML = '';
     const pagination = renderPagination(sortedTransactions.length, pageSize, currentPage, (newPage) => {

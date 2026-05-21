@@ -1,5 +1,7 @@
 import { getById, getAll, put, add } from '../../core/db.js';
 import { renderPagination } from '../../components/Pagination.js';
+import { formatDate } from '../../core/utils.js';
+import { getSession } from '../../core/auth.js';
 
 export const renderLoanDetails = async (params) => {
   const { id } = params;
@@ -12,12 +14,14 @@ export const renderLoanDetails = async (params) => {
   }
 
   // Fetch all related data
-  const [schedule, repayments, members, groups] = await Promise.all([
+  const [schedule, repayments, members, groups, settingsArray] = await Promise.all([
     getAll('loan_schedule'),
     getAll('loan_repayments'),
     getAll('members'),
-    getAll('groups')
+    getAll('groups'),
+    getAll('settings')
   ]);
+  const settings = Object.fromEntries(settingsArray.map(s => [s.key, s.value]));
 
   let clientName = 'Unknown';
   if (loan.memberId) {
@@ -53,11 +57,20 @@ export const renderLoanDetails = async (params) => {
       </div>
       <div style="display: flex; align-items: center; gap: 12px;">
         <span class="badge ${
+          loan.status === 'disbursed' ? 'badge-success' :
           loan.status === 'completed' ? 'badge-success' :
           loan.status === 'rejected' ? 'badge-danger' :
-          (loan.status === 'approved' && loan.partialReason) ? 'badge-warning' :
-          'badge-primary'
-        }">${loan.status.toUpperCase()}${loan.partialReason ? ' (PARTIAL)' : ''}</span>
+          loan.status === 'expired' ? 'badge-danger' :
+          (loan.status === 'approved' || loan.status === 'partial_approved') ? 'badge-primary' :
+          'badge-warning'
+        }" style="${
+          loan.status === 'approved' || loan.status === 'partial_approved' ? 'background: #0d9488; color: white;' : ''
+        }">
+          ${loan.status === 'disbursed' ? 'DISBURSED' :
+            loan.status === 'approved' ? 'APPROVED' :
+            loan.status === 'partial_approved' ? 'PARTIAL APPROVED' :
+            loan.status.toUpperCase()}
+        </span>
       </div>
     </div>
 
@@ -128,6 +141,45 @@ export const renderLoanDetails = async (params) => {
 
       <div id="tab-content" style="padding: 24px;">
         <div id="overview-tab">
+          ${['approved', 'partial_approved'].includes(loan.status) ? `
+          <div style="background: rgba(13, 148, 136, 0.08); border: 1px solid rgba(13, 148, 136, 0.3); border-radius: 12px; padding: 24px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px;">
+            <div>
+              <h3 style="margin: 0; color: #0d9488; font-size: 1.15rem; display: flex; align-items: center; gap: 8px;">
+                🟢 Approved & Awaiting Disbursement
+              </h3>
+              <p class="text-sm text-muted" style="margin: 8px 0 0 0; line-height: 1.5;">
+                This loan has been successfully approved for <strong>KES ${loan.approvedAmount?.toLocaleString() || loan.amountApplied.toLocaleString()}</strong>.<br>
+                The physical funds are pending release to the applicant.
+              </p>
+              <div style="margin-top: 12px; font-size: 0.8rem; font-weight: 600; color: #b91c1c;">
+                ⏰ Expiry: Approved on ${formatDate(loan.approvedDate)} — Must be disbursed within 14 days.
+              </div>
+            </div>
+            <div>
+              <button class="btn btn-primary" id="details-disburse-btn" style="background: var(--success); border: none; padding: 12px 24px; font-weight: bold; display: flex; align-items: center; gap: 8px; box-shadow: 0 4px 12px rgba(16,185,129,0.2);">
+                Disburse Funds Now 💸
+              </button>
+            </div>
+          </div>
+          ` : ''}
+
+          ${loan.status === 'expired' ? `
+          <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 12px; padding: 24px; margin-bottom: 24px;">
+            <h3 style="margin: 0; color: var(--danger); font-size: 1.15rem; display: flex; align-items: center; gap: 8px;">
+              🔴 Approved Loan Expired
+            </h3>
+            <p class="text-sm text-muted" style="margin: 8px 0 0 0; line-height: 1.5;">
+              This loan approval has expired because the 14-day disbursement window closed without releasing the funds.<br>
+              Approved on: <strong>${formatDate(loan.approvedDate)}</strong> | Expired on: <strong>${formatDate(loan.expiredDate)}</strong>.
+            </p>
+            <div style="margin-top: 16px;">
+              <button class="btn btn-outline" id="details-reactivate-btn" style="border-color: var(--primary); color: var(--primary);">
+                Re-activate Approval 🔄
+              </button>
+            </div>
+          </div>
+          ` : ''}
+
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px;">
             <div>
               <div class="text-sm text-muted" style="margin-bottom: 8px;">Outstanding Balance</div>
@@ -264,7 +316,7 @@ export const renderLoanDetails = async (params) => {
     
     tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No repayments recorded yet.</td></tr>' : paginated.map(r => `
       <tr>
-        <td>${new Date(r.date).toLocaleDateString()}</td>
+        <td>${formatDate(r.date)}</td>
         <td><div class="font-semibold">${r.reference || 'N/A'}</div><div class="text-xs text-muted">${r.method.toUpperCase()}</div></td>
         <td class="text-xs text-muted">${r.recordedBy}</td>
         <td class="text-right font-semibold text-success">KES ${r.amount.toLocaleString()}</td>
@@ -281,18 +333,77 @@ export const renderLoanDetails = async (params) => {
     const paginated = loanSchedule.slice(start, start + pageSize);
     const tbody = container.querySelector('#loan-schedule-body');
     
-    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No schedule found.</td></tr>' : paginated.map(s => `
-      <tr>
-        <td>${s.installmentNo}</td>
-        <td>${new Date(s.dueDate).toLocaleDateString()}</td>
-        <td class="text-right">KES ${s.amount.toLocaleString()}</td>
-        <td><span class="badge ${s.status === 'paid' ? 'badge-success' : 'badge-warning'}">${s.status.toUpperCase()}</span></td>
-      </tr>`).join('');
+    const penaltyAmount = settings.penalty_amount || 500;
+    const graceWeeks = settings.penalty_grace_weeks || 4;
+    const graceMs = graceWeeks * 7 * 24 * 60 * 60 * 1000;
+    const today = new Date().getTime();
+    const isAdmin = getSession()?.role === 'admin';
+    
+    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No schedule found.</td></tr>' : paginated.map(s => {
+      let isOverdue = false;
+      let hasPenalty = false;
+      let amountDue = s.amount;
+      const dueTime = new Date(s.dueDate).getTime();
+      
+      if (s.status !== 'paid' && dueTime < today) {
+        isOverdue = true;
+        if ((today - dueTime) > graceMs) {
+          hasPenalty = true;
+        }
+      }
+      
+      if (hasPenalty && !s.penaltyWaived) {
+        amountDue += penaltyAmount;
+      }
+
+      return `
+      <tr style="${isOverdue && s.status !== 'paid' ? 'background: rgba(239, 68, 68, 0.02);' : ''}">
+        <td>
+          <div class="font-semibold">${s.installmentNo}</div>
+          ${isOverdue && s.status !== 'paid' ? `<div class="badge badge-danger" style="margin-top: 4px; font-size: 0.65rem;">OVERDUE</div>` : ''}
+        </td>
+        <td>${formatDate(s.dueDate)}</td>
+        <td class="text-right">
+          <div class="font-semibold">KES ${amountDue.toLocaleString()}</div>
+          ${hasPenalty && !s.penaltyWaived ? `<div class="text-xs" style="color: var(--danger); margin-top: 2px;">+KES ${penaltyAmount} penalty</div>` : ''}
+          ${hasPenalty && s.penaltyWaived ? `<div class="text-xs" style="color: var(--success); margin-top: 2px;">Penalty waived</div>` : ''}
+        </td>
+        <td>
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span class="badge ${s.status === 'paid' ? 'badge-success' : 'badge-warning'}">${s.status.toUpperCase()}</span>
+            ${hasPenalty && !s.penaltyWaived && isAdmin ? `<button class="btn btn-outline btn-xs waive-penalty-btn" data-id="${s.id}" style="margin-left: 8px;">Waive</button>` : ''}
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
 
     const pag = container.querySelector('#loan-schedule-pagination');
     pag.innerHTML = '';
     const ctrl = renderPagination(loanSchedule.length, pageSize, schedulePage, (p) => { schedulePage = p; updateScheduleUI(); });
     if (ctrl) pag.appendChild(ctrl);
+
+    // Attach Waive events
+    if (isAdmin) {
+      const waiveBtns = tbody.querySelectorAll('.waive-penalty-btn');
+      waiveBtns.forEach(btn => {
+        btn.onclick = async () => {
+          const scheduleId = parseInt(btn.dataset.id);
+          const scheduleItem = loanSchedule.find(s => s.id === scheduleId);
+          if (scheduleItem) {
+            window.confirmDialog(
+              'Waive Penalty',
+              `Are you sure you want to waive the KES ${penaltyAmount} penalty for Installment #${scheduleItem.installmentNo}?`,
+              async () => {
+                scheduleItem.penaltyWaived = true;
+                await put('loan_schedule', scheduleItem);
+                notify.success('Penalty waived successfully');
+                updateScheduleUI();
+              }
+            );
+          }
+        };
+      });
+    }
   };
 
   updateHistoryUI();
@@ -353,6 +464,69 @@ export const renderLoanDetails = async (params) => {
       notify.error('Error: ' + err.message);
     }
   };
+
+  // --- Physical Disbursement Action ---
+  const disburseBtn = container.querySelector('#details-disburse-btn');
+  if (disburseBtn) {
+    disburseBtn.onclick = async () => {
+      const confirmed = await confirmDialog({
+        title: 'Disburse Funds',
+        message: `Are you sure you want to disburse KES ${(loan.approvedAmount || loan.amountApplied).toLocaleString()} to this client now? This will generate the repayment schedule.`,
+        confirmText: 'Yes, Disburse 💸',
+        type: 'success'
+      });
+      if (!confirmed) return;
+      
+      loan.status = 'disbursed';
+      loan.disbursementDate = new Date().toISOString();
+      
+      await generateSchedule(loan);
+      await put('loans', loan);
+      notify.success('Funds disbursed successfully! Repayment schedule generated.');
+      window.location.reload();
+    };
+  }
+
+  // --- Re-activate Expired Approval ---
+  const reactivateBtn = container.querySelector('#details-reactivate-btn');
+  if (reactivateBtn) {
+    reactivateBtn.onclick = async () => {
+      const confirmed = await confirmDialog({
+        title: 'Re-activate Loan Approval',
+        message: 'Re-activate this expired loan back to Pending Review?',
+        confirmText: 'Yes, Re-activate',
+        type: 'info'
+      });
+      if (!confirmed) return;
+      
+      loan.status = 'pending';
+      delete loan.approvedDate;
+      delete loan.expiredDate;
+      delete loan.approvedAmount;
+      
+      await put('loans', loan);
+      notify.success('Loan re-activated to Pending Review.');
+      window.location.reload();
+    };
+  }
+
+  // --- Helper: Generate Repayment Schedule ---
+  async function generateSchedule(loan) {
+    const installmentAmount = loan.totalLiability / loan.period;
+    const startDate = new Date(loan.disbursementDate);
+    for (let i = 1; i <= loan.period; i++) {
+      const dueDate = new Date(startDate);
+      dueDate.setMonth(startDate.getMonth() + i);
+      await add('loan_schedule', {
+        loanId: loan.loanNo,
+        installmentNo: i,
+        dueDate: dueDate.toISOString(),
+        amount: installmentAmount,
+        paid: 0,
+        status: 'pending'
+      });
+    }
+  }
 
   return container;
 };

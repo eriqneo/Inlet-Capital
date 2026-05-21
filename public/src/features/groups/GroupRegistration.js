@@ -6,9 +6,6 @@ export const renderGroupRegistration = async () => {
   const container = document.createElement('div');
   const groupId = generateGroupId();
   
-  // Get group registration fee from settings
-  const groupFeeSetting = await getById('settings', 'group_reg_fee');
-  const groupFee = groupFeeSetting ? groupFeeSetting.value : 1000;
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -56,13 +53,7 @@ export const renderGroupRegistration = async () => {
         <input type="tel" name="phone" class="form-control" required />
       </div>
 
-      <div class="card" style="background: var(--bg-light); border: none; margin-top: 24px;">
-        <h4 style="margin-bottom: 8px; font-size: 0.875rem;">Registration Summary</h4>
-        <div style="display: flex; justify-content: space-between; font-size: 0.875rem;">
-          <span>Group Registration Fee</span>
-          <span class="font-semibold">KES ${groupFee.toLocaleString()}</span>
-        </div>
-      </div>
+
 
       <div style="margin-top: 32px; display: flex; justify-content: flex-end; gap: 16px;">
         <button type="button" class="btn btn-outline" onclick="window.location.hash = '#/groups'">Cancel</button>
@@ -83,18 +74,20 @@ export const renderGroupRegistration = async () => {
       status: 'active',
       memberCount: 0,
       totalSavings: 0,
-      outstandingLoan: 0,
-      registrationFee: groupFee
+      outstandingLoan: 0
     };
 
     try {
       await add('groups', group);
+
       notify.success('Group registered successfully!');
       setTimeout(() => navigate('#/groups'), 1200);
     } catch (err) {
       notify.error('Error registering group: ' + err.message);
     }
   };
+
+
 
   return container;
 };

@@ -211,7 +211,7 @@ export const renderAdminSettings = async () => {
         <!-- 4. Rates & System (Existing logic moved here) -->
         <div id="rates-tab" style="display: none;">
           <form id="rates-form">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px;">
               <div class="card" style="background: var(--bg-light);">
                 <h4 style="margin-bottom: 12px;">Financial Rates</h4>
                 <div class="form-group">
@@ -236,6 +236,19 @@ export const renderAdminSettings = async () => {
                 <div class="form-group">
                   <label class="form-label">Group Fee</label>
                   <input type="number" name="group_reg_fee" class="form-control" value="${settings.group_reg_fee || 1000}" />
+                </div>
+              </div>
+              <div class="card" style="background: var(--bg-light);">
+                <h4 style="margin-bottom: 12px;">Penalties</h4>
+                <div class="form-group">
+                  <label class="form-label">Late Payment Penalty</label>
+                  <input type="number" name="penalty_amount" class="form-control" value="${settings.penalty_amount || 500}" />
+                  <div class="text-xs text-muted" style="margin-top: 4px;">Fixed amount charged for overdue payments.</div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Grace Period (Weeks)</label>
+                  <input type="number" name="penalty_grace_weeks" class="form-control" value="${settings.penalty_grace_weeks || 4}" />
+                  <div class="text-xs text-muted" style="margin-top: 4px;">Time before a penalty is applied.</div>
                 </div>
               </div>
             </div>

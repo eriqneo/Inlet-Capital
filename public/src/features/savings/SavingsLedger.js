@@ -1,5 +1,6 @@
 import { add, getAll, getById, put } from '../../core/db.js';
 import { navigate } from '../../core/router.js';
+import { formatDate } from '../../core/utils.js';
 
 export const renderSavingsLedger = async () => {
   const container = document.createElement('div');
@@ -44,7 +45,7 @@ export const renderSavingsLedger = async () => {
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
             <div class="form-group">
               <label class="form-label">Transaction Type</label>
-              <select name="type" class="form-control" required>
+              <select name="type" id="tx-type" class="form-control" required>
                 <option value="deposit">Deposit (+)</option>
                 <option value="withdrawal">Withdrawal (-)</option>
               </select>
@@ -60,9 +61,27 @@ export const renderSavingsLedger = async () => {
             <input type="date" name="date" class="form-control" value="${new Date().toISOString().split('T')[0]}" required />
           </div>
 
+          <!-- Payment Options for Deposits -->
+          <div id="payment-panel">
+            <div class="form-group" style="margin-bottom: 16px;">
+              <label class="form-label" style="font-size: 0.75rem;">Payment Received Via</label>
+              <div style="display: flex; gap: 8px; margin-top: 6px;">
+                <button type="button" class="btn pay-pill active" data-method="mpesa" style="flex: 1; padding: 6px 12px; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; gap: 4px;">📱 M-Pesa</button>
+                <button type="button" class="btn pay-pill" data-method="cash" style="flex: 1; padding: 6px 12px; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; gap: 4px;">💵 Cash</button>
+                <button type="button" class="btn pay-pill" data-method="card" style="flex: 1; padding: 6px 12px; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; gap: 4px;">💳 Card</button>
+              </div>
+              <input type="hidden" name="paymentMethod" id="pay-method-val" value="mpesa" />
+            </div>
+
+            <div class="form-group" id="pay-ref-group">
+              <label class="form-label" style="font-size: 0.75rem;">Transaction Reference / Receipt No.</label>
+              <input type="text" name="paymentReference" id="pay-ref-val" class="form-control form-control-sm" placeholder="e.g. QWE123RTY4" required />
+            </div>
+          </div>
+
           <div class="form-group">
-            <label class="form-label">Reference / Remarks</label>
-            <input type="text" name="reference" class="form-control" placeholder="e.g. Mpesa Ref, Receipt No" />
+            <label class="form-label">Remarks (Optional)</label>
+            <input type="text" name="remarks" class="form-control" placeholder="e.g. January savings contribution" />
           </div>
 
           <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 16px;">Record Transaction</button>
@@ -85,6 +104,12 @@ export const renderSavingsLedger = async () => {
   const accountType = container.querySelector('#account-type');
   const mWrap = container.querySelector('#member-select-wrap');
   const gWrap = container.querySelector('#group-select-wrap');
+  const txType = container.querySelector('#tx-type');
+  const payPanel = container.querySelector('#payment-panel');
+  const pills = container.querySelectorAll('.pay-pill');
+  const payMethodInput = container.querySelector('#pay-method-val');
+  const payRefGroup = container.querySelector('#pay-ref-group');
+  const payRefInput = container.querySelector('#pay-ref-val');
 
   accountType.onchange = () => {
     if (accountType.value === 'individual') {
@@ -96,6 +121,39 @@ export const renderSavingsLedger = async () => {
     }
   };
 
+  txType.onchange = () => {
+    if (txType.value === 'deposit') {
+      payPanel.style.display = 'block';
+      if (payMethodInput.value === 'cash') {
+        payRefInput.removeAttribute('required');
+      } else {
+        payRefInput.setAttribute('required', 'true');
+      }
+    } else {
+      payPanel.style.display = 'none';
+      payRefInput.removeAttribute('required');
+    }
+  };
+
+  pills.forEach(pill => {
+    pill.onclick = () => {
+      pills.forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      const val = pill.dataset.method;
+      payMethodInput.value = val;
+
+      if (val === 'cash') {
+        payRefGroup.style.display = 'none';
+        payRefInput.removeAttribute('required');
+        payRefInput.value = '';
+      } else {
+        payRefGroup.style.display = 'block';
+        payRefInput.setAttribute('required', 'true');
+        payRefInput.placeholder = val === 'mpesa' ? 'e.g. QWE123RTY4' : 'e.g. Card Slip / Receipt No.';
+      }
+    };
+  });
+
   form.onsubmit = async (e) => {
     e.preventDefault();
     const formData = new FormData(form);
@@ -106,10 +164,18 @@ export const renderSavingsLedger = async () => {
     const finalAmount = amount * multiplier;
 
     const transaction = {
-      ...data,
+      memberId: data.memberId,
+      groupId: data.groupId,
+      type: data.type,
       amount: finalAmount,
+      date: data.date,
       accountType: accountType.value,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      paymentMethod: data.type === 'deposit' ? data.paymentMethod : 'cash-out',
+      reference: data.type === 'deposit' 
+        ? (data.paymentMethod === 'cash' ? `SAVE-CASH` : (data.paymentReference || 'N/A')) 
+        : 'WITHDRAWAL-OUT',
+      remarks: data.remarks || ''
     };
 
     try {
@@ -146,17 +212,24 @@ export const renderSavingsLedger = async () => {
     
     if (recent.length === 0) return;
 
-    listWrap.innerHTML = recent.map(t => `
+    listWrap.innerHTML = recent.map(t => {
+      let methodIcon = '';
+      if (t.amount > 0) {
+        if (t.paymentMethod === 'mpesa') methodIcon = ' 📱';
+        else if (t.paymentMethod === 'card') methodIcon = ' 💳';
+        else methodIcon = ' 💵';
+      }
+      return `
       <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border-color);">
         <div>
-          <div class="font-semibold">${t.type.toUpperCase()}</div>
-          <div class="text-xs text-muted">${t.memberId || t.groupId} | ${new Date(t.date).toLocaleDateString()}</div>
+          <div class="font-semibold">${t.type.toUpperCase()}${methodIcon}</div>
+          <div class="text-xs text-muted">${t.memberId || t.groupId} | ${formatDate(t.date)}</div>
         </div>
         <div class="font-semibold" style="color: ${t.amount > 0 ? 'var(--success)' : 'var(--danger)'};">
           ${t.amount > 0 ? '+' : ''}${t.amount.toLocaleString()}
         </div>
-      </div>
-    `).join('');
+      </div>`;
+    }).join('');
   };
 
   updateRecent();

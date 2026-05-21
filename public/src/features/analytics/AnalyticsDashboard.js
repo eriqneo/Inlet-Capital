@@ -16,12 +16,12 @@ export const renderAnalyticsDashboard = async () => {
 
   // Calculations
   const totalMembers = members.length;
-  const activeLoans = loans.filter(l => l.status === 'approved');
+  const activeLoans = loans.filter(l => l.status === 'disbursed' || (l.status === 'approved' && l.disbursementDate));
   const loanPortfolio = activeLoans.reduce((sum, l) => sum + l.totalLiability, 0);
   const totalSavings = members.reduce((sum, m) => sum + (m.totalSavings || 0), 0) + groups.reduce((sum, g) => sum + (g.totalSavings || 0), 0);
   
   const totalRepaid = repayments.reduce((sum, r) => sum + r.amount, 0);
-  const totalLiabilityOverall = loans.filter(l => l.status === 'approved' || l.status === 'completed').reduce((sum, l) => sum + l.totalLiability, 0);
+  const totalLiabilityOverall = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursementDate).reduce((sum, l) => sum + l.totalLiability, 0);
   const repaymentRate = totalLiabilityOverall > 0 ? ((totalRepaid / totalLiabilityOverall) * 100).toFixed(1) : 0;
 
   // Real Trend logic (Members registered in current month)
@@ -246,8 +246,10 @@ const initCharts = (loans, repayments, members, savings) => {
   // 1. Loan Status Chart
   const statusCounts = {
     pending: loans.filter(l => l.status === 'pending').length,
-    approved: loans.filter(l => l.status === 'approved').length,
+    awaiting: loans.filter(l => ['approved', 'partial_approved'].includes(l.status) && !l.disbursementDate).length,
+    disbursed: loans.filter(l => l.status === 'disbursed' || (['approved', 'partial_approved'].includes(l.status) && l.disbursementDate)).length,
     completed: loans.filter(l => l.status === 'completed').length,
+    expired: loans.filter(l => l.status === 'expired').length,
     rejected: loans.filter(l => l.status === 'rejected').length
   };
 
@@ -256,10 +258,10 @@ const initCharts = (loans, repayments, members, savings) => {
     new Chart(canvas1, {
       type: 'doughnut',
       data: {
-        labels: ['Pending', 'Approved', 'Completed', 'Rejected'],
+        labels: ['Pending', 'Awaiting Disb', 'Disbursed', 'Completed', 'Expired', 'Rejected'],
         datasets: [{
-          data: [statusCounts.pending, statusCounts.approved, statusCounts.completed, statusCounts.rejected],
-          backgroundColor: ['#F59E0B', '#2A5A9E', '#10B981', '#EF4444'],
+          data: [statusCounts.pending, statusCounts.awaiting, statusCounts.disbursed, statusCounts.completed, statusCounts.expired, statusCounts.rejected],
+          backgroundColor: ['#F59E0B', '#0D9488', '#2A5A9E', '#10B981', '#7C2D12', '#EF4444'],
           borderWidth: 0
         }]
       },
@@ -366,7 +368,7 @@ const initCharts = (loans, repayments, members, savings) => {
 
   const disbData = monthKeys.map(mk => {
     return loans
-      .filter(l => (l.status === 'approved' || l.status === 'completed' || l.status === 'closed') && l.disbursementDate && l.disbursementDate.startsWith(mk))
+      .filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursementDate && l.disbursementDate.startsWith(mk))
       .reduce((sum, l) => sum + l.approvedAmount, 0);
   });
 

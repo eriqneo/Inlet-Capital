@@ -1,5 +1,6 @@
 import { getAll, add } from '../../core/db.js';
 import { renderPagination } from '../../components/Pagination.js';
+import { formatDate } from '../../core/utils.js';
 
 export const renderReportsDashboard = async () => {
   const container = document.createElement('div');
@@ -37,11 +38,11 @@ export const renderReportsDashboard = async () => {
 
   // Profit & Loss Calculation
   const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
-  const approvedLoans = loans.filter(l => l.status === 'approved' || l.status === 'closed');
+  const approvedLoans = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursementDate);
   const totalCapitalDisbursed = approvedLoans.reduce((sum, l) => sum + l.approvedAmount, 0);
   const expectedInterest = approvedLoans.reduce((sum, l) => sum + l.interestAmount, 0);
-  const processingFeesCollected = approvedLoans.reduce((sum, l) => sum + l.processingFee, 0);
-  const registrationFeesCollected = members.reduce((sum, m) => sum + (m.registrationFee || 0), 0) + groups.reduce((sum, g) => sum + (g.registrationFee || 0), 0);
+  const processingFeesCollected = feesLog.filter(f => f.type === 'processing_fee').reduce((sum, f) => sum + (f.amount || 0), 0);
+  const registrationFeesCollected = feesLog.filter(f => f.type === 'registration_fee').reduce((sum, f) => sum + (f.amount || 0), 0);
   const totalRevenue = processingFeesCollected + registrationFeesCollected;
 
   container.innerHTML = `
@@ -80,22 +81,28 @@ export const renderReportsDashboard = async () => {
       <!-- 1. Profit & Loss Overview -->
       <div id="pl-tab" class="report-section">
         <h2 style="margin-bottom: 24px;">Financial Overview</h2>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 24px; margin-bottom: 32px;">
-          <div class="card" style="background: var(--bg-light); border: none;">
-            <div class="text-xs text-muted">Total Capital Disbursed</div>
-            <div class="text-xl font-semibold">KES ${totalCapitalDisbursed.toLocaleString()}</div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; margin-bottom: 32px;">
+          <div class="card" style="background: var(--bg-light); border: none; border-left: 4px solid var(--primary); box-shadow: var(--shadow-sm); transition: transform 0.2s, box-shadow 0.2s;">
+            <div class="text-xs text-muted" style="font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;">Total Capital Disbursed</div>
+            <div class="text-xl font-semibold" style="margin-top: 8px;">KES ${totalCapitalDisbursed.toLocaleString()}</div>
           </div>
-          <div class="card" style="background: var(--bg-light); border: none;">
-            <div class="text-xs text-muted">Total Operating Expenses</div>
-            <div class="text-xl font-semibold text-danger">KES ${totalExpenses.toLocaleString()}</div>
+          <div class="card" style="background: var(--bg-light); border: none; border-left: 4px solid #10b981; box-shadow: var(--shadow-sm); transition: transform 0.2s, box-shadow 0.2s;">
+            <div class="text-xs text-muted" style="font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;">Total Reg Fees</div>
+            <div class="text-xl font-semibold text-success" style="margin-top: 8px;">KES ${registrationFeesCollected.toLocaleString()}</div>
+            <div class="text-xs text-muted" style="margin-top: 4px; font-size: 0.7rem; opacity: 0.75;">Members & Groups</div>
           </div>
-          <div class="card" style="background: var(--bg-light); border: none;">
-            <div class="text-xs text-muted">Total Fees Collected (Reg + Processing)</div>
-            <div class="text-xl font-semibold text-success">KES ${totalRevenue.toLocaleString()}</div>
+          <div class="card" style="background: var(--bg-light); border: none; border-left: 4px solid #06b6d4; box-shadow: var(--shadow-sm); transition: transform 0.2s, box-shadow 0.2s;">
+            <div class="text-xs text-muted" style="font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;">Total Processing Fees</div>
+            <div class="text-xl font-semibold text-success" style="margin-top: 8px;">KES ${processingFeesCollected.toLocaleString()}</div>
+            <div class="text-xs text-muted" style="margin-top: 4px; font-size: 0.7rem; opacity: 0.75;">Loan Origination</div>
           </div>
-          <div class="card" style="background: var(--bg-light); border: none;">
-            <div class="text-xs text-muted">Expected Interest Portfolio</div>
-            <div class="text-xl font-semibold text-primary">KES ${expectedInterest.toLocaleString()}</div>
+          <div class="card" style="background: var(--bg-light); border: none; border-left: 4px solid #f59e0b; box-shadow: var(--shadow-sm); transition: transform 0.2s, box-shadow 0.2s;">
+            <div class="text-xs text-muted" style="font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;">Expected Interest Portfolio</div>
+            <div class="text-xl font-semibold text-primary" style="margin-top: 8px;">KES ${expectedInterest.toLocaleString()}</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border: none; border-left: 4px solid #ef4444; box-shadow: var(--shadow-sm); transition: transform 0.2s, box-shadow 0.2s;">
+            <div class="text-xs text-muted" style="font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;">Total Operating Costs</div>
+            <div class="text-xl font-semibold text-danger" style="margin-top: 8px;">KES ${totalExpenses.toLocaleString()}</div>
           </div>
         </div>
       </div>
@@ -267,7 +274,7 @@ export const renderReportsDashboard = async () => {
     const tbody = container.querySelector('#individuals-table-body');
     
     tbody.innerHTML = paginated.map(m => {
-      const mLoans = loans.filter(l => (l.memberId === m.regNo) && (l.status === 'approved' || l.status === 'completed' || l.status === 'closed'));
+      const mLoans = loans.filter(l => (l.memberId === m.regNo) && (['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursementDate));
       const totalLiability = mLoans.reduce((sum, l) => sum + l.totalLiability, 0);
       const totalRepaid = repayments.filter(r => r.memberId === m.regNo && mLoans.some(ml => ml.loanNo === r.loanNo)).reduce((sum, r) => sum + r.amount, 0);
       const olBalance = Math.max(0, totalLiability - totalRepaid);
@@ -329,7 +336,7 @@ export const renderReportsDashboard = async () => {
         
         if (isInactive) inactiveCount++; else activeCount++;
 
-        const mLoans = loans.filter(l => l.memberId === m.regNo && (l.status === 'approved'));
+        const mLoans = loans.filter(l => l.memberId === m.regNo && (['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursementDate));
         const hasArrears = schedules.some(s => mLoans.some(ml => ml.loanNo === s.loanId) && s.status !== 'paid' && new Date(s.dueDate) < new Date());
         if (hasArrears) arrearsCount++;
       });
@@ -374,7 +381,7 @@ export const renderReportsDashboard = async () => {
   };
 
   const updateDisbursements = () => {
-    const allApproved = loans.filter(l => l.status === 'approved' || l.status === 'closed');
+    const allApproved = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursementDate);
     const filtered = allApproved.filter(l => {
       if (activeFilters.disbursements === 'all') return true;
       if (activeFilters.disbursements === 'individual') return !!l.memberId;
@@ -401,7 +408,7 @@ export const renderReportsDashboard = async () => {
           <div class="text-xs text-muted">${l.memberId || l.groupId}</div>
         </td>
         <td class="text-success font-semibold">KES ${l.approvedAmount.toLocaleString()}</td>
-        <td>${new Date(l.disbursementDate).toLocaleDateString()}</td>
+        <td>${formatDate(l.disbursementDate)}</td>
         <td>${l.period} Months</td>
         <td>${l.guarantor?.name || '-'}</td>
         <td>${l.collaterals?.length || 0} Items</td>
@@ -434,8 +441,11 @@ export const renderReportsDashboard = async () => {
     
     container.querySelector('#registrations-table-body').innerHTML = paginated.map(m => `
       <tr>
-        <td><div class="font-semibold">${m.regNo}</div><div class="text-xs text-muted">${new Date(m.registrationDate).toLocaleDateString()}</div></td>
-        <td>${m.fullName}</td>
+        <td><div class="font-semibold">${m.regNo}</div><div class="text-xs text-muted">${formatDate(m.registrationDate)}</div></td>
+        <td>
+          <div class="font-semibold">${m.fullName}</div>
+          <div class="text-xs text-muted">DoB: ${formatDate(m.dob)}</div>
+        </td>
         <td><div>${m.idNo}</div><div class="text-xs text-muted">${m.phone}</div></td>
         <td>KES ${(m.registrationFee || 0).toLocaleString()}</td>
         <td>${m.nokName} (${m.nokRelationship})</td>
@@ -506,7 +516,7 @@ export const renderReportsDashboard = async () => {
       return `
         <tr>
           <td>
-            <div class="font-semibold">${new Date(e.date).toLocaleDateString()}</div>
+            <div class="font-semibold">${formatDate(e.date)}</div>
             <div class="text-xs text-muted">${new Date(e.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
           </td>
           <td><span class="badge" style="background: rgba(27,61,114,0.05); color: var(--primary); font-size: 0.65rem;">${e.type.toUpperCase()}</span></td>
@@ -535,7 +545,7 @@ export const renderReportsDashboard = async () => {
     // Find all unpaid schedule items that are overdue or upcoming
     const alertItems = schedules.filter(s => s.status !== 'paid').map(s => {
       const loan = loans.find(l => l.loanNo === s.loanId);
-      if (!loan || loan.status !== 'approved') return null;
+      if (!loan || !['disbursed', 'approved', 'completed', 'closed'].includes(loan.status) || !loan.disbursementDate) return null;
       
       const member = members.find(m => m.regNo === loan.memberId);
       const dueDate = new Date(s.dueDate);
@@ -588,7 +598,7 @@ export const renderReportsDashboard = async () => {
         <div style="font-size: 0.8rem; margin-bottom: 16px; background: var(--bg-light); padding: 8px; border-radius: 6px;">
           <div style="display: flex; justify-content: space-between;"><span>Loan No:</span> <strong>${a.loanId}</strong></div>
           <div style="display: flex; justify-content: space-between;"><span>Installment:</span> <strong>#${a.installmentNo}</strong></div>
-          <div style="display: flex; justify-content: space-between;"><span>Due Date:</span> <strong>${new Date(a.dueDate).toLocaleDateString()}</strong></div>
+          <div style="display: flex; justify-content: space-between;"><span>Due Date:</span> <strong>${formatDate(a.dueDate)}</strong></div>
         </div>
         <div style="font-size: 0.8rem; margin-bottom: 16px;">
           <div>📞 <strong>Phone:</strong> ${a.member?.phone || 'N/A'}</div>

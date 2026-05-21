@@ -741,3 +741,27 @@ h1, h2, h3, h4, h5, h6 {
   padding: 0 12px;
   width: auto;
 }
+
+/* Payment Pill Selectors */
+.pay-pill {
+  background: white;
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  transition: all 0.2s ease;
+  font-weight: 500;
+  outline: none;
+}
+
+.pay-pill:hover {
+  background: var(--bg-light);
+  border-color: var(--text-muted);
+}
+
+.pay-pill.active {
+  background-color: rgba(27, 61, 114, 0.08) !important;
+  border-color: var(--primary) !important;
+  color: var(--primary) !important;
+  font-weight: 600;
+  box-shadow: 0 0 0 3px rgba(27, 61, 114, 0.1);
+}
+

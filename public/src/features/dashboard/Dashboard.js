@@ -42,7 +42,7 @@ export const renderDashboard = async () => {
       description: `Loan ${l.loanNo} for KES ${l.amountApplied.toLocaleString()} was submitted.`
     });
     
-    if (l.status === 'approved' && l.disbursementDate) {
+    if ((l.status === 'disbursed' || l.status === 'approved') && l.disbursementDate) {
       activities.push({
         date: new Date(l.disbursementDate),
         type: 'disbursement',

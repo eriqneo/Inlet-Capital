@@ -1,5 +1,6 @@
 import { getById, getAll, put } from '../../core/db.js';
 import { renderPagination } from '../../components/Pagination.js';
+import { formatDate, initDateMask, parseInputDate, formatToInputDate } from '../../core/utils.js';
 import { openCamera } from '../../components/Camera.js';
 import { navigate } from '../../core/router.js';
 
@@ -56,9 +57,30 @@ export const renderMemberProfile = async (params) => {
                 <label class="form-label">Full Name</label>
                 <input type="text" name="fullName" class="form-control" value="${member.fullName}" required />
               </div>
-              <div class="form-group">
-                <label class="form-label">ID Number</label>
-                <input type="text" name="idNo" class="form-control" value="${member.idNo}" required />
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div class="form-group">
+                  <label class="form-label">ID Number</label>
+                  <input type="text" name="idNo" class="form-control" value="${member.idNo}" required />
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Date of Birth</label>
+                  <input type="text" id="edit-dob-input" name="dob" class="form-control" value="${formatToInputDate(member.dob)}" placeholder="dd/mm/yyyy" required />
+                </div>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div class="form-group">
+                  <label class="form-label">Marital Status</label>
+                  <select name="maritalStatus" class="form-control">
+                    <option value="Single" ${member.maritalStatus === 'Single' ? 'selected' : ''}>Single</option>
+                    <option value="Married" ${member.maritalStatus === 'Married' ? 'selected' : ''}>Married</option>
+                    <option value="Divorced" ${member.maritalStatus === 'Divorced' ? 'selected' : ''}>Divorced</option>
+                    <option value="Widowed" ${member.maritalStatus === 'Widowed' ? 'selected' : ''}>Widowed</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">No. of Children</label>
+                  <input type="number" name="childrenCount" class="form-control" value="${member.childrenCount || 0}" />
+                </div>
               </div>
               <div class="form-group">
                 <label class="form-label">Phone</label>
@@ -146,17 +168,22 @@ export const renderMemberProfile = async (params) => {
           
           <div id="tab-content" style="padding: 24px;">
             <div id="overview-tab">
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px;">
                 <div>
-                  <h4 class="text-sm text-muted" style="margin-bottom: 12px;">Registration Info</h4>
-                  <p><strong>Date:</strong> ${new Date(member.registrationDate).toLocaleDateString()}</p>
-                  <p><strong>Fee Paid:</strong> KES ${member.registrationFee.toLocaleString()}</p>
+                  <h4 class="text-sm text-muted" style="margin-bottom: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 6px;">Personal Details</h4>
+                  <p style="margin-bottom: 8px;"><strong>ID Number:</strong> ${member.idNo}</p>
+                  <p style="margin-bottom: 8px;"><strong>Phone:</strong> ${member.phone}</p>
+                  <p style="margin-bottom: 8px;"><strong>Residence:</strong> ${member.residence}</p>
+                  <p style="margin-bottom: 8px;"><strong>Date of Birth:</strong> ${formatDate(member.dob)}</p>
+                  <p style="margin-bottom: 8px;"><strong>Marital Status:</strong> ${member.maritalStatus || 'Single'}</p>
+                  <p style="margin-bottom: 8px;"><strong>No. of Children:</strong> ${member.childrenCount || 0}</p>
                 </div>
                 <div>
-                  <h4 class="text-sm text-muted" style="margin-bottom: 12px;">Next of Kin</h4>
-                  <p><strong>Name:</strong> ${member.nokName}</p>
-                  <p><strong>Phone:</strong> ${member.nokPhone}</p>
-                  <p><strong>Relationship:</strong> ${member.nokRelationship}</p>
+                  <h4 class="text-sm text-muted" style="margin-bottom: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 6px;">Registration & NOK Info</h4>
+                  <p style="margin-bottom: 8px;"><strong>Registration Date:</strong> ${formatDate(member.registrationDate)}</p>
+                  <p style="margin-bottom: 8px;"><strong>Fee Paid:</strong> KES ${member.registrationFee.toLocaleString()}</p>
+                  <p style="margin-bottom: 8px; margin-top: 16px;"><strong>Next of Kin:</strong> ${member.nokName} (${member.nokRelationship})</p>
+                  <p style="margin-bottom: 8px;"><strong>NOK Phone:</strong> ${member.nokPhone}</p>
                 </div>
               </div>
             </div>
@@ -229,8 +256,23 @@ export const renderMemberProfile = async (params) => {
       <tr>
         <td><strong>${l.loanNo}</strong></td>
         <td>KES ${l.amountApplied.toLocaleString()}</td>
-        <td><span class="badge ${l.status === 'approved' ? 'badge-success' : 'badge-warning'}">${l.status.toUpperCase()}</span></td>
-        <td>${new Date(l.applicationDate).toLocaleDateString()}</td>
+        <td>
+          <span class="badge ${
+            l.status === 'disbursed' ? 'badge-success' :
+            l.status === 'completed' ? 'badge-success' :
+            (l.status === 'approved' || l.status === 'partial_approved') ? 'badge-primary' :
+            l.status === 'pending' ? 'badge-warning' :
+            'badge-danger'
+          }" style="${
+            l.status === 'approved' || l.status === 'partial_approved' ? 'background: #0d9488; color: white;' : ''
+          }">
+            ${l.status === 'disbursed' ? 'DISBURSED' :
+              l.status === 'approved' ? 'APPROVED' :
+              l.status === 'partial_approved' ? 'PARTIAL APPROVED' :
+              l.status.toUpperCase()}
+          </span>
+        </td>
+        <td>${formatDate(l.applicationDate)}</td>
         <td><button class="btn btn-outline btn-xs" onclick="window.location.hash = '#/loans/${l.loanNo}'">View</button></td>
       </tr>`).join('');
 
@@ -247,7 +289,7 @@ export const renderMemberProfile = async (params) => {
     
     tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No savings history found.</td></tr>' : paginated.map(s => `
       <tr>
-        <td>${new Date(s.date).toLocaleDateString()}</td>
+        <td>${formatDate(s.date)}</td>
         <td><span class="badge" style="background: ${s.type === 'deposit' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'}; color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type.toUpperCase()}</span></td>
         <td class="font-semibold" style="color: ${s.amount > 0 ? 'var(--success)' : 'var(--danger)'}">${s.amount > 0 ? '+' : ''}${s.amount.toLocaleString()}</td>
         <td class="text-xs text-muted">${s.reference || '-'}</td>
@@ -293,7 +335,10 @@ export const renderMemberProfile = async (params) => {
     modal.style.display = show ? 'flex' : 'none';
   };
 
-  editBtn.onclick = () => toggleModal(true);
+  editBtn.onclick = () => {
+    toggleModal(true);
+    initDateMask(container.querySelector('#edit-dob-input'));
+  };
   closeBtn.onclick = () => toggleModal(false);
   cancelBtn.onclick = () => toggleModal(false);
 
@@ -312,6 +357,7 @@ export const renderMemberProfile = async (params) => {
     const updatedMember = {
       ...member,
       ...updatedData,
+      dob: parseInputDate(updatedData.dob),
       lastUpdated: new Date().toISOString()
     };
 

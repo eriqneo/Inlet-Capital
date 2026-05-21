@@ -2,6 +2,7 @@ import { add, getById, put } from '../../core/db.js';
 import { generateRegNo } from '../../core/numberGen.js';
 import { navigate } from '../../core/router.js';
 import { openCamera } from '../../components/Camera.js';
+import { initDateMask, parseInputDate } from '../../core/utils.js';
 
 export const renderMemberRegistration = async () => {
   const container = document.createElement('div');
@@ -38,10 +39,10 @@ export const renderMemberRegistration = async () => {
               <label class="form-label">ID Number</label>
               <input type="text" name="idNo" class="form-control" required />
             </div>
-            <div class="form-group">
-              <label class="form-label">Date of Birth</label>
-              <input type="date" name="dob" class="form-control" required />
-            </div>
+             <div class="form-group">
+               <label class="form-label">Date of Birth</label>
+               <input type="text" id="dob-input" name="dob" class="form-control" placeholder="dd/mm/yyyy" required />
+             </div>
           </div>
 
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
@@ -106,10 +107,25 @@ export const renderMemberRegistration = async () => {
           </div>
 
           <div class="card" style="background: var(--bg-light); border: none; margin-top: 24px;">
-            <h4 style="margin-bottom: 8px; font-size: 0.875rem;">Registration Summary</h4>
-            <div style="display: flex; justify-content: space-between; font-size: 0.875rem;">
+            <h4 style="margin-bottom: 12px; font-size: 0.875rem; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">Registration Summary</h4>
+            <div style="display: flex; justify-content: space-between; font-size: 0.875rem; margin-bottom: 16px;">
               <span>Registration Fee</span>
-              <span class="font-semibold">KES ${regFee.toLocaleString()}</span>
+              <span class="font-semibold" style="color: var(--success);">KES ${regFee.toLocaleString()}</span>
+            </div>
+            
+            <div class="form-group" style="margin-bottom: 16px;">
+              <label class="form-label" style="font-size: 0.75rem;">Payment Method</label>
+              <div style="display: flex; gap: 8px; margin-top: 6px;">
+                <button type="button" class="btn pay-pill active" data-method="mpesa" style="flex: 1; padding: 6px 12px; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; gap: 4px;">📱 M-Pesa</button>
+                <button type="button" class="btn pay-pill" data-method="cash" style="flex: 1; padding: 6px 12px; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; gap: 4px;">💵 Cash</button>
+                <button type="button" class="btn pay-pill" data-method="card" style="flex: 1; padding: 6px 12px; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; gap: 4px;">💳 Card</button>
+              </div>
+              <input type="hidden" name="paymentMethod" id="pay-method-val" value="mpesa" />
+            </div>
+
+            <div class="form-group" id="pay-ref-group">
+              <label class="form-label" style="font-size: 0.75rem;">Transaction Reference / Receipt No.</label>
+              <input type="text" name="paymentReference" id="pay-ref-val" class="form-control form-control-sm" placeholder="e.g. QWE123RTY4" required />
             </div>
           </div>
         </div>
@@ -121,6 +137,9 @@ export const renderMemberRegistration = async () => {
       </div>
     </form>
   `;
+
+  // Date of Birth input mask
+  initDateMask(container.querySelector('#dob-input'));
 
   // Photo Capture logic
   const takePhotoBtn = container.querySelector('#take-photo-btn');
@@ -134,6 +153,31 @@ export const renderMemberRegistration = async () => {
     });
   };
 
+  // Payment pill selector interaction
+  const pills = container.querySelectorAll('.pay-pill');
+  const payMethodInput = container.querySelector('#pay-method-val');
+  const payRefGroup = container.querySelector('#pay-ref-group');
+  const payRefInput = container.querySelector('#pay-ref-val');
+
+  pills.forEach(pill => {
+    pill.onclick = () => {
+      pills.forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      const val = pill.dataset.method;
+      payMethodInput.value = val;
+
+      if (val === 'cash') {
+        payRefGroup.style.display = 'none';
+        payRefInput.removeAttribute('required');
+        payRefInput.value = '';
+      } else {
+        payRefGroup.style.display = 'block';
+        payRefInput.setAttribute('required', 'true');
+        payRefInput.placeholder = val === 'mpesa' ? 'e.g. QWE123RTY4' : 'e.g. Card Slip / Receipt No.';
+      }
+    };
+  });
+
   // Form Submission
   const form = container.querySelector('#member-reg-form');
   form.onsubmit = async (e) => {
@@ -143,6 +187,7 @@ export const renderMemberRegistration = async () => {
     
     const member = {
       ...memberData,
+      dob: parseInputDate(memberData.dob),
       regNo,
       registrationDate: new Date().toISOString(),
       registrationFee: regFee,
@@ -153,10 +198,18 @@ export const renderMemberRegistration = async () => {
     try {
       await add('members', member);
       
-      // Also log the fee payment in a hypothetical fees_log store (we can add this later or just rely on member record)
-      // For now, let's just navigate to the member profile
+      // Record the registration fee payment in fees_log so it reflects in Cash Flow
+      await add('fees_log', {
+        memberId: regNo,
+        amount: regFee,
+        type: 'registration_fee',
+        date: new Date().toISOString(),
+        method: memberData.paymentMethod,
+        reference: memberData.paymentMethod === 'cash' ? 'CASH-REG' : (memberData.paymentReference || 'N/A')
+      });
+
       notify.success('Member registered successfully!');
-      navigate(`#/members/${regNo}`);
+      setTimeout(() => navigate(`#/members/${regNo}`), 1200);
     } catch (err) {
       notify.error('Error registering member: ' + err.message);
     }

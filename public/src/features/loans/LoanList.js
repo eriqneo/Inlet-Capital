@@ -1,5 +1,6 @@
 import { getAll, getById, put, add } from '../../core/db.js';
 import { renderPagination } from '../../components/Pagination.js';
+import { formatDate } from '../../core/utils.js';
 
 export const renderLoanList = async () => {
   const container = document.createElement('div');
@@ -9,6 +10,7 @@ export const renderLoanList = async () => {
     getAll('groups')
   ]);
   const pendingCount = loans.filter(l => l.status === 'pending').length;
+  const awaitingDisbursementCount = loans.filter(l => ['approved', 'partial_approved'].includes(l.status)).length;
 
   let currentPage = 1;
   const pageSize = 10;
@@ -33,9 +35,13 @@ export const renderLoanList = async () => {
         <p class="text-muted">Track all individual and group loan applications.</p>
       </div>
       <div style="display: flex; gap: 12px;">
-        ${pendingCount > 0 ? `<button class="btn btn-secondary" onclick="window.location.hash = '#/loans/approve'">
-          <span class="badge" style="background: white; color: var(--secondary); margin-right: 8px;">${pendingCount}</span>
+        ${pendingCount > 0 ? `<button class="btn btn-secondary" onclick="window.location.hash = '#/loans/approve'" style="background: #eab308; border-color: #eab308; color: white;">
+          <span class="badge" style="background: white; color: #eab308; margin-right: 8px;">${pendingCount}</span>
           Review Pending
+        </button>` : ''}
+        ${awaitingDisbursementCount > 0 ? `<button class="btn btn-primary" onclick="window.location.hash = '#/loans/approve'" style="background: #0d9488; border-color: #0d9488; color: white;">
+          <span class="badge" style="background: white; color: #0d9488; margin-right: 8px;">${awaitingDisbursementCount}</span>
+          Disburse Approved
         </button>` : ''}
         <button class="btn btn-primary" onclick="window.location.hash = '#/loans/new'">+ New Loan Application</button>
       </div>
@@ -116,7 +122,7 @@ export const renderLoanList = async () => {
       <tr>
         <td>
           <div class="font-semibold">${l.loanNo}</div>
-          <div class="text-xs text-muted">${new Date(l.applicationDate).toLocaleDateString()}</div>
+          <div class="text-xs text-muted">${formatDate(l.applicationDate)}</div>
         </td>
         <td class="font-semibold">${getClientName(l)}</td>
         <td class="text-sm">
@@ -141,10 +147,19 @@ export const renderLoanList = async () => {
         </td>
         <td>
           <span class="badge ${
-            l.status === 'approved' ? 'badge-success' :
+            l.status === 'disbursed' ? 'badge-success' :
+            l.status === 'approved' ? 'badge-primary' :
+            l.status === 'partial_approved' ? 'badge-primary' :
             l.status === 'pending' ? 'badge-warning' :
             'badge-danger'
-          }">${l.status.toUpperCase()}</span>
+          }" style="${
+            l.status === 'approved' || l.status === 'partial_approved' ? 'background: #0d9488; color: white;' : ''
+          }">
+            ${l.status === 'disbursed' ? 'DISBURSED' :
+              l.status === 'approved' ? 'APPROVED' :
+              l.status === 'partial_approved' ? 'PARTIAL APPROVED' :
+              l.status.toUpperCase()}
+          </span>
         </td>
         <td>
           <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/loans/${l.loanNo}'">View</button>

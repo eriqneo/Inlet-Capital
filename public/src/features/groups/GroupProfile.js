@@ -1,5 +1,7 @@
 import { getById, getAll, add, put } from '../../core/db.js';
 import { navigate } from '../../core/router.js';
+import { formatDate } from '../../core/utils.js';
+import { getSession } from '../../core/auth.js';
 
 export const renderGroupProfile = async (params) => {
   const { id } = params;
@@ -22,6 +24,40 @@ export const renderGroupProfile = async (params) => {
   
   const groupMembers = allMembers.filter(m => m.groupId === id);
 
+  // Calculate aggregated stats
+  let totalGroupArrears = 0;
+  let membersInArrearsCount = 0;
+  let inactiveMembersCount = 0;
+
+  const enrichedMembers = groupMembers.map(m => {
+    const mSavings = allSavings.filter(s => s.memberId === m.regNo);
+    const totalSavings = mSavings.reduce((sum, s) => sum + s.amount, 0);
+    
+    const mLoans = allLoans.filter(l => l.memberId === m.regNo && (['disbursed', 'completed', 'closed'].includes(l.status)));
+    const totalLiability = mLoans.reduce((sum, l) => sum + (l.totalLiability || l.amountApplied * 1.1), 0);
+    const totalRepaid = allRepayments.filter(r => r.memberId === m.regNo && mLoans.some(ml => ml.loanNo === r.loanNo)).reduce((sum, r) => sum + r.amount, 0);
+    const olBalance = Math.max(0, totalLiability - totalRepaid);
+    
+    const mSchedules = allSchedules.filter(s => mLoans.some(ml => ml.loanNo === s.loanId) && s.status !== 'paid' && new Date(s.dueDate) < new Date());
+    const totalArrears = mSchedules.reduce((sum, s) => sum + s.amount, 0);
+    
+    const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
+    const isActive = lastSavingsDate && (new Date() - lastSavingsDate <= 90 * 24 * 60 * 60 * 1000);
+
+    totalGroupArrears += totalArrears;
+    if (totalArrears > 0) membersInArrearsCount++;
+    if (!isActive) inactiveMembersCount++;
+
+    return {
+      ...m,
+      totalSavings,
+      olBalance,
+      totalArrears,
+      isActive,
+      lastSavingsDate
+    };
+  });
+
   const container = document.createElement('div');
   
   container.innerHTML = `
@@ -40,18 +76,26 @@ export const renderGroupProfile = async (params) => {
       <!-- Main Content -->
       <div>
         <!-- Stats Row -->
-        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px;">
-          <div class="card" style="padding: 16px;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px;">
+          <div class="card" style="padding: 16px; border-left: 3px solid var(--success);">
             <div class="text-xs text-muted">Total Savings</div>
-            <div class="text-lg font-semibold" style="color: var(--success);">KES ${(group.totalSavings || 0).toLocaleString()}</div>
+            <div class="text-lg font-semibold text-success">KES ${(group.totalSavings || 0).toLocaleString()}</div>
           </div>
-          <div class="card" style="padding: 16px;">
+          <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);">
             <div class="text-xs text-muted">Outstanding Loan</div>
-            <div class="text-lg font-semibold" style="color: var(--danger);">KES ${(group.outstandingLoan || 0).toLocaleString()}</div>
+            <div class="text-lg font-semibold text-danger">KES ${(group.outstandingLoan || 0).toLocaleString()}</div>
           </div>
-          <div class="card" style="padding: 16px;">
-            <div class="text-xs text-muted">Arrears</div>
-            <div class="text-lg font-semibold" style="color: var(--warning);">KES 0</div>
+          <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);">
+            <div class="text-xs text-muted">Total Members</div>
+            <div class="text-lg font-semibold text-primary">${groupMembers.length}</div>
+          </div>
+          <div class="card" style="padding: 16px; border-left: 3px solid ${membersInArrearsCount > 0 ? 'var(--warning)' : 'var(--border-color)'};">
+            <div class="text-xs text-muted">Members in Arrears</div>
+            <div class="text-lg font-semibold" style="color: ${membersInArrearsCount > 0 ? 'var(--warning)' : 'inherit'};">${membersInArrearsCount} <span class="text-xs text-muted" style="font-weight:normal;">(KES ${totalGroupArrears.toLocaleString()})</span></div>
+          </div>
+          <div class="card" style="padding: 16px; border-left: 3px solid ${inactiveMembersCount > 0 ? 'var(--danger)' : 'var(--border-color)'};">
+            <div class="text-xs text-muted">Inactive Members</div>
+            <div class="text-lg font-semibold" style="color: ${inactiveMembersCount > 0 ? 'var(--danger)' : 'inherit'};">${inactiveMembersCount} <span class="text-xs text-muted" style="font-weight:normal;">(>90 days)</span></div>
           </div>
         </div>
 
@@ -65,6 +109,11 @@ export const renderGroupProfile = async (params) => {
           
           <div id="tab-content" style="padding: 24px;">
             <div id="members-tab">
+              <div style="padding: 16px 24px; border-bottom: 1px solid var(--border-color); display: flex; gap: 8px;">
+                <button class="btn btn-sm btn-primary" id="filter-all-btn" style="font-size: 0.75rem; padding: 6px 16px; border-radius: 20px;">Total Members</button>
+                <button class="btn btn-sm btn-outline" id="filter-arrears-btn" style="font-size: 0.75rem; padding: 6px 16px; border-radius: 20px;">Members in Arrears</button>
+                <button class="btn btn-sm btn-outline" id="filter-inactive-btn" style="font-size: 0.75rem; padding: 6px 16px; border-radius: 20px;">Inactive Members</button>
+              </div>
               <div class="table-responsive">
                 <table class="table">
                   <thead>
@@ -74,48 +123,13 @@ export const renderGroupProfile = async (params) => {
                       <th>A.Savings <span title="Accumulated Savings" style="cursor:help;">ⓘ</span></th>
                       <th>OL Balance</th>
                       <th>Arrears</th>
+                      <th>In Arrears</th>
                       <th>Status</th>
+                      <th>Last Saved</th>
                       <th>Actions</th>
                     </tr>
                   </thead>
-                  <tbody>
-                    ${groupMembers.length === 0 ? `
-                      <tr><td colspan="7" class="text-center text-muted">No members in this group yet.</td></tr>
-                    ` : groupMembers.map(m => {
-                      const mSavings = allSavings.filter(s => s.memberId === m.regNo);
-                      const totalSavings = mSavings.reduce((sum, s) => sum + s.amount, 0);
-                      
-                      const mLoans = allLoans.filter(l => l.memberId === m.regNo && (l.status === 'approved' || l.status === 'closed'));
-                      const totalLiability = mLoans.reduce((sum, l) => sum + (l.totalLiability || l.amountApplied * 1.1), 0); // Fallback to simple interest if totalLiability not set
-                      const totalRepaid = allRepayments.filter(r => r.memberId === m.regNo && mLoans.some(ml => ml.loanNo === r.loanNo)).reduce((sum, r) => sum + r.amount, 0);
-                      const olBalance = Math.max(0, totalLiability - totalRepaid);
-                      
-                      const mSchedules = allSchedules.filter(s => mLoans.some(ml => ml.loanNo === s.loanId) && s.status !== 'paid' && new Date(s.dueDate) < new Date());
-                      const totalArrears = mSchedules.reduce((sum, s) => sum + s.amount, 0);
-                      
-                      const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
-                      const isActive = lastSavingsDate && (new Date() - lastSavingsDate <= 90 * 24 * 60 * 60 * 1000);
-
-                      return `
-                      <tr>
-                        <td>
-                          <div class="font-semibold">${m.fullName}</div>
-                          <div class="text-xs text-muted">${m.regNo}</div>
-                        </td>
-                        <td>${m.phone}</td>
-                        <td class="font-semibold text-success">KES ${totalSavings.toLocaleString()}</td>
-                        <td class="font-semibold text-primary">KES ${olBalance.toLocaleString()}</td>
-                        <td class="font-semibold text-danger">KES ${totalArrears.toLocaleString()}</td>
-                        <td>
-                          <span class="badge ${isActive ? 'badge-success' : 'badge-danger'}">
-                            ${isActive ? 'ACTIVE' : 'INACTIVE'}
-                          </span>
-                        </td>
-                        <td>
-                          <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/members/${m.regNo}'">View</button>
-                        </td>
-                      </tr>`;
-                    }).join('')}
+                  <tbody id="members-table-body">
                   </tbody>
                 </table>
               </div>
@@ -144,7 +158,7 @@ export const renderGroupProfile = async (params) => {
           </div>
           <div style="margin-bottom: 12px;">
             <div class="text-xs text-muted">Registration Date</div>
-            <div>${new Date(group.registrationDate).toLocaleDateString()}</div>
+            <div>${formatDate(group.registrationDate)}</div>
           </div>
           <div style="margin-bottom: 12px;">
             <div class="text-xs text-muted">Phone</div>
@@ -152,7 +166,7 @@ export const renderGroupProfile = async (params) => {
           </div>
           <div style="margin-bottom: 12px;">
             <div class="text-xs text-muted">Performance Rating</div>
-            <div style="color: var(--warning);">⭐⭐⭐⭐⭐ (Excellent)</div>
+            <div id="group-rating-container" style="margin-top: 4px;"></div>
           </div>
         </div>
       </div>
@@ -247,6 +261,146 @@ export const renderGroupProfile = async (params) => {
       navigate(`#/groups/${id}`); // Refresh
     }
   };
+
+  // Table filtering logic
+  const renderMembersTable = (filter = 'all') => {
+    const tbody = container.querySelector('#members-table-body');
+    if (!tbody) return;
+
+    let filteredMembers = enrichedMembers;
+    if (filter === 'arrears') {
+      filteredMembers = enrichedMembers.filter(m => m.totalArrears > 0);
+    } else if (filter === 'inactive') {
+      filteredMembers = enrichedMembers.filter(m => !m.isActive);
+    }
+
+    tbody.innerHTML = filteredMembers.length === 0 ? `
+      <tr><td colspan="9" class="text-center text-muted" style="padding: 32px;">No members found matching this filter.</td></tr>
+    ` : filteredMembers.map(m => `
+      <tr>
+        <td>
+          <div class="font-semibold">${m.fullName}</div>
+          <div class="text-xs text-muted">${m.regNo}</div>
+        </td>
+        <td>${m.phone}</td>
+        <td class="font-semibold text-success">KES ${m.totalSavings.toLocaleString()}</td>
+        <td class="font-semibold text-primary">KES ${m.olBalance.toLocaleString()}</td>
+        <td class="font-semibold text-danger">KES ${m.totalArrears.toLocaleString()}</td>
+        <td>
+          <span class="badge ${m.totalArrears > 0 ? 'badge-warning' : 'badge-outline'}" style="font-size: 0.65rem;">
+            ${m.totalArrears > 0 ? 'YES' : 'NO'}
+          </span>
+        </td>
+        <td>
+          <span class="badge ${m.isActive ? 'badge-success' : 'badge-danger'}">
+            ${m.isActive ? 'ACTIVE' : 'INACTIVE'}
+          </span>
+        </td>
+        <td>
+          <span class="text-sm ${m.isActive ? 'text-muted' : 'text-danger font-semibold'}">
+            ${m.lastSavingsDate ? formatDate(m.lastSavingsDate) : 'Never'}
+          </span>
+        </td>
+        <td>
+          <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/members/${m.regNo}'">View</button>
+        </td>
+      </tr>
+    `).join('');
+  };
+
+  const filterBtns = {
+    all: container.querySelector('#filter-all-btn'),
+    arrears: container.querySelector('#filter-arrears-btn'),
+    inactive: container.querySelector('#filter-inactive-btn')
+  };
+
+  const updateActiveFilterBtn = (activeKey) => {
+    Object.keys(filterBtns).forEach(key => {
+      if (key === activeKey) {
+        filterBtns[key].classList.remove('btn-outline');
+        filterBtns[key].classList.add('btn-primary');
+      } else {
+        filterBtns[key].classList.add('btn-outline');
+        filterBtns[key].classList.remove('btn-primary');
+      }
+    });
+  };
+
+  if (filterBtns.all) {
+    filterBtns.all.onclick = () => { updateActiveFilterBtn('all'); renderMembersTable('all'); };
+    filterBtns.arrears.onclick = () => { updateActiveFilterBtn('arrears'); renderMembersTable('arrears'); };
+    filterBtns.inactive.onclick = () => { updateActiveFilterBtn('inactive'); renderMembersTable('inactive'); };
+    renderMembersTable('all'); // initial render
+  }
+
+  // Rating Logic
+  const session = getSession();
+  const isAdmin = session && session.role === 'admin';
+  const ratingContainer = container.querySelector('#group-rating-container');
+
+  const ratingLabels = {
+    1: 'Very Poor',
+    2: 'Poor',
+    3: 'Fair',
+    4: 'Very Good',
+    5: 'Excellent'
+  };
+
+  // Initialize DOM structure once
+  ratingContainer.innerHTML = `
+    <div id="stars-wrapper" style="display: flex; gap: 4px; font-size: 1.25rem;">
+      ${[1, 2, 3, 4, 5].map(i => `<span class="rating-star" data-val="${i}" style="transition: color 0.2s; cursor: ${isAdmin ? 'pointer' : 'default'};"></span>`).join('')}
+    </div>
+    <div id="rating-label-wrapper"></div>
+  `;
+
+  const starsWrapper = ratingContainer.querySelector('#stars-wrapper');
+  const labelWrapper = ratingContainer.querySelector('#rating-label-wrapper');
+  const stars = starsWrapper.querySelectorAll('.rating-star');
+
+  const updateRatingUI = (currentHover = 0) => {
+    const ratingValue = group.rating || 0;
+    const activeRating = currentHover > 0 ? currentHover : ratingValue;
+
+    stars.forEach(star => {
+      const val = parseInt(star.dataset.val);
+      const isFilled = val <= activeRating;
+      star.style.color = isFilled ? 'var(--primary)' : 'var(--secondary)';
+      star.textContent = isFilled ? '★' : '☆';
+    });
+
+    let labelHtml = '';
+    if (ratingValue > 0) {
+      labelHtml = `<div class="text-xs" style="margin-top: 4px; color: var(--text-color); font-weight: 500;">${ratingValue}/5 — ${ratingLabels[ratingValue]}</div>`;
+    } else {
+      labelHtml = `<div class="text-xs text-muted" style="margin-top: 4px; font-style: italic;">Not yet rated</div>`;
+    }
+    
+    if (isAdmin && ratingValue === 0 && currentHover === 0) {
+      labelHtml += `<div class="text-xs text-muted" style="margin-top: 2px;">(Click to rate)</div>`;
+    }
+    labelWrapper.innerHTML = labelHtml;
+  };
+
+  if (isAdmin) {
+    stars.forEach(star => {
+      const val = parseInt(star.dataset.val);
+      star.onmouseenter = () => updateRatingUI(val);
+      star.onmouseleave = () => updateRatingUI(0);
+      star.onclick = async () => {
+        group.rating = val;
+        try {
+          await put('groups', group);
+          notify.success('Group rating updated!');
+          updateRatingUI(0);
+        } catch (err) {
+          notify.error('Error saving rating');
+        }
+      };
+    });
+  }
+
+  updateRatingUI();
 
   return container;
 };

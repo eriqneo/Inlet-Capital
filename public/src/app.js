@@ -1,5 +1,6 @@
 import { initializeData } from './core/schema.js';
 import './components/Toast.js';
+import './components/Dialog.js';
 import { initRouter, addRoute } from './core/router.js';
 import { renderLoginPage } from './features/auth/LoginPage.js';
 import { renderDashboard } from './features/dashboard/Dashboard.js';
