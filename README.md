@@ -4,6 +4,13 @@ Inlet Capital is a high-fidelity, "Premium Standard" Progressive Web Application
 
 ## 🚀 Key Features
 
+### ✨ Recent Updates
+*   **Dashboard Insights**: Added a new, prominent Alerts & Reminders KPI card on the main Dashboard that deep-links directly to the pending actions report.
+*   **Enhanced Group Profiles**: Revamped the Group Profile UI with fully paginated tracking for Group Loans and Group Savings, backed by a synchronized global Date Filter.
+*   **Fuzzy Group Search**: Implemented a real-time fuzzy search bar in the Groups Management view to quickly filter by Name, ID, or Meeting Day.
+*   **Cash Flow Upgrades**: The Daily Cash Flow ledger now natively recognizes and tags transactions linked to Groups versus independent individuals.
+*   **Extended Loan Applications**: Expanded the loan period flexibility up to 12 months during the application stage.
+
 ### 1. Institutional Reporting Suite
 *   **Daily Cash Flow Ledger**: Real-time tracking of all money-in (Savings, Repayments, Registration Fees, Processing Fees) with auto-generated traceable references (`SAVE-D-...`).
 *   **Individual & Group Performance**: Granular tracking of savings, loan balances, and repayment progress.
