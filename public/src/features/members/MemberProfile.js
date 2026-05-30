@@ -255,7 +255,7 @@ export const renderMemberProfile = async (params) => {
                   <p style="margin-bottom: 8px;"><strong>Registration Date:</strong> ${formatDate(member.registrationDate)}</p>
                   <p style="margin-bottom: 8px;"><strong>Fee Paid:</strong> KES ${member.registrationFee.toLocaleString()}</p>
                   <p style="margin-bottom: 8px; margin-top: 16px;"><strong>Next of Kin:</strong> ${member.nokName} (${member.nokRelationship})</p>
-                  <p style="margin-bottom: 8px;"><strong>NOK Phone:</strong> ${member.nokPhone}</p>
+                  <p style="margin-bottom: 8px;"><strong>NOK Phone:</strong> <a href="tel:${member.nokPhone}" style="color: var(--primary); font-weight: 500;">${member.nokPhone}</a></p>
                 </div>
               </div>
             </div>

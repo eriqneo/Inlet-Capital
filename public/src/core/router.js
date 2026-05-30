@@ -1,5 +1,5 @@
 import { getSession } from './auth.js';
-
+import { showLoader, hideLoader } from './utils.js';
 const routes = {};
 let rootElement = null;
 
@@ -68,6 +68,23 @@ const handleRoute = async () => {
   }
 
   rootElement.innerHTML = '';
-  const element = await route.renderFn(params);
-  rootElement.appendChild(element);
+  showLoader();
+  try {
+    const element = await route.renderFn(params);
+    rootElement.appendChild(element);
+  } catch (error) {
+    console.error('Routing Error:', error);
+    rootElement.innerHTML = `
+      <div class="card" style="max-width: 600px; margin: 40px auto; text-align: center; border-top: 4px solid var(--danger);">
+        <h2 style="color: var(--danger); margin-bottom: 16px;">Oops! Something went wrong</h2>
+        <p class="text-muted" style="margin-bottom: 24px;">An error occurred while loading this page.</p>
+        <div style="background: var(--bg-light); padding: 12px; border-radius: 8px; text-align: left; margin-bottom: 24px; overflow-x: auto;">
+          <code class="text-xs text-danger" style="white-space: pre-wrap;">${error.message || String(error)}</code>
+        </div>
+        <button class="btn btn-primary" onclick="window.location.hash = '#/'">Return to Dashboard</button>
+      </div>
+    `;
+  } finally {
+    hideLoader();
+  }
 };

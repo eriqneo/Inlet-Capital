@@ -22,7 +22,7 @@ export const renderHeader = async () => {
 
   header.innerHTML = `
     <div style="display: flex; align-items: center; gap: 12px;">
-      <button id="mobile-menu-btn" class="btn btn-outline" style="margin-right: 8px; border: none; padding: 4px; display: none;">
+      <button id="mobile-menu-btn" class="btn btn-outline mobile-menu-toggle" style="margin-right: 8px; border: none; padding: 4px; background: transparent;">
         <span style="font-size: 24px;">☰</span>
       </button>
       
@@ -53,17 +53,6 @@ export const renderHeader = async () => {
       sidebar.classList.toggle('open');
     }
   });
-
-  // Responsive logic
-  const checkWidth = () => {
-    if (window.innerWidth <= 768) {
-      mobileBtn.style.display = 'block';
-    } else {
-      mobileBtn.style.display = 'none';
-    }
-  };
-  window.addEventListener('resize', checkWidth);
-  checkWidth();
 
   // Logout handled in Sidebar
   return header;

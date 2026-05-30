@@ -15,6 +15,7 @@ export const renderLoanList = async () => {
   let currentPage = 1;
   const pageSize = 10;
   const sortedLoans = [...loans].sort((a, b) => new Date(b.applicationDate) - new Date(a.applicationDate));
+  let filteredLoans = [...sortedLoans];
 
   // Helper to get client name
   const getClientName = (loan) => {
@@ -48,6 +49,9 @@ export const renderLoanList = async () => {
     </div>
 
     <div class="card" style="padding: 0; overflow: hidden;">
+      <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; gap: 16px;">
+        <input type="text" id="loan-search" class="form-control" placeholder="Search by Loan No, Client Name, or Status..." style="max-width: 400px;" />
+      </div>
       <div class="table-responsive">
         <table class="table">
           <thead>
@@ -114,7 +118,7 @@ export const renderLoanList = async () => {
   const updateUI = () => {
     const start = (currentPage - 1) * pageSize;
     const end = start + pageSize;
-    const paginatedLoans = sortedLoans.slice(start, end);
+    const paginatedLoans = filteredLoans.slice(start, end);
 
     tableBody.innerHTML = paginatedLoans.length === 0 ? `
       <tr><td colspan="8" class="text-center text-muted" style="padding: 40px;">No loans found.</td></tr>
@@ -179,7 +183,7 @@ export const renderLoanList = async () => {
     });
 
     paginationWrapper.innerHTML = '';
-    const pagination = renderPagination(sortedLoans.length, pageSize, currentPage, (newPage) => {
+    const pagination = renderPagination(filteredLoans.length, pageSize, currentPage, (newPage) => {
       currentPage = newPage;
       updateUI();
     });
@@ -250,6 +254,18 @@ export const renderLoanList = async () => {
       notify.error('Error recording fee: ' + err.message);
     }
   };
+
+  const searchInput = container.querySelector('#loan-search');
+  searchInput.addEventListener('input', (e) => {
+    const term = e.target.value.toLowerCase();
+    filteredLoans = sortedLoans.filter(l => {
+      const clientName = getClientName(l).toLowerCase();
+      const status = l.status.replace('_', ' ').toLowerCase();
+      return l.loanNo.toLowerCase().includes(term) || clientName.includes(term) || status.includes(term);
+    });
+    currentPage = 1;
+    updateUI();
+  });
 
   updateUI();
 
