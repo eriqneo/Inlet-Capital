@@ -58,6 +58,17 @@ export const renderGroupProfile = async (params) => {
     };
   });
 
+  // Aggregate member savings + group account savings
+  const totalMemberSavings = enrichedMembers.reduce((sum, m) => sum + m.totalSavings, 0);
+  const groupAccountSavings = allSavings.filter(s => s.groupId === id && !s.memberId).reduce((sum, s) => sum + s.amount, 0);
+  const totalGroupSavings = totalMemberSavings + groupAccountSavings;
+
+  // Aggregate group-level loan arrears
+  const groupLoans = allLoans.filter(l => l.groupId === id && !l.memberId && (['disbursed', 'completed', 'closed'].includes(l.status)));
+  const groupSchedules = allSchedules.filter(s => groupLoans.some(gl => gl.loanNo === s.loanId) && s.status !== 'paid' && new Date(s.dueDate) < new Date());
+  const groupLevelArrears = groupSchedules.reduce((sum, s) => sum + s.amount, 0);
+  totalGroupArrears += groupLevelArrears;
+
   const container = document.createElement('div');
   
   container.innerHTML = `
@@ -79,7 +90,7 @@ export const renderGroupProfile = async (params) => {
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px;">
           <div class="card" style="padding: 16px; border-left: 3px solid var(--success);">
             <div class="text-xs text-muted">Total Savings</div>
-            <div class="text-lg font-semibold text-success">KES ${(group.totalSavings || 0).toLocaleString()}</div>
+            <div class="text-lg font-semibold text-success">KES ${totalGroupSavings.toLocaleString()}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);">
             <div class="text-xs text-muted">Outstanding Loan</div>

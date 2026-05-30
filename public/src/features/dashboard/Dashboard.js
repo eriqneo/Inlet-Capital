@@ -4,11 +4,12 @@ export const renderDashboard = async () => {
   const container = document.createElement('div');
   
   // Fetch real-time data from IndexedDB
-  const [members, groups, loans, savings] = await Promise.all([
+  const [members, groups, loans, savings, schedules] = await Promise.all([
     getAll('members'),
     getAll('groups'),
     getAll('loans'),
-    getAll('savings')
+    getAll('savings'),
+    getAll('loan_schedule')
   ]);
 
   // Calculate Metrics
@@ -16,9 +17,26 @@ export const renderDashboard = async () => {
   const activeGroups = groups.length; // Assuming all groups are active for now
   const pendingLoans = loans.filter(l => l.status === 'pending').length;
   
-  const totalSavings = savings.reduce((sum, tx) => {
-    return sum + (tx.type === 'deposit' ? tx.amount : -tx.amount);
-  }, 0);
+  // amounts are already signed: deposits positive, withdrawals negative
+  const totalSavings = savings.reduce((sum, tx) => sum + tx.amount, 0);
+
+  const today = new Date();
+  const totalArrears = schedules
+    .filter(s => s.status !== 'paid' && new Date(s.dueDate) < today)
+    .reduce((sum, s) => sum + s.amount, 0);
+
+  // Calculate Alerts
+  const upcomingThreshold = new Date();
+  upcomingThreshold.setDate(today.getDate() + 7);
+
+  const totalAlerts = schedules.filter(s => s.status !== 'paid').map(s => {
+    const loan = loans.find(l => l.loanNo === s.loanId);
+    if (!loan || !['disbursed', 'approved', 'completed', 'closed'].includes(loan.status) || !loan.disbursementDate) return null;
+    
+    const dueDate = new Date(s.dueDate);
+    if (dueDate <= upcomingThreshold) return true;
+    return null;
+  }).filter(Boolean).length;
 
   // Compile Recent Activity
   let activities = [];
@@ -90,6 +108,15 @@ export const renderDashboard = async () => {
       <div class="card">
         <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Total Savings (KES)</h3>
         <p style="font-size: 2.5rem; font-weight: 700; color: var(--success);">${totalSavings.toLocaleString()}</p>
+      </div>
+      <div class="card">
+        <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Total Arrears (KES)</h3>
+        <p style="font-size: 2.5rem; font-weight: 700; color: var(--danger);">${totalArrears.toLocaleString()}</p>
+      </div>
+      <div class="card" onclick="window.location.hash = '#/reports?tab=alerts'" style="cursor: pointer; border-left: 4px solid var(--warning); background: rgba(245, 158, 11, 0.05); transition: transform 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='var(--shadow-md)';" onmouseout="this.style.transform='none'; this.style.boxShadow='var(--shadow-sm)';">
+        <h3 class="text-sm" style="margin-bottom: 8px; color: var(--warning); font-weight: 600;">Active Alerts & Reminders ⚠️</h3>
+        <p style="font-size: 2.5rem; font-weight: 700; color: var(--warning);">${totalAlerts}</p>
+        <p class="text-xs text-muted" style="margin-top: 8px;">Click to view follow-ups</p>
       </div>
     </div>
 

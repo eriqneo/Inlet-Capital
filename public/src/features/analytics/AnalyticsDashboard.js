@@ -18,7 +18,8 @@ export const renderAnalyticsDashboard = async () => {
   const totalMembers = members.length;
   const activeLoans = loans.filter(l => l.status === 'disbursed' || (l.status === 'approved' && l.disbursementDate));
   const loanPortfolio = activeLoans.reduce((sum, l) => sum + l.totalLiability, 0);
-  const totalSavings = members.reduce((sum, m) => sum + (m.totalSavings || 0), 0) + groups.reduce((sum, g) => sum + (g.totalSavings || 0), 0);
+  // Live computation from raw savings transactions (amounts are already signed)
+  const totalSavings = savings.reduce((sum, s) => sum + s.amount, 0);
   
   const totalRepaid = repayments.reduce((sum, r) => sum + r.amount, 0);
   const totalLiabilityOverall = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursementDate).reduce((sum, l) => sum + l.totalLiability, 0);
@@ -52,9 +53,12 @@ export const renderAnalyticsDashboard = async () => {
 
   // Compute Arrears Aging (With Pagination)
   const arrearsMap = {};
+  let totalArrearsGlobal = 0;
+  
   schedules.filter(s => s.status !== 'paid' && new Date(s.dueDate) < today).forEach(s => {
      const loan = loans.find(l => l.loanNo === s.loanId);
      if (loan) {
+        totalArrearsGlobal += s.amount;
         const id = loan.memberId || loan.groupId;
         if (!arrearsMap[id]) arrearsMap[id] = { name: '', id, amount: 0, daysOverdue: 0 };
         const member = members.find(m => m.regNo === id);
@@ -114,6 +118,12 @@ export const renderAnalyticsDashboard = async () => {
         <div class="kpi-label">Global Repayment Rate</div>
         <div class="kpi-value">${repaymentRate}%</div>
         <div class="kpi-trend ${repaymentRate > 90 ? 'trend-up' : 'trend-down'}">${repaymentRate > 90 ? '🎯 Healthy Portfolio' : '⚠ Action Required'}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon" style="background: rgba(239, 68, 68, 0.1); color: var(--danger);">⚠️</div>
+        <div class="kpi-label">Total Arrears</div>
+        <div class="kpi-value">KES ${totalArrearsGlobal.toLocaleString()}</div>
+        <div class="kpi-trend trend-down">Amount Overdue</div>
       </div>
     </div>
 

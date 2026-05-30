@@ -57,6 +57,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
               <option value="">Select a group...</option>
               ${groups.map(g => `<option value="${g.groupId}">${g.name} (${g.groupId})</option>`).join('')}
             </select>
+            <div id="group-autofill-status" style="display: none; margin-top: 8px; font-size: 0.75rem; padding: 6px 10px; border-radius: 4px; transition: all 0.3s ease;"></div>
           </div>
         </div>
 
@@ -76,6 +77,14 @@ export const renderLoanApplicationForm = async (params = {}) => {
               <option value="2">2 Months</option>
               <option value="3">3 Months</option>
               <option value="4">4 Months</option>
+              <option value="5">5 Months</option>
+              <option value="6">6 Months</option>
+              <option value="7">7 Months</option>
+              <option value="8">8 Months</option>
+              <option value="9">9 Months</option>
+              <option value="10">10 Months</option>
+              <option value="11">11 Months</option>
+              <option value="12">12 Months</option>
             </select>
           </div>
 
@@ -156,35 +165,82 @@ export const renderLoanApplicationForm = async (params = {}) => {
     </form>
   `;
 
-  // Logic: Show/Hide Applicant Selectors
+  // Logic: Show/Hide Applicant Selectors & Auto-fill
   const typeSelect = container.querySelector('#loan-type');
   const memberGroup = container.querySelector('#member-select-group');
   const groupGroup = container.querySelector('#group-select-group');
+  const memberSelect = container.querySelector('#member-select');
+  const groupSelect = container.querySelector('#group-select');
+  const autofillStatus = container.querySelector('#group-autofill-status');
+
+  memberSelect.onchange = () => {
+    if (typeSelect.value !== 'group-member') {
+      autofillStatus.style.display = 'none';
+      groupSelect.disabled = false;
+      return;
+    }
+
+    const selectedRegNo = memberSelect.value;
+    if (!selectedRegNo) {
+      autofillStatus.style.display = 'none';
+      groupSelect.value = '';
+      groupSelect.disabled = false;
+      return;
+    }
+
+    const member = members.find(m => m.regNo === selectedRegNo);
+    const groupId = member ? member.groupId : null;
+    
+    if (groupId) {
+      groupSelect.value = groupId;
+      const groupName = groups.find(g => g.groupId === groupId)?.name;
+      autofillStatus.innerHTML = `✅ Auto-filled: <strong>${groupName}</strong> (${groupId})`;
+      autofillStatus.style.background = 'rgba(16, 185, 129, 0.1)';
+      autofillStatus.style.color = 'var(--success)';
+      autofillStatus.style.display = 'block';
+      groupSelect.disabled = true; // Lock the field
+    } else {
+      groupSelect.value = '';
+      groupSelect.disabled = false;
+      autofillStatus.innerHTML = `⚠️ Member is not in any group. Consider using Individual Loan.`;
+      autofillStatus.style.background = 'rgba(239, 68, 68, 0.1)';
+      autofillStatus.style.color = 'var(--danger)';
+      autofillStatus.style.display = 'block';
+    }
+  };
 
   typeSelect.onchange = () => {
     if (typeSelect.value === 'individual') {
       memberGroup.style.display = 'block';
       groupGroup.style.display = 'none';
+      autofillStatus.style.display = 'none';
+      groupSelect.disabled = false;
     } else if (typeSelect.value === 'group') {
       memberGroup.style.display = 'none';
       groupGroup.style.display = 'block';
+      autofillStatus.style.display = 'none';
+      groupSelect.disabled = false;
     } else {
       memberGroup.style.display = 'block';
       groupGroup.style.display = 'block';
+      memberSelect.dispatchEvent(new Event('change')); // Trigger auto-fill if member is already selected
     }
   };
 
   // Pre-fill from Params
   if (params.memberId) {
-    typeSelect.value = 'individual';
-    typeSelect.dispatchEvent(new Event('change'));
-    const memberSelect = container.querySelector('#member-select');
+    const member = members.find(m => m.regNo === params.memberId);
+    if (member && member.groupId) {
+      typeSelect.value = 'group-member';
+    } else {
+      typeSelect.value = 'individual';
+    }
     memberSelect.value = params.memberId;
+    typeSelect.dispatchEvent(new Event('change'));
   } else if (params.groupId) {
     typeSelect.value = 'group';
-    typeSelect.dispatchEvent(new Event('change'));
-    const groupSelect = container.querySelector('#group-select');
     groupSelect.value = params.groupId;
+    typeSelect.dispatchEvent(new Event('change'));
   }
 
   // Logic: Real-time Calculations
@@ -268,6 +324,11 @@ export const renderLoanApplicationForm = async (params = {}) => {
   const form = container.querySelector('#loan-app-form');
   form.onsubmit = async (e) => {
     e.preventDefault();
+    
+    // Ensure disabled groupSelect is included in FormData
+    const groupSelectSubmit = container.querySelector('#group-select');
+    if (groupSelectSubmit) groupSelectSubmit.disabled = false;
+    
     const formData = new FormData(form);
     const rawData = Object.fromEntries(formData.entries());
     

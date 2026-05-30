@@ -6,7 +6,7 @@ export const renderReportsDashboard = async () => {
   const container = document.createElement('div');
   
   // Fetch all required data for reports
-  const [members, groups, loans, expenses, schedules, savings, repayments, groupMembers, feesLog] = await Promise.all([
+  const [members, groups, loans, expenses, schedules, savings, repayments, feesLog] = await Promise.all([
     getAll('members'),
     getAll('groups'),
     getAll('loans'),
@@ -14,7 +14,6 @@ export const renderReportsDashboard = async () => {
     getAll('loan_schedule'),
     getAll('savings'),
     getAll('loan_repayments'),
-    getAll('group_members'),
     getAll('fees_log')
   ]);
 
@@ -115,11 +114,12 @@ export const renderReportsDashboard = async () => {
             <thead>
               <tr>
                 <th>Name / ID</th>
+                <th>Group</th>
                 <th>Phone</th>
                 <th>A.Savings <span title="Accumulated Savings — total deposits by this member" style="cursor:help; opacity:0.6;">ⓘ</span></th>
-                <th>Total Loan</th>
-                <th>Total Repaid</th>
                 <th>OL Balance</th>
+                <th>Total Repaid</th>
+                <th style="color: var(--danger);">Arrears</th>
                 <th>Progress</th>
                 <th>Status</th>
               </tr>
@@ -161,6 +161,7 @@ export const renderReportsDashboard = async () => {
               <tr>
                 <th>Loan No</th>
                 <th>Client</th>
+                <th>Group</th>
                 <th>Disbursed</th>
                 <th>Start Date</th>
                 <th>Period</th>
@@ -183,6 +184,7 @@ export const renderReportsDashboard = async () => {
               <tr>
                 <th>Reg No / Date</th>
                 <th>Name</th>
+                <th>Group</th>
                 <th>ID / Phone</th>
                 <th>Reg Fee</th>
                 <th>Next of Kin</th>
@@ -208,6 +210,7 @@ export const renderReportsDashboard = async () => {
                 <th>Date / Time</th>
                 <th>Type</th>
                 <th>Client / Member</th>
+                <th>Group</th>
                 <th>Reference</th>
                 <th>Amount</th>
                 <th>Method</th>
@@ -263,7 +266,7 @@ export const renderReportsDashboard = async () => {
   const updateIndividuals = () => {
     const filtered = members.filter(m => {
       if (activeFilters.individuals === 'all') return true;
-      const isGroupMember = groupMembers.some(gm => gm.memberId === m.regNo);
+      const isGroupMember = !!m.groupId;
       if (activeFilters.individuals === 'individual') return !isGroupMember;
       if (activeFilters.individuals === 'group') return isGroupMember;
       return true;
@@ -281,20 +284,24 @@ export const renderReportsDashboard = async () => {
       const percentRepaid = totalLiability > 0 ? ((totalRepaid / totalLiability) * 100).toFixed(1) : (mLoans.length > 0 ? 100 : 0);
       const overdueSchedules = schedules.filter(s => mLoans.some(ml => ml.loanNo === s.loanId) && s.status !== 'paid' && new Date(s.dueDate) < new Date());
       const onTrack = overdueSchedules.length === 0;
+      const totalArrears = overdueSchedules.reduce((sum, s) => sum + (s.amount || 0), 0);
 
       // Active Logic: Savings in last 90 days
       const mSavings = savings.filter(s => s.memberId === m.regNo);
       const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
       const isInactive = !lastSavingsDate || (new Date() - lastSavingsDate > 90 * 24 * 60 * 60 * 1000);
 
+      const groupName = m.groupId ? (groups.find(g => g.groupId === m.groupId)?.name || m.groupId) : 'Individual';
+
       return `
         <tr>
           <td><div class="font-semibold">${m.fullName}</div><div class="text-xs text-muted">${m.idNo}</div></td>
+          <td><span class="badge badge-outline" style="font-size: 0.65rem;">${groupName}</span></td>
           <td>${m.phone}</td>
           <td>KES ${(m.totalSavings || 0).toLocaleString()}</td>
-          <td>KES ${totalLiability.toLocaleString()}</td>
-          <td class="text-success font-semibold">KES ${totalRepaid.toLocaleString()}</td>
           <td class="text-danger font-semibold">KES ${olBalance.toLocaleString()}</td>
+          <td class="text-success font-semibold">KES ${totalRepaid.toLocaleString()}</td>
+          <td class="text-danger font-bold">KES ${totalArrears.toLocaleString()}</td>
           <td>
             <div style="display: flex; align-items: center; gap: 8px;">
               <div style="flex: 1; height: 6px; background: var(--bg-light); border-radius: 3px; overflow: hidden; min-width: 60px;">
@@ -323,7 +330,7 @@ export const renderReportsDashboard = async () => {
 
   const updateGroups = () => {
     const groupData = groups.map(g => {
-      const gMembers = groupMembers.filter(gm => gm.groupId === g.groupId).map(gm => members.find(m => m.regNo === gm.memberId)).filter(Boolean);
+      const gMembers = members.filter(m => m.groupId === g.groupId);
       
       let activeCount = 0;
       let inactiveCount = 0;
@@ -394,10 +401,14 @@ export const renderReportsDashboard = async () => {
     
     container.querySelector('#disbursements-table-body').innerHTML = paginated.map(l => {
       let clientName = 'Unknown';
+      let groupName = 'Individual';
       if (l.memberId) {
-        clientName = members.find(m => m.regNo === l.memberId)?.fullName || l.memberId;
+        const member = members.find(m => m.regNo === l.memberId);
+        clientName = member?.fullName || l.memberId;
+        if (member && member.groupId) groupName = groups.find(g => g.groupId === member.groupId)?.name || member.groupId;
       } else if (l.groupId) {
         clientName = groups.find(g => g.groupId === l.groupId)?.name || l.groupId;
+        groupName = clientName;
       }
 
       return `
@@ -407,6 +418,7 @@ export const renderReportsDashboard = async () => {
           <div class="font-semibold">${clientName}</div>
           <div class="text-xs text-muted">${l.memberId || l.groupId}</div>
         </td>
+        <td><span class="badge badge-outline" style="font-size: 0.65rem;">${groupName}</span></td>
         <td class="text-success font-semibold">KES ${l.approvedAmount.toLocaleString()}</td>
         <td>${formatDate(l.disbursementDate)}</td>
         <td>${l.period} Months</td>
@@ -439,18 +451,23 @@ export const renderReportsDashboard = async () => {
     const start = (pages.registrations - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
     
-    container.querySelector('#registrations-table-body').innerHTML = paginated.map(m => `
+    container.querySelector('#registrations-table-body').innerHTML = paginated.map(m => {
+      const groupName = m.groupId ? (groups.find(g => g.groupId === m.groupId)?.name || m.groupId) : 'Individual';
+
+      return `
       <tr>
         <td><div class="font-semibold">${m.regNo}</div><div class="text-xs text-muted">${formatDate(m.registrationDate)}</div></td>
         <td>
           <div class="font-semibold">${m.fullName}</div>
           <div class="text-xs text-muted">DoB: ${formatDate(m.dob)}</div>
         </td>
+        <td><span class="badge badge-outline" style="font-size: 0.65rem;">${groupName}</span></td>
         <td><div>${m.idNo}</div><div class="text-xs text-muted">${m.phone}</div></td>
         <td>KES ${(m.registrationFee || 0).toLocaleString()}</td>
         <td>${m.nokName} (${m.nokRelationship})</td>
         <td><a href="tel:${m.nokPhone}" style="color: var(--primary); text-decoration: none;">${m.nokPhone || '-'}</a></td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
     
     container.querySelector('#filter-count').textContent = `Showing ${filtered.length} of ${members.length} records`;
     const pag = container.querySelector('#registrations-pagination');
@@ -512,7 +529,23 @@ export const renderReportsDashboard = async () => {
     const paginated = filtered.slice(start, start + pageSize);
 
     container.querySelector('#cashflow-table-body').innerHTML = paginated.map(e => {
-      let clientName = members.find(m => m.regNo === e.client)?.fullName || groups.find(g => g.groupId === e.client)?.name || e.client;
+      let member = members.find(m => m.regNo === e.client);
+      let group = groups.find(g => g.groupId === e.client);
+
+      if (!member && !group && e.client && e.client.startsWith('LN-')) {
+        const loan = loans.find(l => l.loanNo === e.client);
+        if (loan && loan.memberId) member = members.find(m => m.regNo === loan.memberId);
+        else if (loan && loan.groupId) group = groups.find(g => g.groupId === loan.groupId);
+      }
+
+      let clientName = member?.fullName || group?.name || e.client;
+      let groupName = 'Individual';
+      if (member && member.groupId) {
+        groupName = groups.find(g => g.groupId === member.groupId)?.name || member.groupId;
+      } else if (group) {
+        groupName = group.name;
+      }
+
       return `
         <tr>
           <td>
@@ -524,6 +557,7 @@ export const renderReportsDashboard = async () => {
             <div class="font-semibold">${clientName}</div>
             <div class="text-xs text-muted">${e.client}</div>
           </td>
+          <td><span class="badge badge-outline" style="font-size: 0.65rem;">${groupName}</span></td>
           <td>${e.ref}</td>
           <td class="font-bold text-success">KES ${e.amount.toLocaleString()}</td>
           <td><span class="text-xs">${e.method}</span></td>
@@ -548,6 +582,8 @@ export const renderReportsDashboard = async () => {
       if (!loan || !['disbursed', 'approved', 'completed', 'closed'].includes(loan.status) || !loan.disbursementDate) return null;
       
       const member = members.find(m => m.regNo === loan.memberId);
+      const groupName = (member && member.groupId) ? (groups.find(g => g.groupId === member.groupId)?.name || member.groupId) : 'Individual';
+
       const dueDate = new Date(s.dueDate);
       const diffTime = now - dueDate;
       const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
@@ -562,7 +598,7 @@ export const renderReportsDashboard = async () => {
       else if (dueDate <= upcomingThreshold) { priority = 'UPCOMING'; color = '#3b82f6'; label = 'DUE IN ' + Math.abs(diffDays) + ' DAYS'; }
       else return null;
 
-      return { ...s, loan, member, diffDays, priority, color, label };
+      return { ...s, loan, member, groupName, diffDays, priority, color, label };
     }).filter(Boolean).sort((a, b) => b.diffDays - a.diffDays);
 
     const counts = { critical: 0, urgent: 0, today: 0, upcoming: 0 };
@@ -588,7 +624,7 @@ export const renderReportsDashboard = async () => {
           <div>
             <span class="text-xs font-bold" style="color: ${a.color};">${a.label}</span>
             <h3 style="margin: 4px 0 0 0; font-size: 1rem;">${a.member?.fullName || 'Unknown'}</h3>
-            <div class="text-xs text-muted">${a.member?.regNo || 'N/A'}</div>
+            <div class="text-xs text-muted">${a.member?.regNo || 'N/A'} &bull; <span style="font-weight: 500; font-size: 0.7rem;">${a.groupName}</span></div>
           </div>
           <div class="text-right">
             <div class="text-xs text-muted">Amount Due</div>
@@ -756,7 +792,18 @@ export const renderReportsDashboard = async () => {
     notify.success(`${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} report exported to Excel!`);
   };
 
-  updateFiltersUI('pl'); // Initial state
+  // Initial state based on URL or default
+  const hashObj = window.location.hash.split('?');
+  let initialTab = 'pl';
+  if (hashObj.length > 1) {
+    const params = new URLSearchParams(hashObj[1]);
+    if (params.get('tab')) {
+      initialTab = params.get('tab');
+    }
+  }
+
+  const initialBtn = Array.from(tabs).find(t => t.dataset.tab === initialTab) || tabs[0];
+  initialBtn.click();
 
   return container;
 };

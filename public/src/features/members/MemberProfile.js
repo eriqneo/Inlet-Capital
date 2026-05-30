@@ -1,4 +1,4 @@
-import { getById, getAll, put } from '../../core/db.js';
+import { getById, getAll, put, remove } from '../../core/db.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate, initDateMask, parseInputDate, formatToInputDate } from '../../core/utils.js';
 import { openCamera } from '../../components/Camera.js';
@@ -130,6 +130,78 @@ export const renderMemberProfile = async (params) => {
       </div>
     </div>
 
+    <!-- Edit Loan Modal -->
+    <div id="edit-loan-modal" class="modal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); align-items: center; justify-content: center;">
+      <div class="card" style="width: 90%; max-width: 500px; position: relative;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px;">
+          <h2 class="text-lg">Edit Loan</h2>
+          <button id="close-loan-modal-btn" style="background: transparent; border: none; font-size: 24px; cursor: pointer;">&times;</button>
+        </div>
+        <form id="edit-loan-form">
+          <input type="hidden" name="loanNo" id="edit-loan-no" />
+          <div class="form-group">
+            <label class="form-label">Amount Applied (KES)</label>
+            <input type="number" name="amountApplied" id="edit-loan-amount" class="form-control" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Status</label>
+            <select name="status" id="edit-loan-status" class="form-control" required>
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="partial_approved">Partial Approved</option>
+              <option value="disbursed">Disbursed</option>
+              <option value="completed">Completed</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Application Date</label>
+            <input type="date" name="applicationDate" id="edit-loan-date" class="form-control" required />
+          </div>
+          <div style="margin-top: 24px; display: flex; justify-content: flex-end; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border-color);">
+            <button type="button" id="cancel-loan-modal-btn" class="btn btn-outline">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save Changes</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Edit Savings Modal -->
+    <div id="edit-savings-modal" class="modal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); align-items: center; justify-content: center;">
+      <div class="card" style="width: 90%; max-width: 500px; position: relative;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px;">
+          <h2 class="text-lg">Edit Savings Record</h2>
+          <button id="close-savings-modal-btn" style="background: transparent; border: none; font-size: 24px; cursor: pointer;">&times;</button>
+        </div>
+        <form id="edit-savings-form">
+          <input type="hidden" name="id" id="edit-savings-id" />
+          <div class="form-group">
+            <label class="form-label">Amount (KES)</label>
+            <input type="number" name="amount" id="edit-savings-amount" class="form-control" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Transaction Type</label>
+            <select name="type" id="edit-savings-type" class="form-control" required>
+              <option value="deposit">Deposit</option>
+              <option value="withdrawal">Withdrawal</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Date</label>
+            <input type="date" name="date" id="edit-savings-date" class="form-control" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Reference</label>
+            <input type="text" name="reference" id="edit-savings-ref" class="form-control" />
+          </div>
+          <div style="margin-top: 24px; display: flex; justify-content: flex-end; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border-color);">
+            <button type="button" id="cancel-savings-modal-btn" class="btn btn-outline">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save Changes</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <div style="display: grid; grid-template-columns: 300px 1fr; gap: 24px;">
       <!-- Sidebar Info -->
       <div>
@@ -215,6 +287,7 @@ export const renderMemberProfile = async (params) => {
                       <th>Type</th>
                       <th>Amount</th>
                       <th>Ref</th>
+                      <th>Action</th>
                     </tr>
                   </thead>
                   <tbody id="member-savings-body"></tbody>
@@ -273,7 +346,13 @@ export const renderMemberProfile = async (params) => {
           </span>
         </td>
         <td>${formatDate(l.applicationDate)}</td>
-        <td><button class="btn btn-outline btn-xs" onclick="window.location.hash = '#/loans/${l.loanNo}'">View</button></td>
+        <td>
+          <div style="display:flex; gap:4px;">
+            <button class="btn btn-outline btn-xs" onclick="window.location.hash = '#/loans/${l.loanNo}'">View</button>
+            <button class="btn btn-primary btn-xs edit-loan-btn" data-id="${l.loanNo}">Edit</button>
+            <button class="btn btn-danger btn-xs delete-loan-btn" data-id="${l.loanNo}">Delete</button>
+          </div>
+        </td>
       </tr>`).join('');
 
     const pag = container.querySelector('#member-loans-pagination');
@@ -293,6 +372,12 @@ export const renderMemberProfile = async (params) => {
         <td><span class="badge" style="background: ${s.type === 'deposit' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'}; color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type.toUpperCase()}</span></td>
         <td class="font-semibold" style="color: ${s.amount > 0 ? 'var(--success)' : 'var(--danger)'}">${s.amount > 0 ? '+' : ''}${s.amount.toLocaleString()}</td>
         <td class="text-xs text-muted">${s.reference || '-'}</td>
+        <td>
+          <div style="display:flex; gap:4px;">
+            <button class="btn btn-primary btn-xs edit-savings-btn" data-id="${s.id}">Edit</button>
+            <button class="btn btn-danger btn-xs delete-savings-btn" data-id="${s.id}">Delete</button>
+          </div>
+        </td>
       </tr>`).join('');
 
     const pag = container.querySelector('#member-savings-pagination');
@@ -371,6 +456,121 @@ export const renderMemberProfile = async (params) => {
       container.appendChild(newProfile);
     } catch (err) {
       notify.error('Error updating profile: ' + err.message);
+    }
+  };
+
+  // --- Edit & Delete functionality for Loans & Savings ---
+  container.addEventListener('click', async (e) => {
+    // Delete Loan
+    if (e.target.classList.contains('delete-loan-btn')) {
+      const id = e.target.dataset.id;
+      if (confirm('Are you sure you want to delete this loan? This action cannot be undone.')) {
+        try {
+          await remove('loans', id);
+          notify.success('Loan deleted successfully');
+          const newProfile = await renderMemberProfile(params);
+          container.innerHTML = '';
+          container.appendChild(newProfile);
+        } catch (err) {
+          notify.error('Error deleting loan: ' + err.message);
+        }
+      }
+    }
+
+    // Edit Loan
+    if (e.target.classList.contains('edit-loan-btn')) {
+      const id = e.target.dataset.id;
+      const loan = memberLoans.find(l => l.loanNo === id);
+      if (loan) {
+        container.querySelector('#edit-loan-no').value = loan.loanNo;
+        container.querySelector('#edit-loan-amount').value = loan.amountApplied;
+        container.querySelector('#edit-loan-status').value = loan.status;
+        container.querySelector('#edit-loan-date').value = loan.applicationDate.split('T')[0];
+        container.querySelector('#edit-loan-modal').style.display = 'flex';
+      }
+    }
+
+    // Delete Savings
+    if (e.target.classList.contains('delete-savings-btn')) {
+      const id = parseInt(e.target.dataset.id);
+      if (confirm('Are you sure you want to delete this savings record? This action cannot be undone.')) {
+        try {
+          await remove('savings', id);
+          notify.success('Savings record deleted');
+          const newProfile = await renderMemberProfile(params);
+          container.innerHTML = '';
+          container.appendChild(newProfile);
+        } catch (err) {
+          notify.error('Error deleting savings: ' + err.message);
+        }
+      }
+    }
+
+    // Edit Savings
+    if (e.target.classList.contains('edit-savings-btn')) {
+      const id = parseInt(e.target.dataset.id);
+      const savings = memberSavings.find(s => s.id === id);
+      if (savings) {
+        container.querySelector('#edit-savings-id').value = savings.id;
+        container.querySelector('#edit-savings-amount').value = Math.abs(savings.amount);
+        container.querySelector('#edit-savings-type').value = savings.amount > 0 ? 'deposit' : 'withdrawal';
+        container.querySelector('#edit-savings-date').value = savings.date.split('T')[0];
+        container.querySelector('#edit-savings-ref').value = savings.reference || '';
+        container.querySelector('#edit-savings-modal').style.display = 'flex';
+      }
+    }
+  });
+
+  // Modal Closers
+  container.querySelector('#close-loan-modal-btn').onclick = () => container.querySelector('#edit-loan-modal').style.display = 'none';
+  container.querySelector('#cancel-loan-modal-btn').onclick = () => container.querySelector('#edit-loan-modal').style.display = 'none';
+
+  container.querySelector('#close-savings-modal-btn').onclick = () => container.querySelector('#edit-savings-modal').style.display = 'none';
+  container.querySelector('#cancel-savings-modal-btn').onclick = () => container.querySelector('#edit-savings-modal').style.display = 'none';
+
+  // Submit Edit Loan
+  container.querySelector('#edit-loan-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const data = Object.fromEntries(formData.entries());
+    const loan = memberLoans.find(l => l.loanNo === data.loanNo);
+    if (loan) {
+      loan.amountApplied = parseFloat(data.amountApplied);
+      loan.status = data.status;
+      loan.applicationDate = data.applicationDate;
+      try {
+        await put('loans', loan);
+        notify.success('Loan updated');
+        const newProfile = await renderMemberProfile(params);
+        container.innerHTML = '';
+        container.appendChild(newProfile);
+      } catch (err) {
+        notify.error('Error updating loan: ' + err.message);
+      }
+    }
+  };
+
+  // Submit Edit Savings
+  container.querySelector('#edit-savings-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const data = Object.fromEntries(formData.entries());
+    const savings = memberSavings.find(s => s.id === parseInt(data.id));
+    if (savings) {
+      const amount = parseFloat(data.amount);
+      savings.amount = data.type === 'deposit' ? Math.abs(amount) : -Math.abs(amount);
+      savings.type = data.type;
+      savings.date = data.date;
+      savings.reference = data.reference;
+      try {
+        await put('savings', savings);
+        notify.success('Savings updated');
+        const newProfile = await renderMemberProfile(params);
+        container.innerHTML = '';
+        container.appendChild(newProfile);
+      } catch (err) {
+        notify.error('Error updating savings: ' + err.message);
+      }
     }
   };
 

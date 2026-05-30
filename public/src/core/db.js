@@ -120,3 +120,14 @@ export const put = async (storeName, data) => {
     request.onerror = () => reject(request.error);
   });
 };
+
+export const remove = async (storeName, id) => {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(storeName, 'readwrite');
+    const store = transaction.objectStore(storeName);
+    const request = store.delete(id);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+};
