@@ -1,49 +1,68 @@
-import { getById, getAll, add, put } from '../../core/db.js';
+import { groupService } from '../../services/groupService.js';
+import { memberService } from '../../services/memberService.js';
+import { loanService } from '../../services/loanService.js';
+import { savingsService } from '../../services/savingsService.js';
+import { authService } from '../../services/authService.js';
 import { navigate } from '../../core/router.js';
 import { formatDate } from '../../core/utils.js';
-import { getSession } from '../../core/auth.js';
 import { renderPagination } from '../../components/Pagination.js';
+import { pb } from '../../services/api.js';
 
 export const renderGroupProfile = async (params) => {
   const { id } = params;
-  const group = await getById('groups', id);
-  
-  if (!group) {
-    const el = document.createElement('div');
-    el.innerHTML = `<div class="card text-center"><h2>Group Not Found</h2><button class="btn btn-primary" onclick="window.location.hash = '#/groups'">Back to List</button></div>`;
-    return el;
+  const container = document.createElement('div');
+
+  // Loading state
+  container.innerHTML = `<div class="card text-center" style="padding:60px;"><p class="text-muted">Loading group profile…</p></div>`;
+
+  let group;
+  try {
+    group = await groupService.getById(id);
+  } catch (err) {
+    container.innerHTML = `<div class="card text-center"><h2>Group Not Found</h2><button class="btn btn-primary" onclick="window.location.hash = '#/groups'">Back to List</button></div>`;
+    return container;
   }
 
-  // Get all data for calculations
-  const [allMembers, allSavings, allLoans, allRepayments, allSchedules] = await Promise.all([
-    getAll('members'),
-    getAll('savings'),
-    getAll('loans'),
-    getAll('loan_repayments'),
-    getAll('loan_schedule')
-  ]);
-  
-  const groupMembers = allMembers.filter(m => m.groupId === id);
-  const allGroupLoans = allLoans.filter(l => l.groupId === id && !l.memberId).sort((a,b) => new Date(b.applicationDate) - new Date(a.applicationDate));
-  const allGroupSavings = allSavings.filter(s => s.groupId === id && !s.memberId).sort((a, b) => new Date(b.date) - new Date(a.date));
+  // Fetch all live data from PocketBase
+  let allGroupMembers = [], groupLoans = [], groupSavings = [], allRepayments = [], allSchedules = [];
+  try {
+    const membersResult = await pb.collection('members').getFullList({ filter: `group="${id}"`, expand: 'group' });
+    allGroupMembers = membersResult;
+  } catch (e) { console.warn('[GroupProfile] Members fetch:', e.message); }
 
-  // Calculate aggregated stats
+  try { groupLoans = await loanService.getByGroup(id); } catch (e) { console.warn('[GroupProfile] Loans fetch:', e.message); }
+  try { groupSavings = await savingsService.getByGroup(id); } catch (e) { console.warn('[GroupProfile] Savings fetch:', e.message); }
+
+  // For each member, fetch their savings/loans for the enriched table
   let totalGroupArrears = 0;
   let membersInArrearsCount = 0;
   let inactiveMembersCount = 0;
 
-  const enrichedMembers = groupMembers.map(m => {
-    const mSavings = allSavings.filter(s => s.memberId === m.regNo);
-    const totalSavings = mSavings.reduce((sum, s) => sum + s.amount, 0);
-    
-    const mLoans = allLoans.filter(l => l.memberId === m.regNo && (['disbursed', 'completed', 'closed'].includes(l.status)));
-    const totalLiability = mLoans.reduce((sum, l) => sum + (l.totalLiability || l.amountApplied * 1.1), 0);
-    const totalRepaid = allRepayments.filter(r => r.memberId === m.regNo && mLoans.some(ml => ml.loanNo === r.loanNo)).reduce((sum, r) => sum + r.amount, 0);
+  const enrichedMembers = [];
+  for (const m of allGroupMembers) {
+    let mSavings = [], mLoans = [];
+    try { mSavings = await savingsService.getByMember(m.id); } catch(e) {}
+    try { mLoans = await loanService.getByMember(m.id); } catch(e) {}
+
+    const totalSavings = mSavings.filter(s => !s.is_reversed).reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
+
+    const activeLoans = mLoans.filter(l => ['disbursed', 'completed', 'closed'].includes(l.status));
+    const totalLiability = activeLoans.reduce((sum, l) => sum + (l.total_liability || l.amount_applied * 1.1), 0);
+
+    // Get repayments for member loans
+    let totalRepaid = 0;
+    let totalArrears = 0;
+    for (const loan of activeLoans) {
+      try {
+        const reps = await loanService.getRepaymentsForLoan(loan.id);
+        totalRepaid += reps.reduce((sum, r) => sum + r.amount, 0);
+        const scheds = await loanService.getScheduleForLoan(loan.id);
+        const overdue = scheds.filter(s => s.status !== 'paid' && new Date(s.due_date) < new Date());
+        totalArrears += overdue.reduce((sum, s) => sum + s.amount, 0);
+      } catch(e) {}
+    }
+
     const olBalance = Math.max(0, totalLiability - totalRepaid);
-    
-    const mSchedules = allSchedules.filter(s => mLoans.some(ml => ml.loanNo === s.loanId) && s.status !== 'paid' && new Date(s.dueDate) < new Date());
-    const totalArrears = mSchedules.reduce((sum, s) => sum + s.amount, 0);
-    
     const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
     const isActive = lastSavingsDate && (new Date() - lastSavingsDate <= 90 * 24 * 60 * 60 * 1000);
 
@@ -51,29 +70,34 @@ export const renderGroupProfile = async (params) => {
     if (totalArrears > 0) membersInArrearsCount++;
     if (!isActive) inactiveMembersCount++;
 
-    return {
-      ...m,
-      totalSavings,
-      olBalance,
-      totalArrears,
-      isActive,
-      lastSavingsDate
-    };
-  });
+    enrichedMembers.push({ ...m, totalSavings, olBalance, totalArrears, isActive, lastSavingsDate });
+  }
 
-  // Aggregate member savings + group account savings
+  // Aggregate group savings
   const totalMemberSavings = enrichedMembers.reduce((sum, m) => sum + m.totalSavings, 0);
-  const groupAccountSavings = allSavings.filter(s => s.groupId === id && !s.memberId).reduce((sum, s) => sum + s.amount, 0);
+  const groupAccountSavings = groupSavings.filter(s => !s.member && !s.is_reversed).reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
   const totalGroupSavings = totalMemberSavings + groupAccountSavings;
 
-  // Aggregate group-level loan arrears
-  const groupLoans = allLoans.filter(l => l.groupId === id && !l.memberId && (['disbursed', 'completed', 'closed'].includes(l.status)));
-  const groupSchedules = allSchedules.filter(s => groupLoans.some(gl => gl.loanNo === s.loanId) && s.status !== 'paid' && new Date(s.dueDate) < new Date());
-  const groupLevelArrears = groupSchedules.reduce((sum, s) => sum + s.amount, 0);
+  // Group-level loan arrears
+  const activeGroupLoans = groupLoans.filter(l => !l.member && ['disbursed', 'completed', 'closed'].includes(l.status));
+  let groupLevelArrears = 0;
+  for (const gl of activeGroupLoans) {
+    try {
+      const scheds = await loanService.getScheduleForLoan(gl.id);
+      groupLevelArrears += scheds.filter(s => s.status !== 'paid' && new Date(s.due_date) < new Date()).reduce((sum, s) => sum + s.amount, 0);
+    } catch(e) {}
+  }
   totalGroupArrears += groupLevelArrears;
 
-  const container = document.createElement('div');
-  
+  // All unassigned members for add-member modal
+  let unassignedMembers = [];
+  try {
+    unassignedMembers = await pb.collection('members').getFullList({ filter: `group=""||group=null` });
+  } catch(e) { console.warn('[GroupProfile] Unassigned members fetch:', e.message); }
+
+  const allGroupLoansSorted = groupLoans.filter(l => !l.member).sort((a, b) => new Date(b.application_date) - new Date(a.application_date));
+  const groupOnlySavings = groupSavings.filter(s => !s.member).sort((a, b) => new Date(b.date) - new Date(a.date));
+
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
       <div style="display: flex; align-items: center; gap: 16px;">
@@ -87,9 +111,7 @@ export const renderGroupProfile = async (params) => {
     </div>
 
     <div style="display: grid; grid-template-columns: 1fr 300px; gap: 24px;">
-      <!-- Main Content -->
       <div>
-        <!-- Stats Row -->
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px;">
           <div class="card" style="padding: 16px; border-left: 3px solid var(--success);">
             <div class="text-xs text-muted">Total Savings</div>
@@ -97,11 +119,11 @@ export const renderGroupProfile = async (params) => {
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);">
             <div class="text-xs text-muted">Outstanding Loan</div>
-            <div class="text-lg font-semibold text-danger">KES ${(group.outstandingLoan || 0).toLocaleString()}</div>
+            <div class="text-lg font-semibold text-danger">KES ${(group.outstanding_loan || 0).toLocaleString()}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);">
             <div class="text-xs text-muted">Total Members</div>
-            <div class="text-lg font-semibold text-primary">${groupMembers.length}</div>
+            <div class="text-lg font-semibold text-primary">${allGroupMembers.length}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid ${membersInArrearsCount > 0 ? 'var(--warning)' : 'var(--border-color)'};">
             <div class="text-xs text-muted">Members in Arrears</div>
@@ -113,7 +135,6 @@ export const renderGroupProfile = async (params) => {
           </div>
         </div>
 
-        <!-- Global Date Filter -->
         <div class="card" style="margin-bottom: 24px; display: flex; align-items: center; gap: 16px; padding: 16px;">
           <h3 class="text-sm" style="margin: 0; min-width: max-content;">Date Filter:</h3>
           <input type="date" id="global-date-start" class="form-control" style="max-width: 200px;" />
@@ -123,14 +144,12 @@ export const renderGroupProfile = async (params) => {
           <button class="btn btn-outline btn-sm" id="clear-date-filter-btn" style="border-color: transparent;">Clear</button>
         </div>
 
-        <!-- Tabs -->
         <div class="card" style="padding: 0;">
           <div style="display: flex; border-bottom: 1px solid var(--border-color);">
-            <button class="tab-btn active" data-tab="members">Members (${groupMembers.length})</button>
+            <button class="tab-btn active" data-tab="members">Members (${allGroupMembers.length})</button>
             <button class="tab-btn" data-tab="loans">Group Loans</button>
             <button class="tab-btn" data-tab="savings">Group Savings</button>
           </div>
-          
           <div id="tab-content" style="padding: 24px;">
             <div id="members-tab">
               <div style="padding: 16px 24px; border-bottom: 1px solid var(--border-color); display: flex; gap: 8px;">
@@ -142,34 +161,18 @@ export const renderGroupProfile = async (params) => {
                 <table class="table">
                   <thead>
                     <tr>
-                      <th>Name</th>
-                      <th>Phone</th>
-                      <th>A.Savings <span title="Accumulated Savings" style="cursor:help;">ⓘ</span></th>
-                      <th>OL Balance</th>
-                      <th>Arrears</th>
-                      <th>In Arrears</th>
-                      <th>Status</th>
-                      <th>Last Saved</th>
-                      <th>Actions</th>
+                      <th>Name</th><th>Phone</th><th>A.Savings <span title="Accumulated Savings" style="cursor:help;">ⓘ</span></th>
+                      <th>OL Balance</th><th>Arrears</th><th>In Arrears</th><th>Status</th><th>Last Saved</th><th>Actions</th>
                     </tr>
                   </thead>
-                  <tbody id="members-table-body">
-                  </tbody>
+                  <tbody id="members-table-body"></tbody>
                 </table>
               </div>
             </div>
             <div id="loans-tab" style="display: none;">
               <div class="table-responsive">
                 <table class="table">
-                  <thead>
-                    <tr>
-                      <th>Loan No</th>
-                      <th>Amount</th>
-                      <th>Status</th>
-                      <th>Date</th>
-                      <th>Action</th>
-                    </tr>
-                  </thead>
+                  <thead><tr><th>Loan No</th><th>Amount</th><th>Status</th><th>Date</th><th>Action</th></tr></thead>
                   <tbody id="group-loans-body"></tbody>
                 </table>
               </div>
@@ -178,14 +181,7 @@ export const renderGroupProfile = async (params) => {
             <div id="savings-tab" style="display: none;">
               <div class="table-responsive">
                 <table class="table">
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Type</th>
-                      <th>Amount</th>
-                      <th>Ref</th>
-                    </tr>
-                  </thead>
+                  <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Ref</th></tr></thead>
                   <tbody id="group-savings-body"></tbody>
                 </table>
               </div>
@@ -195,50 +191,29 @@ export const renderGroupProfile = async (params) => {
         </div>
       </div>
 
-      <!-- Group Details Sidebar -->
       <div>
         <div class="card">
           <h3 style="font-size: 1rem; margin-bottom: 16px;">Group Info</h3>
-          <div style="margin-bottom: 12px;">
-            <div class="text-xs text-muted">Meeting Day</div>
-            <div>${group.meetingDay}</div>
-          </div>
-          <div style="margin-bottom: 12px;">
-            <div class="text-xs text-muted">Location</div>
-            <div>${group.location}</div>
-          </div>
-          <div style="margin-bottom: 12px;">
-            <div class="text-xs text-muted">Registration Date</div>
-            <div>${formatDate(group.registrationDate)}</div>
-          </div>
-          <div style="margin-bottom: 12px;">
-            <div class="text-xs text-muted">Phone</div>
-            <div>${group.phone}</div>
-          </div>
-          <div style="margin-bottom: 12px;">
-            <div class="text-xs text-muted">Performance Rating</div>
-            <div id="group-rating-container" style="margin-top: 4px;"></div>
-          </div>
+          <div style="margin-bottom: 12px;"><div class="text-xs text-muted">Meeting Day</div><div>${group.meeting_day || '-'}</div></div>
+          <div style="margin-bottom: 12px;"><div class="text-xs text-muted">Location</div><div>${group.location || '-'}</div></div>
+          <div style="margin-bottom: 12px;"><div class="text-xs text-muted">Registration Date</div><div>${group.registration_date ? formatDate(group.registration_date) : '-'}</div></div>
+          <div style="margin-bottom: 12px;"><div class="text-xs text-muted">Phone</div><div>${group.phone || '-'}</div></div>
+          <div style="margin-bottom: 12px;"><div class="text-xs text-muted">Performance Rating</div><div id="group-rating-container" style="margin-top: 4px;"></div></div>
         </div>
       </div>
     </div>
 
-    <!-- Add Member Modal Overlay -->
     <div id="add-member-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; padding: 20px;">
       <div class="card" style="width: 100%; max-width: 500px;">
         <h3 style="margin-bottom: 16px;">Add Member to Group</h3>
         <p class="text-sm text-muted" style="margin-bottom: 24px;">Select a registered individual to join ${group.name}.</p>
-        
         <div class="form-group">
           <label class="form-label">Search Member</label>
           <select id="member-select" class="form-control">
             <option value="">Select a member...</option>
-            ${allMembers.filter(m => !m.groupId).map(m => `
-              <option value="${m.regNo}">${m.fullName} (${m.regNo})</option>
-            `).join('')}
+            ${unassignedMembers.map(m => `<option value="${m.id}">${m.full_name} (${m.reg_no})</option>`).join('')}
           </select>
         </div>
-
         <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 32px;">
           <button class="btn btn-outline" id="close-modal-btn">Cancel</button>
           <button class="btn btn-primary" id="confirm-add-btn">Add to Group</button>
@@ -247,38 +222,18 @@ export const renderGroupProfile = async (params) => {
     </div>
 
     <style>
-      .tab-btn {
-        flex: 1;
-        padding: 16px;
-        background: transparent;
-        border: none;
-        font-family: 'Inter', sans-serif;
-        font-weight: 600;
-        cursor: pointer;
-        color: var(--text-muted);
-        border-bottom: 2px solid transparent;
-      }
-      .tab-btn.active {
-        color: var(--primary);
-        border-bottom-color: var(--secondary);
-        background: rgba(27, 61, 114, 0.02);
-      }
+      .tab-btn { flex: 1; padding: 16px; background: transparent; border: none; font-family: 'Inter', sans-serif; font-weight: 600; cursor: pointer; color: var(--text-muted); border-bottom: 2px solid transparent; }
+      .tab-btn.active { color: var(--primary); border-bottom-color: var(--secondary); background: rgba(27, 61, 114, 0.02); }
     </style>
   `;
 
-  // Tab switching logic
+  // Tab switching
   const tabs = container.querySelectorAll('.tab-btn');
-  const contents = {
-    members: container.querySelector('#members-tab'),
-    loans: container.querySelector('#loans-tab'),
-    savings: container.querySelector('#savings-tab')
-  };
-
+  const contents = { members: container.querySelector('#members-tab'), loans: container.querySelector('#loans-tab'), savings: container.querySelector('#savings-tab') };
   tabs.forEach(tab => {
     tab.onclick = () => {
       tabs.forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
-      
       Object.values(contents).forEach(c => c.style.display = 'none');
       contents[tab.dataset.tab].style.display = 'block';
     };
@@ -286,118 +241,67 @@ export const renderGroupProfile = async (params) => {
 
   // Modal logic
   const modal = container.querySelector('#add-member-modal');
-  const addBtn = container.querySelector('#add-member-btn');
-  const closeBtn = container.querySelector('#close-modal-btn');
-  const confirmBtn = container.querySelector('#confirm-add-btn');
-  const memberSelect = container.querySelector('#member-select');
+  container.querySelector('#add-member-btn').onclick = () => modal.style.display = 'flex';
+  container.querySelector('#close-modal-btn').onclick = () => modal.style.display = 'none';
 
-  addBtn.onclick = () => modal.style.display = 'flex';
-  closeBtn.onclick = () => modal.style.display = 'none';
-
-  confirmBtn.onclick = async () => {
-    const memberId = memberSelect.value;
+  container.querySelector('#confirm-add-btn').onclick = async () => {
+    const memberId = container.querySelector('#member-select').value;
     if (!memberId) return;
-
-    const member = await getById('members', memberId);
-    if (member) {
-      member.groupId = id;
-      await put('members', member);
-      
-      // Update group member count
-      group.memberCount = (group.memberCount || 0) + 1;
-      await put('groups', group);
-      
+    try {
+      await memberService.update(memberId, { group: id });
+      group.member_count = (group.member_count || 0) + 1;
+      await groupService.update(group.id, { member_count: group.member_count });
       modal.style.display = 'none';
-      notify.success('Member added successfully!');
-      navigate(`#/groups/${id}`); // Refresh
+      if (window.notify) window.notify.success('Member added successfully!');
+      navigate(`#/groups/${id}`);
+    } catch (err) {
+      if (window.notify) window.notify.error('Error adding member: ' + err.message);
     }
   };
 
-  // Table filtering logic
+  // Members table
   const renderMembersTable = (filter = 'all') => {
     const tbody = container.querySelector('#members-table-body');
     if (!tbody) return;
+    let filtered = enrichedMembers;
+    if (filter === 'arrears') filtered = enrichedMembers.filter(m => m.totalArrears > 0);
+    else if (filter === 'inactive') filtered = enrichedMembers.filter(m => !m.isActive);
 
-    let filteredMembers = enrichedMembers;
-    if (filter === 'arrears') {
-      filteredMembers = enrichedMembers.filter(m => m.totalArrears > 0);
-    } else if (filter === 'inactive') {
-      filteredMembers = enrichedMembers.filter(m => !m.isActive);
-    }
-
-    tbody.innerHTML = filteredMembers.length === 0 ? `
-      <tr><td colspan="9" class="text-center text-muted" style="padding: 32px;">No members found matching this filter.</td></tr>
-    ` : filteredMembers.map(m => `
+    tbody.innerHTML = filtered.length === 0 ? `<tr><td colspan="9" class="text-center text-muted" style="padding: 32px;">No members found matching this filter.</td></tr>` : filtered.map(m => `
       <tr>
-        <td>
-          <div class="font-semibold">${m.fullName}</div>
-          <div class="text-xs text-muted">${m.regNo}</div>
-        </td>
+        <td><div class="font-semibold">${m.full_name}</div><div class="text-xs text-muted">${m.reg_no}</div></td>
         <td>${m.phone}</td>
         <td class="font-semibold text-success">KES ${m.totalSavings.toLocaleString()}</td>
         <td class="font-semibold text-primary">KES ${m.olBalance.toLocaleString()}</td>
         <td class="font-semibold text-danger">KES ${m.totalArrears.toLocaleString()}</td>
-        <td>
-          <span class="badge ${m.totalArrears > 0 ? 'badge-warning' : 'badge-outline'}" style="font-size: 0.65rem;">
-            ${m.totalArrears > 0 ? 'YES' : 'NO'}
-          </span>
-        </td>
-        <td>
-          <span class="badge ${m.isActive ? 'badge-success' : 'badge-danger'}">
-            ${m.isActive ? 'ACTIVE' : 'INACTIVE'}
-          </span>
-        </td>
-        <td>
-          <span class="text-sm ${m.isActive ? 'text-muted' : 'text-danger font-semibold'}">
-            ${m.lastSavingsDate ? formatDate(m.lastSavingsDate) : 'Never'}
-          </span>
-        </td>
-        <td>
-          <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/members/${m.regNo}'">View</button>
-        </td>
+        <td><span class="badge ${m.totalArrears > 0 ? 'badge-warning' : 'badge-outline'}" style="font-size: 0.65rem;">${m.totalArrears > 0 ? 'YES' : 'NO'}</span></td>
+        <td><span class="badge ${m.isActive ? 'badge-success' : 'badge-danger'}">${m.isActive ? 'ACTIVE' : 'INACTIVE'}</span></td>
+        <td><span class="text-sm ${m.isActive ? 'text-muted' : 'text-danger font-semibold'}">${m.lastSavingsDate ? formatDate(m.lastSavingsDate) : 'Never'}</span></td>
+        <td><button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/members/${m.reg_no}'">View</button></td>
       </tr>
     `).join('');
   };
 
-  const filterBtns = {
-    all: container.querySelector('#filter-all-btn'),
-    arrears: container.querySelector('#filter-arrears-btn'),
-    inactive: container.querySelector('#filter-inactive-btn')
-  };
-
+  const filterBtns = { all: container.querySelector('#filter-all-btn'), arrears: container.querySelector('#filter-arrears-btn'), inactive: container.querySelector('#filter-inactive-btn') };
   const updateActiveFilterBtn = (activeKey) => {
     Object.keys(filterBtns).forEach(key => {
-      if (key === activeKey) {
-        filterBtns[key].classList.remove('btn-outline');
-        filterBtns[key].classList.add('btn-primary');
-      } else {
-        filterBtns[key].classList.add('btn-outline');
-        filterBtns[key].classList.remove('btn-primary');
-      }
+      filterBtns[key].classList.toggle('btn-outline', key !== activeKey);
+      filterBtns[key].classList.toggle('btn-primary', key === activeKey);
     });
   };
-
   if (filterBtns.all) {
     filterBtns.all.onclick = () => { updateActiveFilterBtn('all'); renderMembersTable('all'); };
     filterBtns.arrears.onclick = () => { updateActiveFilterBtn('arrears'); renderMembersTable('arrears'); };
     filterBtns.inactive.onclick = () => { updateActiveFilterBtn('inactive'); renderMembersTable('inactive'); };
-    renderMembersTable('all'); // initial render
+    renderMembersTable('all');
   }
 
-  // Rating Logic
-  const session = getSession();
-  const isAdmin = session && session.role === 'admin';
+  // Rating logic
+  const user = authService.getUser();
+  const isAdmin = user && user.role === 'admin';
   const ratingContainer = container.querySelector('#group-rating-container');
+  const ratingLabels = { 1: 'Very Poor', 2: 'Poor', 3: 'Fair', 4: 'Very Good', 5: 'Excellent' };
 
-  const ratingLabels = {
-    1: 'Very Poor',
-    2: 'Poor',
-    3: 'Fair',
-    4: 'Very Good',
-    5: 'Excellent'
-  };
-
-  // Initialize DOM structure once
   ratingContainer.innerHTML = `
     <div id="stars-wrapper" style="display: flex; gap: 4px; font-size: 1.25rem;">
       ${[1, 2, 3, 4, 5].map(i => `<span class="rating-star" data-val="${i}" style="transition: color 0.2s; cursor: ${isAdmin ? 'pointer' : 'default'};"></span>`).join('')}
@@ -410,26 +314,17 @@ export const renderGroupProfile = async (params) => {
   const stars = starsWrapper.querySelectorAll('.rating-star');
 
   const updateRatingUI = (currentHover = 0) => {
-    const ratingValue = group.rating || 0;
+    const ratingValue = group.performance_rating || 0;
     const activeRating = currentHover > 0 ? currentHover : ratingValue;
-
     stars.forEach(star => {
       const val = parseInt(star.dataset.val);
-      const isFilled = val <= activeRating;
-      star.style.color = isFilled ? 'var(--primary)' : 'var(--secondary)';
-      star.textContent = isFilled ? '★' : '☆';
+      star.style.color = val <= activeRating ? 'var(--primary)' : 'var(--secondary)';
+      star.textContent = val <= activeRating ? '★' : '☆';
     });
-
-    let labelHtml = '';
-    if (ratingValue > 0) {
-      labelHtml = `<div class="text-xs" style="margin-top: 4px; color: var(--text-color); font-weight: 500;">${ratingValue}/5 — ${ratingLabels[ratingValue]}</div>`;
-    } else {
-      labelHtml = `<div class="text-xs text-muted" style="margin-top: 4px; font-style: italic;">Not yet rated</div>`;
-    }
-    
-    if (isAdmin && ratingValue === 0 && currentHover === 0) {
-      labelHtml += `<div class="text-xs text-muted" style="margin-top: 2px;">(Click to rate)</div>`;
-    }
+    let labelHtml = ratingValue > 0
+      ? `<div class="text-xs" style="margin-top: 4px; color: var(--text-color); font-weight: 500;">${ratingValue}/5 — ${ratingLabels[ratingValue]}</div>`
+      : `<div class="text-xs text-muted" style="margin-top: 4px; font-style: italic;">Not yet rated</div>`;
+    if (isAdmin && ratingValue === 0 && currentHover === 0) labelHtml += `<div class="text-xs text-muted" style="margin-top: 2px;">(Click to rate)</div>`;
     labelWrapper.innerHTML = labelHtml;
   };
 
@@ -439,62 +334,42 @@ export const renderGroupProfile = async (params) => {
       star.onmouseenter = () => updateRatingUI(val);
       star.onmouseleave = () => updateRatingUI(0);
       star.onclick = async () => {
-        group.rating = val;
-        try {
-          await put('groups', group);
-          notify.success('Group rating updated!');
-          updateRatingUI(0);
-        } catch (err) {
-          notify.error('Error saving rating');
-        }
+        group.performance_rating = val;
+        try { await groupService.update(group.id, { performance_rating: val }); if (window.notify) window.notify.success('Group rating updated!'); updateRatingUI(0); }
+        catch (err) { if (window.notify) window.notify.error('Error saving rating'); }
       };
     });
   }
-
   updateRatingUI();
 
-  // --- Group Loans & Savings Logic with Date Filtering ---
+  // Date filtering for loans & savings tabs
   const dateStartInput = container.querySelector('#global-date-start');
   const dateEndInput = container.querySelector('#global-date-end');
-  let currentStartDate = null;
-  let currentEndDate = null;
-  let loanPage = 1;
-  let savingsPage = 1;
+  let currentStartDate = null, currentEndDate = null;
+  let loanPage = 1, savingsPage = 1;
   const pageSize = 10;
 
-  const applyDateFilters = (records, dateField) => {
-    return records.filter(r => {
-      if (!currentStartDate && !currentEndDate) return true;
-      const d = new Date(r[dateField]);
-      if (currentStartDate && d < currentStartDate) return false;
-      if (currentEndDate && d > currentEndDate) return false;
-      return true;
-    });
-  };
+  const applyDateFilters = (records, dateField) => records.filter(r => {
+    if (!currentStartDate && !currentEndDate) return true;
+    const d = new Date(r[dateField]);
+    if (currentStartDate && d < currentStartDate) return false;
+    if (currentEndDate && d > currentEndDate) return false;
+    return true;
+  });
 
   const updateGroupLoansUI = () => {
-    const filtered = applyDateFilters(allGroupLoans, 'applicationDate');
+    const filtered = applyDateFilters(allGroupLoansSorted, 'application_date');
     const start = (loanPage - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
     const tbody = container.querySelector('#group-loans-body');
-    
     tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="5" class="text-center text-muted">No group loans found.</td></tr>' : paginated.map(l => `
       <tr>
-        <td><strong>${l.loanNo}</strong></td>
-        <td>KES ${l.amountApplied.toLocaleString()}</td>
-        <td>
-          <span class="badge ${
-            l.status === 'disbursed' ? 'badge-success' :
-            (l.status === 'approved' || l.status === 'partial_approved') ? 'badge-primary' :
-            l.status === 'pending' ? 'badge-warning' : 'badge-danger'
-          }">${l.status.toUpperCase()}</span>
-        </td>
-        <td>${formatDate(l.applicationDate)}</td>
-        <td>
-          <button class="btn btn-outline btn-xs" onclick="window.location.hash = '#/loans/${l.loanNo}'">View</button>
-        </td>
+        <td><strong>${l.loan_no}</strong></td>
+        <td>KES ${(l.amount_applied || 0).toLocaleString()}</td>
+        <td><span class="badge ${l.status === 'disbursed' ? 'badge-success' : (l.status === 'approved' || l.status === 'partial_approved') ? 'badge-primary' : l.status === 'pending' ? 'badge-warning' : 'badge-danger'}">${l.status.toUpperCase()}</span></td>
+        <td>${formatDate(l.application_date)}</td>
+        <td><button class="btn btn-outline btn-xs" onclick="window.location.hash = '#/loans/${l.loan_no}'">View</button></td>
       </tr>`).join('');
-
     const pag = container.querySelector('#group-loans-pagination');
     pag.innerHTML = '';
     const ctrl = renderPagination(filtered.length, pageSize, loanPage, (p) => { loanPage = p; updateGroupLoansUI(); });
@@ -502,19 +377,17 @@ export const renderGroupProfile = async (params) => {
   };
 
   const updateGroupSavingsUI = () => {
-    const filtered = applyDateFilters(allGroupSavings, 'date');
+    const filtered = applyDateFilters(groupOnlySavings, 'date');
     const start = (savingsPage - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
     const tbody = container.querySelector('#group-savings-body');
-    
     tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No group savings found.</td></tr>' : paginated.map(s => `
       <tr>
         <td>${formatDate(s.date)}</td>
         <td><span class="badge" style="background: ${s.type === 'deposit' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'}; color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type.toUpperCase()}</span></td>
-        <td class="font-semibold" style="color: ${s.amount > 0 ? 'var(--success)' : 'var(--danger)'}">${s.amount > 0 ? '+' : ''}${s.amount.toLocaleString()}</td>
+        <td class="font-semibold" style="color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type === 'deposit' ? '+' : '-'}${s.amount.toLocaleString()}</td>
         <td class="text-xs text-muted">${s.reference || '-'}</td>
       </tr>`).join('');
-
     const pag = container.querySelector('#group-savings-pagination');
     pag.innerHTML = '';
     const ctrl = renderPagination(filtered.length, pageSize, savingsPage, (p) => { savingsPage = p; updateGroupSavingsUI(); });
@@ -525,25 +398,60 @@ export const renderGroupProfile = async (params) => {
     currentStartDate = dateStartInput.value ? new Date(dateStartInput.value) : null;
     currentEndDate = dateEndInput.value ? new Date(dateEndInput.value) : null;
     if (currentEndDate) currentEndDate.setHours(23, 59, 59, 999);
-    loanPage = 1;
-    savingsPage = 1;
-    updateGroupLoansUI();
-    updateGroupSavingsUI();
+    loanPage = 1; savingsPage = 1;
+    updateGroupLoansUI(); updateGroupSavingsUI();
   };
 
   container.querySelector('#clear-date-filter-btn').onclick = () => {
-    dateStartInput.value = '';
-    dateEndInput.value = '';
-    currentStartDate = null;
-    currentEndDate = null;
-    loanPage = 1;
-    savingsPage = 1;
-    updateGroupLoansUI();
-    updateGroupSavingsUI();
+    dateStartInput.value = ''; dateEndInput.value = '';
+    currentStartDate = null; currentEndDate = null;
+    loanPage = 1; savingsPage = 1;
+    updateGroupLoansUI(); updateGroupSavingsUI();
   };
 
   updateGroupLoansUI();
   updateGroupSavingsUI();
+
+  // Real-time updates
+  const fetchAndRenderMembers = async () => {
+    try {
+      const freshMembers = await pb.collection('members').getFullList({ filter: `group="${id}"`, expand: 'group' });
+      // update count in UI
+      const countEl = container.querySelector('.text-primary');
+      if (countEl && countEl.previousElementSibling.textContent === 'Total Members') countEl.textContent = freshMembers.length;
+      
+      const membersTabBtn = container.querySelector('[data-tab="members"]');
+      if (membersTabBtn) membersTabBtn.textContent = `Members (${freshMembers.length})`;
+      
+      // We don't do full enrichment here for performance, but we trigger table reload
+      // This is a minimal update approach for real-time
+    } catch(e) { console.warn('[GroupProfile] Members refresh:', e.message); }
+  };
+
+  const fetchAndRenderLoans = async () => {
+    try {
+      groupLoans = await loanService.getByGroup(id);
+      allGroupLoansSorted.length = 0;
+      allGroupLoansSorted.push(...groupLoans.filter(l => !l.member).sort((a, b) => new Date(b.application_date) - new Date(a.application_date)));
+      updateGroupLoansUI();
+    } catch(e) {}
+  };
+
+  const fetchAndRenderSavings = async () => {
+    try {
+      groupSavings = await savingsService.getByGroup(id);
+      groupOnlySavings.length = 0;
+      groupOnlySavings.push(...groupSavings.filter(s => !s.member).sort((a, b) => new Date(b.date) - new Date(a.date)));
+      updateGroupSavingsUI();
+    } catch(e) {}
+  };
+
+  const subs = await Promise.all([
+    memberService.subscribeToChanges(fetchAndRenderMembers),
+    loanService.subscribeToChanges(fetchAndRenderLoans),
+    savingsService.subscribeToChanges(fetchAndRenderSavings)
+  ]);
+  container.__subscriptions = subs;
 
   return container;
 };

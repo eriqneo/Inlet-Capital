@@ -1,9 +1,9 @@
-import { getAll } from '../../core/db.js';
+import { memberService } from '../../services/memberService.js';
 import { renderPagination } from '../../components/Pagination.js';
 
 export const renderMemberList = async () => {
   const container = document.createElement('div');
-  const members = await getAll('members');
+  const members = await memberService.getAll();
   
   let currentPage = 1;
   const pageSize = 10;
@@ -61,16 +61,16 @@ export const renderMemberList = async () => {
               ${m.passportPhoto ? `<img src="${m.passportPhoto}" style="width: 100%; height: 100%; object-fit: cover;" />` : `<span style="font-size: 20px;">👤</span>`}
             </div>
             <div>
-              <div class="font-semibold">${m.fullName}</div>
-              <div class="text-xs text-muted">${m.regNo}</div>
+              <div class="font-semibold">${m.full_name || m.fullName}</div>
+              <div class="text-xs text-muted">${m.reg_no || m.regNo}</div>
             </div>
           </div>
         </td>
-        <td>${m.idNo}</td>
-        <td>${m.phone}</td>
-        <td><span class="badge ${m.status === 'active' ? 'badge-success' : 'badge-danger'}">${m.status}</span></td>
+        <td>${m.id_number || m.idNo}</td>
+        <td>${m.phone_number || ''}</td>
+        <td><span class="badge ${m.status === 'active' ? 'badge-success' : 'badge-danger'}">${(m.status || 'ACTIVE').toUpperCase()}</span></td>
         <td>
-          <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/members/${m.regNo}'">View Profile</button>
+          <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/members/${m.reg_no || m.regNo}'">View Profile</button>
         </td>
       </tr>
     `).join('');
@@ -91,14 +91,23 @@ export const renderMemberList = async () => {
   searchInput.addEventListener('input', (e) => {
     const term = e.target.value.toLowerCase();
     filteredMembers = members.filter(m => 
-      m.fullName.toLowerCase().includes(term) || 
-      m.regNo.toLowerCase().includes(term) || 
-      m.idNo.includes(term) || 
-      m.phone.includes(term)
+      (m.full_name || m.fullName)?.toLowerCase().includes(term) || 
+      (m.reg_no || m.regNo)?.toLowerCase().includes(term) || 
+      (m.id_number || m.idNo)?.includes(term) || 
+      (m.phone_number)?.includes(term)
     );
     currentPage = 1;
     updateUI();
   });
+
+  // Real-time updates
+  const unsub = await memberService.subscribeToChanges(async () => {
+    const freshMembers = await memberService.getAll();
+    members.length = 0;
+    members.push(...freshMembers);
+    searchInput.dispatchEvent(new Event('input')); // re-trigger search and filter
+  });
+  container.__subscriptions = [unsub];
 
   return container;
 };

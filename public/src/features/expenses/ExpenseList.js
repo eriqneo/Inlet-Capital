@@ -1,13 +1,24 @@
-import { getAll } from '../../core/db.js';
+import { expenseService } from '../../services/expenseService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 
 export const renderExpenseList = async () => {
   const container = document.createElement('div');
-  const [expenses, voteheads] = await Promise.all([
-    getAll('expenses'),
-    getAll('voteheads')
-  ]);
+  let expenses = [];
+  let voteheads = [];
+  
+  try {
+    const [eRes, vRes] = await Promise.all([
+      expenseService.getFullList(),
+      expenseService.getVoteheads()
+    ]);
+    expenses = eRes;
+    voteheads = vRes;
+  } catch (err) {
+    console.error('Failed to load expenses', err);
+    container.innerHTML = `<div class="card text-center text-danger">Failed to load expenses: ${err.message}</div>`;
+    return container;
+  }
 
   // Map votehead ID to name
   const vMap = Object.fromEntries(voteheads.map(v => [v.id, v.name]));
@@ -58,10 +69,10 @@ export const renderExpenseList = async () => {
     ` : paginatedItems.map(e => `
       <tr>
         <td class="text-sm">${formatDate(e.date)}</td>
-        <td><span class="badge badge-primary">${vMap[e.votehead] || e.votehead}</span></td>
-        <td class="text-sm">${e.description}</td>
+        <td><span class="badge badge-primary">${e.expand?.votehead?.name || vMap[e.votehead] || 'Unknown'}</span></td>
+        <td class="text-sm">${e.description || '-'}</td>
         <td style="text-align: right;" class="font-semibold text-danger">
-          ${e.amount.toLocaleString()}
+          ${(e.amount || 0).toLocaleString()}
         </td>
       </tr>
     `).join('');
@@ -74,7 +85,25 @@ export const renderExpenseList = async () => {
     if (pagination) paginationWrapper.appendChild(pagination);
   };
 
-  updateUI();
+  // Real-time updates
+  const fetchAndRender = async () => {
+    try {
+      const [eRes, vRes] = await Promise.all([
+        expenseService.getFullList(),
+        expenseService.getVoteheads()
+      ]);
+      expenses = eRes;
+      voteheads = vRes;
+      sortedExpenses.length = 0;
+      sortedExpenses.push(...[...expenses].sort((a,b) => new Date(b.date) - new Date(a.date)));
+      updateUI();
+    } catch (err) {
+      console.error('Failed to load expenses on update', err);
+    }
+  };
+
+  const unsub = await expenseService.subscribeToChanges(() => fetchAndRender());
+  container.__subscriptions = [unsub];
 
   return container;
 };

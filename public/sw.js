@@ -1,12 +1,10 @@
-const CACHE_NAME = 'inlet-v4';
+const CACHE_NAME = 'inlet-v5';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
   '/manifest.json',
   '/src/styles/index.css',
   '/src/app.js',
-  '/src/core/db.js',
-  '/src/core/schema.js',
   '/src/core/router.js',
   '/src/core/auth.js',
   '/src/core/numberGen.js',

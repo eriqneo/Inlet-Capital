@@ -1,33 +1,16 @@
-import { getAll, getById, put, add } from '../../core/db.js';
+import { loanService } from '../../services/loanService.js';
+import { memberService } from '../../services/memberService.js';
+import { groupService } from '../../services/groupService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 
 export const renderLoanList = async () => {
   const container = document.createElement('div');
-  const [loans, members, groups] = await Promise.all([
-    getAll('loans'),
-    getAll('members'),
-    getAll('groups')
-  ]);
-  const pendingCount = loans.filter(l => l.status === 'pending').length;
-  const awaitingDisbursementCount = loans.filter(l => ['approved', 'partial_approved'].includes(l.status)).length;
-
+  
+  // We will fetch the loans per page
   let currentPage = 1;
   const pageSize = 10;
-  const sortedLoans = [...loans].sort((a, b) => new Date(b.applicationDate) - new Date(a.applicationDate));
-  let filteredLoans = [...sortedLoans];
-
-  // Helper to get client name
-  const getClientName = (loan) => {
-    if (loan.memberId) {
-      const member = members.find(m => m.regNo === loan.memberId);
-      return member ? member.fullName : 'Unknown Member';
-    } else if (loan.groupId) {
-      const group = groups.find(g => g.groupId === loan.groupId);
-      return group ? group.name : 'Unknown Group';
-    }
-    return 'Unknown';
-  };
+  let searchTerm = '';
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -35,13 +18,12 @@ export const renderLoanList = async () => {
         <h1 class="text-xl">Loans Management</h1>
         <p class="text-muted">Track all individual and group loan applications.</p>
       </div>
-      <div style="display: flex; gap: 12px;">
-        ${pendingCount > 0 ? `<button class="btn btn-secondary" onclick="window.location.hash = '#/loans/approve'" style="background: #eab308; border-color: #eab308; color: white;">
-          <span class="badge" style="background: white; color: #eab308; margin-right: 8px;">${pendingCount}</span>
+        ${true ? `<button class="btn btn-secondary" onclick="window.location.hash = '#/loans/approve'" style="background: #eab308; border-color: #eab308; color: white;">
+          <span class="badge" style="background: white; color: #eab308; margin-right: 8px;">!</span>
           Review Pending
         </button>` : ''}
-        ${awaitingDisbursementCount > 0 ? `<button class="btn btn-primary" onclick="window.location.hash = '#/loans/approve'" style="background: #0d9488; border-color: #0d9488; color: white;">
-          <span class="badge" style="background: white; color: #0d9488; margin-right: 8px;">${awaitingDisbursementCount}</span>
+        ${true ? `<button class="btn btn-primary" onclick="window.location.hash = '#/loans/approve'" style="background: #0d9488; border-color: #0d9488; color: white;">
+          <span class="badge" style="background: white; color: #0d9488; margin-right: 8px;">!</span>
           Disburse Approved
         </button>` : ''}
         <button class="btn btn-primary" onclick="window.location.hash = '#/loans/new'">+ New Loan Application</button>
@@ -50,7 +32,7 @@ export const renderLoanList = async () => {
 
     <div class="card" style="padding: 0; overflow: hidden;">
       <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; gap: 16px;">
-        <input type="text" id="loan-search" class="form-control" placeholder="Search by Loan No, Client Name, or Status..." style="max-width: 400px;" />
+        <input type="text" id="loan-search" class="form-control" placeholder="Search by Loan No..." style="max-width: 400px;" />
       </div>
       <div class="table-responsive">
         <table class="table">
@@ -99,7 +81,7 @@ export const renderLoanList = async () => {
           </div>
           
           <div class="form-group" id="fee-reference-group">
-            <label class="form-label">Transaction Reference / Receipt No.</label>
+            <label class="form-label" id="fee-reference-label">M-Pesa Transaction Code</label>
             <input type="text" id="fee-reference" class="form-control" placeholder="e.g. QWE123RTY4" required />
           </div>
 
@@ -115,79 +97,105 @@ export const renderLoanList = async () => {
   const tableBody = container.querySelector('#loan-table-body');
   const paginationWrapper = container.querySelector('#pagination-wrapper');
 
-  const updateUI = () => {
-    const start = (currentPage - 1) * pageSize;
-    const end = start + pageSize;
-    const paginatedLoans = filteredLoans.slice(start, end);
+  const updateUI = async () => {
+    try {
+      tableBody.innerHTML = `<tr><td colspan="8" class="text-center text-muted" style="padding: 40px;">Loading loans...</td></tr>`;
 
-    tableBody.innerHTML = paginatedLoans.length === 0 ? `
-      <tr><td colspan="8" class="text-center text-muted" style="padding: 40px;">No loans found.</td></tr>
-    ` : paginatedLoans.map(l => `
-      <tr>
-        <td>
-          <div class="font-semibold">${l.loanNo}</div>
-          <div class="text-xs text-muted">${formatDate(l.applicationDate)}</div>
-        </td>
-        <td class="font-semibold">${getClientName(l)}</td>
-        <td class="text-sm">
-          ${l.memberId ? `<span class="badge badge-primary" style="font-size: 0.7rem;">INDIV</span> ${l.memberId}` : `<span class="badge" style="background: var(--surface-dark); color: white; font-size: 0.7rem;">GROUP</span> ${l.groupId}`}
-        </td>
-        <td>KES ${l.amountApplied.toLocaleString()}</td>
-        <td>KES ${l.totalLiability.toLocaleString()}</td>
-        <td>
-          <div class="fee-status-cell" data-loan="${l.loanNo}">
-            ${l.processingFeePaid
-              ? `<div style="display: flex; align-items: center; gap: 6px;">
-                   <span class="badge badge-success" style="gap: 4px;">✓ PAID</span>
-                   <div class="text-xs text-muted">KES ${l.processingFee.toLocaleString()}</div>
-                 </div>`
-              : `<div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start;">
-                   <span class="badge badge-warning">⚠ UNPAID</span>
-                   <span class="text-xs text-muted">KES ${l.processingFee.toLocaleString()}</span>
-                   ${l.status === 'pending' ? `<button class="btn-fee-pay" data-loan="${l.loanNo}" data-amount="${l.processingFee}" style="font-size: 0.7rem; padding: 4px 10px; background: var(--secondary); color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 2px; font-weight: 600; transition: background 0.2s;">Record Payment</button>` : ''}
-                 </div>`
-            }
-          </div>
-        </td>
-        <td>
-          <span class="badge ${
-            l.status === 'disbursed' ? 'badge-success' :
-            l.status === 'approved' ? 'badge-primary' :
-            l.status === 'partial_approved' ? 'badge-primary' :
-            l.status === 'pending' ? 'badge-warning' :
-            'badge-danger'
-          }" style="${
-            l.status === 'approved' || l.status === 'partial_approved' ? 'background: #0d9488; color: white;' : ''
-          }">
-            ${l.status === 'disbursed' ? 'DISBURSED' :
-              l.status === 'approved' ? 'APPROVED' :
-              l.status === 'partial_approved' ? 'PARTIAL APPROVED' :
-              l.status.toUpperCase()}
-          </span>
-        </td>
-        <td>
-          <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/loans/${l.loanNo}'">View</button>
-        </td>
-      </tr>
-    `).join('');
+      // Build filter
+      let pbFilter = '';
+      if (searchTerm) {
+        pbFilter = `loan_no ~ "${searchTerm}" || status ~ "${searchTerm}"`;
+      }
 
-    // Re-attach fee payment listeners
-    container.querySelectorAll('.btn-fee-pay').forEach(btn => {
-      btn.onclick = () => {
-        activeFeeLoan = btn.dataset.loan;
-        activeFeeAmount = parseFloat(btn.dataset.amount);
-        amountDisplay.textContent = `KES ${activeFeeAmount.toLocaleString()}`;
-        loanDisplay.textContent = `Loan Reference: ${activeFeeLoan}`;
-        modal.style.display = 'flex';
-      };
-    });
+      const result = await loanService.getAll({
+        page: currentPage,
+        perPage: pageSize,
+        filter: pbFilter
+      });
 
-    paginationWrapper.innerHTML = '';
-    const pagination = renderPagination(filteredLoans.length, pageSize, currentPage, (newPage) => {
-      currentPage = newPage;
-      updateUI();
-    });
-    if (pagination) paginationWrapper.appendChild(pagination);
+      const paginatedLoans = result.items;
+
+      tableBody.innerHTML = paginatedLoans.length === 0 ? `
+        <tr><td colspan="8" class="text-center text-muted" style="padding: 40px;">No loans found.</td></tr>
+      ` : paginatedLoans.map(l => {
+        const clientName = l.expand?.member ? l.expand.member.full_name : (l.expand?.group ? l.expand.group.name : 'Unknown');
+        const badgeLabel = l.expand?.member ? 'INDIV' : 'GROUP';
+        const clientReg = l.expand?.member ? l.expand.member.reg_no : (l.expand?.group ? l.expand.group.group_id : 'Unknown');
+        
+        return `
+        <tr>
+          <td>
+            <div class="font-semibold">${l.loan_no}</div>
+            <div class="text-xs text-muted">${formatDate(l.application_date)}</div>
+          </td>
+          <td class="font-semibold">${clientName}</td>
+          <td class="text-sm">
+            ${l.expand?.member 
+              ? `<span class="badge badge-primary" style="font-size: 0.7rem;">INDIV</span> ${clientReg}` 
+              : `<span class="badge" style="background: var(--surface-dark); color: white; font-size: 0.7rem;">GROUP</span> ${clientReg}`}
+          </td>
+          <td>KES ${l.amount_applied.toLocaleString()}</td>
+          <td>KES ${l.total_liability.toLocaleString()}</td>
+          <td>
+            <div class="fee-status-cell" data-loan="${l.id}">
+              ${l.processing_fee_paid
+                ? `<div style="display: flex; align-items: center; gap: 6px;">
+                     <span class="badge badge-success" style="gap: 4px;">✓ PAID</span>
+                     <div class="text-xs text-muted">KES ${l.processing_fee.toLocaleString()}</div>
+                   </div>`
+                : `<div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start;">
+                     <span class="badge badge-warning">⚠ UNPAID</span>
+                     <span class="text-xs text-muted">KES ${l.processing_fee.toLocaleString()}</span>
+                     ${l.status === 'pending' ? `<button class="btn-fee-pay" data-id="${l.id}" data-loan="${l.loan_no}" data-amount="${l.processing_fee}" style="font-size: 0.7rem; padding: 4px 10px; background: var(--secondary); color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 2px; font-weight: 600; transition: background 0.2s;">Record Payment</button>` : ''}
+                   </div>`
+              }
+            </div>
+          </td>
+          <td>
+            <span class="badge ${
+              l.status === 'disbursed' ? 'badge-success' :
+              l.status === 'approved' ? 'badge-primary' :
+              l.status === 'partial_approved' ? 'badge-primary' :
+              l.status === 'pending' ? 'badge-warning' :
+              'badge-danger'
+            }" style="${
+              l.status === 'approved' || l.status === 'partial_approved' ? 'background: #0d9488; color: white;' : ''
+            }">
+              ${l.status === 'disbursed' ? 'DISBURSED' :
+                l.status === 'approved' ? 'APPROVED' :
+                l.status === 'partial_approved' ? 'PARTIAL APPROVED' :
+                l.status.toUpperCase()}
+            </span>
+          </td>
+          <td>
+            <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/loans/${l.loan_no}'">View</button>
+          </td>
+        </tr>`;
+      }).join('');
+
+      // Re-attach fee payment listeners
+      container.querySelectorAll('.btn-fee-pay').forEach(btn => {
+        btn.onclick = () => {
+          activeFeeRecordId = btn.dataset.id;
+          activeFeeLoan = btn.dataset.loan;
+          activeFeeAmount = parseFloat(btn.dataset.amount);
+          amountDisplay.textContent = `KES ${activeFeeAmount.toLocaleString()}`;
+          loanDisplay.textContent = `Loan Reference: ${activeFeeLoan}`;
+          modal.style.display = 'flex';
+        };
+      });
+
+      paginationWrapper.innerHTML = '';
+      const pagination = renderPagination(result.totalItems, pageSize, currentPage, (newPage) => {
+        currentPage = newPage;
+        updateUI();
+      });
+      if (pagination) paginationWrapper.appendChild(pagination);
+
+    } catch (e) {
+      console.error(e);
+      tableBody.innerHTML = `<tr><td colspan="8" class="text-center text-danger" style="padding: 40px;">Failed to load loans.</td></tr>`;
+    }
   };
 
   // Modal Logic
@@ -199,23 +207,35 @@ export const renderLoanList = async () => {
   const form = container.querySelector('#fee-collection-form');
   const methodSelect = container.querySelector('#fee-payment-method');
   const refGroup = container.querySelector('#fee-reference-group');
+  const refLabel = container.querySelector('#fee-reference-label');
   const refInput = container.querySelector('#fee-reference');
 
+  let activeFeeRecordId = null;
   let activeFeeLoan = null;
   let activeFeeAmount = 0;
 
   methodSelect.onchange = () => {
-    if (methodSelect.value === 'cash') {
+    const val = methodSelect.value;
+    if (val === 'cash') {
       refGroup.style.display = 'none';
       refInput.removeAttribute('required');
-    } else {
+      refInput.value = '';
+    } else if (val === 'bank') {
       refGroup.style.display = 'block';
+      refLabel.textContent = 'Bank Transfer / Cheque Reference';
+      refInput.placeholder = 'e.g. CHQ-987654';
+      refInput.setAttribute('required', 'true');
+    } else { // mpesa
+      refGroup.style.display = 'block';
+      refLabel.textContent = 'M-Pesa Transaction Code';
+      refInput.placeholder = 'e.g. QWE123RTY4';
       refInput.setAttribute('required', 'true');
     }
   };
 
   const closeModal = () => {
     modal.style.display = 'none';
+    activeFeeRecordId = null;
     activeFeeLoan = null;
     form.reset();
   };
@@ -225,49 +245,42 @@ export const renderLoanList = async () => {
 
   form.onsubmit = async (e) => {
     e.preventDefault();
-    if (!activeFeeLoan) return;
-
-    const loan = await getById('loans', activeFeeLoan);
-    loan.processingFeePaid = true;
-    loan.processingFeePaidDate = new Date().toISOString();
-    loan.processingFeeDetails = {
-      method: methodSelect.value,
-      reference: refInput.value
-    };
+    if (!activeFeeRecordId) return;
 
     try {
-      await put('loans', loan);
-      await add('fees_log', {
-        loanId: loan.loanNo,
-        memberId: loan.memberId || loan.groupId,
-        amount: loan.processingFee,
-        type: 'processing_fee',
-        date: new Date().toISOString(),
-        method: methodSelect.value,
-        reference: refInput.value
+      await loanService.update(activeFeeRecordId, {
+        processing_fee_paid: true,
+        processing_fee_details: {
+          method: methodSelect.value,
+          reference: refInput.value,
+          date: new Date().toISOString()
+        }
       });
+      
+      // Processing fee payment is now stored entirely in the loan object.
+      // We removed the legacy fees_log collection requirement.
 
-      notify.success('Processing fee recorded successfully!');
+      if (window.notify) window.notify.success('Processing fee recorded successfully!');
       closeModal();
-      window.location.reload(); // Hard refresh to update data
+      updateUI(); // Refresh table without reloading page
     } catch (err) {
-      notify.error('Error recording fee: ' + err.message);
+      if (window.notify) window.notify.error('Error recording fee: ' + (err.message || 'Validation Failed'));
+      console.error(err);
     }
   };
 
   const searchInput = container.querySelector('#loan-search');
   searchInput.addEventListener('input', (e) => {
-    const term = e.target.value.toLowerCase();
-    filteredLoans = sortedLoans.filter(l => {
-      const clientName = getClientName(l).toLowerCase();
-      const status = l.status.replace('_', ' ').toLowerCase();
-      return l.loanNo.toLowerCase().includes(term) || clientName.includes(term) || status.includes(term);
-    });
+    searchTerm = e.target.value.toLowerCase();
     currentPage = 1;
     updateUI();
   });
 
   updateUI();
+
+  // Real-time updates
+  const unsub = await loanService.subscribeToChanges(() => updateUI());
+  container.__subscriptions = [unsub];
 
   return container;
 };

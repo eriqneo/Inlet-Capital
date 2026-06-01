@@ -1,4 +1,6 @@
-import { add, getById, put } from '../../core/db.js';
+import { settingsService } from '../../services/settingsService.js';
+import { memberService } from '../../services/memberService.js';
+import { authService } from '../../services/authService.js';
 import { generateRegNo } from '../../core/numberGen.js';
 import { navigate } from '../../core/router.js';
 import { openCamera } from '../../components/Camera.js';
@@ -9,8 +11,7 @@ export const renderMemberRegistration = async () => {
   const regNo = generateRegNo();
   
   // Get current registration fee from settings
-  const regFeeSetting = await getById('settings', 'individual_reg_fee');
-  const regFee = regFeeSetting ? regFeeSetting.value : 1000;
+  const regFee = (await settingsService.get('individual_reg_fee')) || 1000;
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -31,13 +32,13 @@ export const renderMemberRegistration = async () => {
           
           <div class="form-group">
             <label class="form-label">Full Name (As per ID)</label>
-            <input type="text" name="fullName" class="form-control" required />
+            <input type="text" name="full_name" class="form-control" required />
           </div>
 
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
             <div class="form-group">
               <label class="form-label">ID Number</label>
-              <input type="text" name="idNo" class="form-control" required />
+              <input type="text" name="id_number" class="form-control" required />
             </div>
              <div class="form-group">
                <label class="form-label">Date of Birth</label>
@@ -63,12 +64,12 @@ export const renderMemberRegistration = async () => {
 
           <div class="form-group">
             <label class="form-label">Telephone</label>
-            <input type="tel" name="phone" class="form-control" required />
+            <input type="tel" name="phone_number" class="form-control" required />
           </div>
 
           <div class="form-group">
             <label class="form-label">Residential Address / Town</label>
-            <input type="text" name="residence" class="form-control" required />
+            <input type="text" name="address" class="form-control" required />
           </div>
 
           <div class="form-group">
@@ -92,17 +93,17 @@ export const renderMemberRegistration = async () => {
 
           <div class="form-group">
             <label class="form-label">Next of Kin Name</label>
-            <input type="text" name="nokName" class="form-control" required />
+            <input type="text" name="nok_name" class="form-control" required />
           </div>
 
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
             <div class="form-group">
               <label class="form-label">Next of Kin Phone</label>
-              <input type="tel" name="nokPhone" class="form-control" required />
+              <input type="tel" name="nok_phone" class="form-control" required />
             </div>
             <div class="form-group">
               <label class="form-label">Relationship</label>
-              <input type="text" name="nokRelationship" class="form-control" required />
+              <input type="text" name="nok_relationship" class="form-control" required />
             </div>
           </div>
 
@@ -188,30 +189,23 @@ export const renderMemberRegistration = async () => {
     const member = {
       ...memberData,
       dob: parseInputDate(memberData.dob),
-      regNo,
-      registrationDate: new Date().toISOString(),
-      registrationFee: regFee,
+      reg_no: regNo,
+      registration_date: new Date().toISOString(),
+      registration_fee: regFee,
       status: 'active',
-      lastActivity: new Date().toISOString()
+      registered_by: authService.getUser()?.id || null
     };
 
     try {
-      await add('members', member);
+      await memberService.create(member);
       
-      // Record the registration fee payment in fees_log so it reflects in Cash Flow
-      await add('fees_log', {
-        memberId: regNo,
-        amount: regFee,
-        type: 'registration_fee',
-        date: new Date().toISOString(),
-        method: memberData.paymentMethod,
-        reference: memberData.paymentMethod === 'cash' ? 'CASH-REG' : (memberData.paymentReference || 'N/A')
-      });
+      // Registration fee is tracked natively on the member record now.
 
-      notify.success('Member registered successfully!');
+      if (window.notify) window.notify.success('Member registered successfully!');
       setTimeout(() => navigate(`#/members/${regNo}`), 1200);
     } catch (err) {
-      notify.error('Error registering member: ' + err.message);
+      if (window.notify) window.notify.error('Error registering member: ' + (err.message || 'Unknown error'));
+      console.error(err);
     }
   };
 

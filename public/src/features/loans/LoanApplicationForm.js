@@ -1,4 +1,8 @@
-import { add, getAll, getById } from '../../core/db.js';
+import { loanService } from '../../services/loanService.js';
+import { memberService } from '../../services/memberService.js';
+import { groupService } from '../../services/groupService.js';
+import { authService } from '../../services/authService.js';
+import { settingsService } from '../../services/settingsService.js';
 import { generateLoanNo } from '../../core/numberGen.js';
 import { navigate } from '../../core/router.js';
 import { openCamera } from '../../components/Camera.js';
@@ -7,14 +11,14 @@ export const renderLoanApplicationForm = async (params = {}) => {
   const container = document.createElement('div');
   const loanNo = generateLoanNo();
   
-  // Settings
+  // Settings (Now fetched directly from PocketBase settings collection via settingsService)
   const settings = {
-    interestRate: (await getById('settings', 'interest_rate_percent'))?.value || 20,
-    processingFeeRate: (await getById('settings', 'processing_fee_percent'))?.value || 8,
+    interestRate: (await settingsService.get('interest_rate_percent')) || 20,
+    processingFeeRate: (await settingsService.get('processing_fee_percent')) || 8,
   };
 
-  const members = await getAll('members');
-  const groups = await getAll('groups');
+  const members = await memberService.getAll();
+  const groups = await groupService.getAll();
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -35,8 +39,8 @@ export const renderLoanApplicationForm = async (params = {}) => {
           <h3 style="margin-bottom: 16px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">1. Applicant Details</h3>
           
           <div class="form-group">
-            <label class="form-label">Loan Type</label>
-            <select name="type" id="loan-type" class="form-control" required>
+            <label class="form-label">Applicant Type</label>
+            <select id="applicant-type" class="form-control" required>
               <option value="individual">Individual Loan</option>
               <option value="group">Group Loan</option>
               <option value="group-member">Individual in Group</option>
@@ -47,7 +51,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
             <label class="form-label">Select Member</label>
             <select name="memberId" class="form-control" id="member-select">
               <option value="">Select a member...</option>
-              ${members.map(m => `<option value="${m.regNo}">${m.fullName} (${m.regNo})</option>`).join('')}
+              ${members.map(m => `<option value="${m.id}" data-group="${m.group || ''}">${m.full_name} (${m.reg_no})</option>`).join('')}
             </select>
           </div>
 
@@ -55,7 +59,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
             <label class="form-label">Select Group</label>
             <select name="groupId" class="form-control" id="group-select">
               <option value="">Select a group...</option>
-              ${groups.map(g => `<option value="${g.groupId}">${g.name} (${g.groupId})</option>`).join('')}
+              ${groups.map(g => `<option value="${g.id}">${g.name} (${g.group_id})</option>`).join('')}
             </select>
             <div id="group-autofill-status" style="display: none; margin-top: 8px; font-size: 0.75rem; padding: 6px 10px; border-radius: 4px; transition: all 0.3s ease;"></div>
           </div>
@@ -64,6 +68,16 @@ export const renderLoanApplicationForm = async (params = {}) => {
         <!-- Section 2: Loan Parameters -->
         <div class="card">
           <h3 style="margin-bottom: 16px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">2. Loan Details</h3>
+          
+          <div class="form-group">
+            <label class="form-label">Loan Product / Type</label>
+            <select name="type" class="form-control" required>
+              <option value="business">Business Loan</option>
+              <option value="emergency">Emergency Loan</option>
+              <option value="school_fees">School Fees</option>
+              <option value="development">Development Loan</option>
+            </select>
+          </div>
           
           <div class="form-group">
             <label class="form-label">Amount Applied (KES)</label>
@@ -166,7 +180,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
   `;
 
   // Logic: Show/Hide Applicant Selectors & Auto-fill
-  const typeSelect = container.querySelector('#loan-type');
+  const applicantTypeSelect = container.querySelector('#applicant-type');
   const memberGroup = container.querySelector('#member-select-group');
   const groupGroup = container.querySelector('#group-select-group');
   const memberSelect = container.querySelector('#member-select');
@@ -174,27 +188,19 @@ export const renderLoanApplicationForm = async (params = {}) => {
   const autofillStatus = container.querySelector('#group-autofill-status');
 
   memberSelect.onchange = () => {
-    if (typeSelect.value !== 'group-member') {
+    if (applicantTypeSelect.value !== 'group-member') {
       autofillStatus.style.display = 'none';
       groupSelect.disabled = false;
       return;
     }
 
-    const selectedRegNo = memberSelect.value;
-    if (!selectedRegNo) {
-      autofillStatus.style.display = 'none';
-      groupSelect.value = '';
-      groupSelect.disabled = false;
-      return;
-    }
-
-    const member = members.find(m => m.regNo === selectedRegNo);
-    const groupId = member ? member.groupId : null;
+    const selectedOption = memberSelect.options[memberSelect.selectedIndex];
+    const groupId = selectedOption ? selectedOption.dataset.group : null;
     
     if (groupId) {
       groupSelect.value = groupId;
-      const groupName = groups.find(g => g.groupId === groupId)?.name;
-      autofillStatus.innerHTML = `✅ Auto-filled: <strong>${groupName}</strong> (${groupId})`;
+      const groupName = groups.find(g => g.id === groupId)?.name;
+      autofillStatus.innerHTML = `✅ Auto-filled: <strong>${groupName || 'Unknown'}</strong>`;
       autofillStatus.style.background = 'rgba(16, 185, 129, 0.1)';
       autofillStatus.style.color = 'var(--success)';
       autofillStatus.style.display = 'block';
@@ -209,13 +215,13 @@ export const renderLoanApplicationForm = async (params = {}) => {
     }
   };
 
-  typeSelect.onchange = () => {
-    if (typeSelect.value === 'individual') {
+  applicantTypeSelect.onchange = () => {
+    if (applicantTypeSelect.value === 'individual') {
       memberGroup.style.display = 'block';
       groupGroup.style.display = 'none';
       autofillStatus.style.display = 'none';
       groupSelect.disabled = false;
-    } else if (typeSelect.value === 'group') {
+    } else if (applicantTypeSelect.value === 'group') {
       memberGroup.style.display = 'none';
       groupGroup.style.display = 'block';
       autofillStatus.style.display = 'none';
@@ -229,18 +235,20 @@ export const renderLoanApplicationForm = async (params = {}) => {
 
   // Pre-fill from Params
   if (params.memberId) {
-    const member = members.find(m => m.regNo === params.memberId);
-    if (member && member.groupId) {
-      typeSelect.value = 'group-member';
+    // If we have an ID from router params, try to match it
+    const member = members.find(m => m.id === params.memberId || m.reg_no === params.memberId);
+    if (member && member.group) {
+      applicantTypeSelect.value = 'group-member';
     } else {
-      typeSelect.value = 'individual';
+      applicantTypeSelect.value = 'individual';
     }
-    memberSelect.value = params.memberId;
-    typeSelect.dispatchEvent(new Event('change'));
+    memberSelect.value = member ? member.id : '';
+    applicantTypeSelect.dispatchEvent(new Event('change'));
   } else if (params.groupId) {
-    typeSelect.value = 'group';
-    groupSelect.value = params.groupId;
-    typeSelect.dispatchEvent(new Event('change'));
+    applicantTypeSelect.value = 'group';
+    const group = groups.find(g => g.id === params.groupId || g.group_id === params.groupId);
+    groupSelect.value = group ? group.id : '';
+    applicantTypeSelect.dispatchEvent(new Event('change'));
   }
 
   // Logic: Real-time Calculations
@@ -345,38 +353,55 @@ export const renderLoanApplicationForm = async (params = {}) => {
     }
 
     const amount = parseFloat(rawData.amount);
-    const interest = amount * (settings.interestRate / 100);
+    const interestRate = settings.interestRate;
+    const interest = amount * (interestRate / 100);
     const processingFee = amount * (settings.processingFeeRate / 100);
 
     const loan = {
-      loanNo,
+      loan_no: loanNo,
       type: rawData.type,
-      memberId: rawData.memberId,
-      groupId: rawData.groupId,
-      amountApplied: amount,
-      interestAmount: interest,
-      totalLiability: amount + interest,
-      processingFee,
+      amount_applied: amount,
+      approved_amount: 0,
+      interest_rate: interestRate,
+      interest_amount: interest,
+      total_liability: amount + interest,
+      processing_fee: processingFee,
+      processing_fee_paid: false,
       period: parseInt(rawData.period),
       purpose: rawData.purpose,
       status: 'pending',
-      applicationDate: new Date().toISOString(),
-      officerId: 'admin', // Hardcoded for now
+      application_date: new Date().toISOString(),
       guarantor: {
         name: rawData.guarantorName,
         phone: rawData.guarantorPhone,
         relationship: rawData.guarantorRelationship,
-        photo: rawData.guarantorPhoto
+        photo: rawData.guarantorPhoto || null
       },
-      collaterals
+      collaterals: collaterals
     };
 
+    if (applicantTypeSelect.value === 'individual') {
+      if (!rawData.memberId) return window.notify?.error('Please select a member');
+      loan.member = rawData.memberId;
+    } else if (applicantTypeSelect.value === 'group') {
+      if (!rawData.groupId) return window.notify?.error('Please select a group');
+      loan.group = rawData.groupId;
+    } else {
+      if (!rawData.memberId) return window.notify?.error('Please select a member');
+      loan.member = rawData.memberId;
+      if (rawData.groupId) loan.group = rawData.groupId;
+    }
+
+    const userId = authService.getUser()?.id;
+    if (userId) loan.processed_by = userId;
+
     try {
-      await add('loans', loan);
-      notify.success('Loan application submitted successfully!');
+      await loanService.apply(loan);
+      if (window.notify) window.notify.success('Loan application submitted successfully!');
       navigate('#/loans');
     } catch (err) {
-      notify.error('Error submitting loan: ' + err.message);
+      if (window.notify) window.notify.error('Error submitting loan: ' + (err.message || 'Validation Failed'));
+      console.error(err);
     }
   };
 

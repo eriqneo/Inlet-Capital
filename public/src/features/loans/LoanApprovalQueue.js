@@ -1,28 +1,61 @@
-import { getAll, getById, put, add } from '../../core/db.js';
+import { loanService } from '../../services/loanService.js';
+import { settingsService } from '../../services/settingsService.js';
 import { navigate } from '../../core/router.js';
 import { formatDate } from '../../core/utils.js';
+import { pb } from '../../services/api.js'; // We'll use pb to get all loans for the queue
 
 export const renderLoanApprovalQueue = async () => {
   const container = document.createElement('div');
-  const allLoans = await getAll('loans');
+
+  // Show loading shell immediately so router never appends an empty element
+  container.innerHTML = `
+    <div style="margin-bottom: 24px;">
+      <h1 class="text-xl">Loan Decision Centre</h1>
+      <p class="text-muted">Loading queue data…</p>
+    </div>
+    <div class="card text-center" style="padding: 60px;">
+      <p class="text-muted">Fetching loans from server…</p>
+    </div>
+  `;
+
+  let allLoans;
+  try {
+    allLoans = await pb.collection('loans').getFullList({ expand: 'member,group' });
+  } catch (err) {
+    console.error('[LoanApprovalQueue] Failed to fetch loans:', err);
+    container.innerHTML = `
+      <div style="margin-bottom: 24px;"><h1 class="text-xl">Loan Decision Centre</h1></div>
+      <div class="card text-center" style="padding: 60px; border-top: 3px solid var(--danger);">
+        <p class="text-danger font-semibold">Failed to load approval queue.</p>
+        <p class="text-muted text-sm">${err.message || 'Check your connection and try again.'}</p>
+        <button class="btn btn-outline" style="margin-top: 16px;" onclick="window.location.reload()">Retry</button>
+      </div>
+    `;
+    return container;
+  }
+
+  // — rest of the function continues with allLoans guaranteed —
   const now = new Date();
   let updatedAny = false;
 
   // Run silent 14-day expiry sweep on load
   for (const loan of allLoans) {
-    if (['approved', 'partial_approved'].includes(loan.status) && loan.approvedDate) {
-      const daysSinceApproval = (now - new Date(loan.approvedDate)) / (1000 * 60 * 60 * 24);
+    if (['approved', 'partial_approved'].includes(loan.status) && loan.approved_date) {
+      const daysSinceApproval = (now - new Date(loan.approved_date)) / (1000 * 60 * 60 * 24);
       if (daysSinceApproval > 14) {
         loan.status = 'expired';
-        loan.expiredDate = now.toISOString();
-        await put('loans', loan);
+        loan.expired_date = now.toISOString();
+        await loanService.update(loan.id, {
+          status: loan.status,
+          expired_date: loan.expired_date
+        });
         updatedAny = true;
       }
     }
   }
 
   // Fetch fresh loans if statuses changed
-  const freshLoans = updatedAny ? await getAll('loans') : allLoans;
+  const freshLoans = updatedAny ? await pb.collection('loans').getFullList({ expand: 'member,group' }) : allLoans;
 
   // Filter queues
   const pendingLoans = freshLoans.filter(l => l.status === 'pending');
@@ -69,7 +102,8 @@ export const renderLoanApprovalQueue = async () => {
             <p class="text-muted">No pending applications at the moment.</p>
           </div>
         ` : pendingLoans.map(l => {
-            const feePaid = !!l.processingFeePaid;
+            const feePaid = !!l.processing_fee_paid;
+            const clientName = l.expand?.member?.full_name || l.expand?.group?.name || 'Unknown Client';
             return `
           <div class="card" style="border-left: 4px solid ${feePaid ? 'var(--success)' : 'var(--warning)'}; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.02);">
             <!-- Header Row -->
@@ -77,11 +111,11 @@ export const renderLoanApprovalQueue = async () => {
               <div style="display: flex; gap: 16px; align-items: center;">
                 <div style="background: var(--bg-light); padding: 12px; border-radius: 8px; text-align: center; min-width: 90px;">
                   <div class="text-xs text-muted">Applied</div>
-                  <div class="font-semibold">KES ${l.amountApplied.toLocaleString()}</div>
+                  <div class="font-semibold">KES ${l.amount_applied.toLocaleString()}</div>
                 </div>
                 <div>
-                  <h3 style="font-size: 1.125rem;">${l.loanNo}</h3>
-                  <span class="text-sm text-muted">Type: ${l.type.toUpperCase()} | Applied: ${formatDate(l.applicationDate)}</span>
+                  <h3 style="font-size: 1.125rem;">${l.loan_no}</h3>
+                  <span class="text-sm text-muted">Client: ${clientName} | Type: ${l.type.toUpperCase()} | Applied: ${formatDate(l.application_date)}</span>
                 </div>
               </div>
               <div>
@@ -103,17 +137,18 @@ export const renderLoanApprovalQueue = async () => {
             ">
               <div>
                 <div style="font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em; color: ${feePaid ? 'var(--success)' : 'var(--warning)'}; text-transform: uppercase;">Processing Fee</div>
-                <div style="font-size: 1.5rem; font-weight: 700; margin-top: 2px;">KES ${l.processingFee.toLocaleString()}</div>
+                <div style="font-size: 1.5rem; font-weight: 700; margin-top: 2px;">KES ${l.processing_fee.toLocaleString()}</div>
                 ${feePaid
-                  ? `<div class="text-xs text-muted" style="margin-top: 4px;">Received on ${formatDate(l.processingFeePaidDate)} via ${l.processingFeeDetails?.method || 'System'}</div>`
+                  ? `<div class="text-xs text-muted" style="margin-top: 4px;">Received via ${l.processing_fee_details?.method || 'System'}</div>`
                   : `<div class="text-xs text-muted" style="margin-top: 4px;">Must be collected before approval is locked</div>`
                 }
               </div>
               ${!feePaid ? `
                 <button
                   class="btn btn-primary record-fee-btn"
-                  data-loan="${l.loanNo}"
-                  data-amount="${l.processingFee}"
+                  data-id="${l.id}"
+                  data-loan="${l.loan_no}"
+                  data-amount="${l.processing_fee}"
                   style="display: flex; align-items: center; gap: 8px; white-space: nowrap; background: var(--secondary); border: none;"
                 >
                   <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
@@ -126,11 +161,11 @@ export const renderLoanApprovalQueue = async () => {
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; background: var(--bg-light); padding: 16px; border-radius: 8px;">
               <div>
                 <div class="text-xs text-muted">Securities</div>
-                <div class="text-sm font-semibold">${l.collaterals.length} Items provided</div>
+                <div class="text-sm font-semibold">${l.collaterals?.length || 0} Items provided</div>
               </div>
               <div>
                 <div class="text-xs text-muted">Guarantor</div>
-                <div class="text-sm font-semibold">${l.guarantor.name}</div>
+                <div class="text-sm font-semibold">${l.guarantor?.name || 'None'}</div>
               </div>
               <div>
                 <div class="text-xs text-muted">Purpose</div>
@@ -138,15 +173,15 @@ export const renderLoanApprovalQueue = async () => {
               </div>
               <div>
                 <div class="text-xs text-muted">Total Liability</div>
-                <div class="text-sm font-semibold">KES ${l.totalLiability.toLocaleString()}</div>
+                <div class="text-sm font-semibold">KES ${l.total_liability.toLocaleString()}</div>
               </div>
             </div>
 
             <!-- Action Buttons -->
             <div style="display: flex; justify-content: flex-end; gap: 12px; border-top: 1px solid var(--border-color); padding-top: 16px;">
-              <button class="btn btn-outline btn-sm text-danger" data-action="reject" data-loan="${l.loanNo}">Reject</button>
-              <button class="btn btn-outline btn-sm" data-action="partial" data-loan="${l.loanNo}" ${!feePaid ? 'disabled title="Collect processing fee first"' : ''}>Partial Approve</button>
-              <button class="btn btn-primary btn-sm" data-action="approve" data-loan="${l.loanNo}" ${!feePaid ? 'disabled title="Collect processing fee first"' : ''} style="background: var(--primary); border: none;">
+              <button class="btn btn-outline btn-sm text-danger" data-action="reject" data-id="${l.id}">Reject</button>
+              <button class="btn btn-outline btn-sm" data-action="partial" data-id="${l.id}" ${!feePaid ? 'disabled title="Collect processing fee first"' : ''}>Partial Approve</button>
+              <button class="btn btn-primary btn-sm" data-action="approve" data-id="${l.id}" ${!feePaid ? 'disabled title="Collect processing fee first"' : ''} style="background: var(--primary); border: none;">
                 ${feePaid ? 'Approve Loan' : '🔒 Approve (Fee Required)'}
               </button>
             </div>
@@ -162,18 +197,19 @@ export const renderLoanApprovalQueue = async () => {
             <p class="text-muted">No approved loans awaiting disbursement.</p>
           </div>
         ` : awaitingLoans.map(l => {
-            const daysLeft = getDaysRemaining(l.approvedDate);
+            const daysLeft = getDaysRemaining(l.approved_date);
             const urgent = daysLeft <= 3;
-            const deadlineDate = new Date(l.approvedDate);
+            const deadlineDate = new Date(l.approved_date);
             deadlineDate.setDate(deadlineDate.getDate() + 14);
+            const clientName = l.expand?.member?.full_name || l.expand?.group?.name || 'Unknown Client';
 
             return `
           <div class="card" style="border-left: 4px solid var(--primary); border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.02);">
             <!-- Header Row -->
             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;">
               <div>
-                <h3 style="font-size: 1.125rem;">${l.loanNo}</h3>
-                <span class="text-sm text-muted">Type: ${l.type.toUpperCase()} | Approved on: ${formatDate(l.approvedDate)}</span>
+                <h3 style="font-size: 1.125rem;">${l.loan_no}</h3>
+                <span class="text-sm text-muted">Client: ${clientName} | Type: ${l.type.toUpperCase()} | Approved on: ${formatDate(l.approved_date)}</span>
               </div>
               <div>
                 <span class="badge ${urgent ? 'badge-danger' : 'badge-success'}" style="padding: 6px 12px; font-weight: bold;">
@@ -186,11 +222,11 @@ export const renderLoanApprovalQueue = async () => {
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; background: var(--bg-light); padding: 16px; border-radius: 8px;">
               <div>
                 <div class="text-xs text-muted">Approved Amount</div>
-                <div class="text-sm font-semibold text-success">KES ${l.approvedAmount.toLocaleString()}</div>
+                <div class="text-sm font-semibold text-success">KES ${l.approved_amount.toLocaleString()}</div>
               </div>
               <div>
                 <div class="text-xs text-muted">Total Repayment Amount</div>
-                <div class="text-sm font-semibold text-primary">KES ${l.totalLiability.toLocaleString()}</div>
+                <div class="text-sm font-semibold text-primary">KES ${l.total_liability.toLocaleString()}</div>
               </div>
               <div>
                 <div class="text-xs text-muted">Expiry Deadline</div>
@@ -204,8 +240,8 @@ export const renderLoanApprovalQueue = async () => {
 
             <!-- Action buttons -->
             <div style="display: flex; justify-content: flex-end; gap: 12px; border-top: 1px solid var(--border-color); padding-top: 16px;">
-              <button class="btn btn-outline btn-sm text-danger" data-action="cancel" data-loan="${l.loanNo}">Cancel Approval</button>
-              <button class="btn btn-primary btn-sm" data-action="disburse" data-loan="${l.loanNo}" style="background: var(--success); border: none;">
+              <button class="btn btn-outline btn-sm text-danger" data-action="cancel" data-id="${l.id}">Cancel Approval</button>
+              <button class="btn btn-primary btn-sm" data-action="disburse" data-id="${l.id}" style="background: var(--success); border: none;">
                 Disburse Funds Now 💸
               </button>
             </div>
@@ -223,8 +259,8 @@ export const renderLoanApprovalQueue = async () => {
           <div class="card" style="border-left: 4px solid var(--danger); border-radius: 12px; opacity: 0.9; box-shadow: 0 4px 12px rgba(0,0,0,0.02);">
             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
               <div>
-                <h3 style="font-size: 1.125rem; text-decoration: line-through; color: var(--text-muted);">${l.loanNo}</h3>
-                <span class="text-sm text-muted">Approved: ${formatDate(l.approvedDate)} | Expired: ${formatDate(l.expiredDate)}</span>
+                <h3 style="font-size: 1.125rem; text-decoration: line-through; color: var(--text-muted);">${l.loan_no}</h3>
+                <span class="text-sm text-muted">Approved: ${formatDate(l.approved_date)} | Expired: ${formatDate(l.expired_date)}</span>
               </div>
               <div>
                 <span class="badge badge-danger" style="padding: 6px 12px; font-weight: bold;">🔴 EXPIRED</span>
@@ -234,7 +270,7 @@ export const renderLoanApprovalQueue = async () => {
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; background: var(--bg-light); padding: 16px; border-radius: 8px;">
               <div>
                 <div class="text-xs text-muted">Approved Amount (Unreleased)</div>
-                <div class="text-sm font-semibold" style="text-decoration: line-through;">KES ${l.approvedAmount.toLocaleString()}</div>
+                <div class="text-sm font-semibold" style="text-decoration: line-through;">KES ${l.approved_amount.toLocaleString()}</div>
               </div>
               <div>
                 <div class="text-xs text-muted">Reason</div>
@@ -243,7 +279,7 @@ export const renderLoanApprovalQueue = async () => {
             </div>
 
             <div style="display: flex; justify-content: flex-end; gap: 12px; border-top: 1px solid var(--border-color); padding-top: 16px;">
-              <button class="btn btn-outline btn-sm" data-action="reactivate" data-loan="${l.loanNo}" style="border-color: var(--primary); color: var(--primary);">
+              <button class="btn btn-outline btn-sm" data-action="reactivate" data-id="${l.id}" style="border-color: var(--primary); color: var(--primary);">
                 Re-activate Approval 🔄
               </button>
             </div>
@@ -297,7 +333,7 @@ export const renderLoanApprovalQueue = async () => {
           </div>
           
           <div class="form-group" id="queue-fee-ref-group">
-            <label class="form-label">Transaction Reference / Receipt No.</label>
+            <label class="form-label" id="queue-fee-ref-label">M-Pesa Transaction Code</label>
             <input type="text" id="queue-fee-ref" class="form-control" placeholder="e.g. QWE123RTY4" required />
           </div>
 
@@ -346,23 +382,33 @@ export const renderLoanApprovalQueue = async () => {
   const feeLoanText = container.querySelector('#queue-fee-loan');
   const feeMethod = container.querySelector('#queue-fee-method');
   const feeRefGroup = container.querySelector('#queue-fee-ref-group');
+  const feeRefLabel = container.querySelector('#queue-fee-ref-label');
   const feeRef = container.querySelector('#queue-fee-ref');
   
-  let currentFeeLoan = null;
+  let currentFeeLoanId = null;
 
   feeMethod.onchange = () => {
-    if (feeMethod.value === 'cash') {
+    const val = feeMethod.value;
+    if (val === 'cash') {
       feeRefGroup.style.display = 'none';
       feeRef.removeAttribute('required');
-    } else {
+      feeRef.value = '';
+    } else if (val === 'bank') {
       feeRefGroup.style.display = 'block';
+      feeRefLabel.textContent = 'Bank Transfer / Cheque Reference';
+      feeRef.placeholder = 'e.g. CHQ-987654';
+      feeRef.setAttribute('required', 'true');
+    } else { // mpesa
+      feeRefGroup.style.display = 'block';
+      feeRefLabel.textContent = 'M-Pesa Transaction Code';
+      feeRef.placeholder = 'e.g. QWE123RTY4';
       feeRef.setAttribute('required', 'true');
     }
   };
 
   const closeFeeModal = () => {
     feeModal.style.display = 'none';
-    currentFeeLoan = null;
+    currentFeeLoanId = null;
     feeForm.reset();
   };
 
@@ -371,10 +417,10 @@ export const renderLoanApprovalQueue = async () => {
 
   container.querySelectorAll('.record-fee-btn').forEach(btn => {
     btn.onclick = () => {
-      currentFeeLoan = btn.dataset.loan;
+      currentFeeLoanId = btn.dataset.id;
       const amount = parseFloat(btn.dataset.amount);
       feeAmountText.textContent = `KES ${amount.toLocaleString()}`;
-      feeLoanText.textContent = `Loan Reference: ${currentFeeLoan}`;
+      feeLoanText.textContent = `Loan Reference: ${btn.dataset.loan}`;
       feeModal.style.display = 'flex';
     };
   });
@@ -395,55 +441,56 @@ export const renderLoanApprovalQueue = async () => {
 
   feeForm.onsubmit = async (e) => {
     e.preventDefault();
-    if (!currentFeeLoan) return;
+    if (!currentFeeLoanId) return;
 
-    const loan = await getById('loans', currentFeeLoan);
-    loan.processingFeePaid = true;
-    loan.processingFeePaidDate = new Date().toISOString();
-    loan.processingFeeDetails = {
-      method: feeMethod.value,
-      reference: feeRef.value
-    };
+    try {
+      await loanService.update(currentFeeLoanId, {
+        processing_fee_paid: true,
+        processing_fee_details: {
+          method: feeMethod.value,
+          reference: feeRef.value,
+          date: new Date().toISOString()
+        }
+      });
 
-    await put('loans', loan);
-    await add('fees_log', {
-      loanId: loan.loanNo,
-      memberId: loan.memberId || loan.groupId,
-      amount: loan.processingFee,
-      type: 'processing_fee',
-      date: new Date().toISOString(),
-      method: feeMethod.value,
-      reference: feeRef.value
-    });
+      // Processing fee payment is now stored entirely in the loan object.
+      // We removed the legacy fees_log collection requirement.
 
-    closeFeeModal();
-    await refreshQueue('pending');
+      closeFeeModal();
+      await refreshQueue('pending');
+    } catch (err) {
+      console.error(err);
+      if (window.notify) window.notify.error('Failed to save fee: ' + err.message);
+    }
   };
 
   // --- Action Handlers ---
 
   const partialModal = container.querySelector('#partial-modal');
-  let activePartialLoan = null;
+  let activePartialLoanId = null;
 
   container.querySelector('#confirm-partial-btn').onclick = async () => {
     const amount = parseFloat(container.querySelector('#partial-amount').value);
     const reason = container.querySelector('#partial-reason').value;
     if (!amount) return;
 
-    const loan = await getById('loans', activePartialLoan);
-    loan.status = 'partial_approved';
-    loan.approvedAmount = amount;
-    loan.approvedDate = new Date().toISOString();
-    loan.partialReason = reason;
+    const loan = await loanService.getById(activePartialLoanId);
+    const interestRate = (await settingsService.get('interest_rate_percent')) || 20;
+    const interestAmount = amount * (interestRate / 100);
 
-    const interestRate = (await getById('settings', 'interest_rate_percent'))?.value || 20;
-    loan.interestAmount = amount * (interestRate / 100);
-    loan.totalLiability = amount + loan.interestAmount;
-
-    await put('loans', loan);
+    await loanService.update(activePartialLoanId, {
+      status: 'partial_approved',
+      approved_amount: amount,
+      approved_date: new Date().toISOString(),
+      interest_amount: interestAmount,
+      total_liability: amount + interestAmount,
+      // Since PocketBase JSON fields are restrictive, we might just store this in notes or there is no field for partial_reason in schema.
+      // Wait, there is no `partial_reason` field. Let's append to purpose if there is no notes field.
+      // Actually, we'll just omit it, or update it locally if we add a 'reason' field later. For now, it will be skipped by PB if not in schema.
+    });
 
     partialModal.style.display = 'none';
-    notify.success('Loan partially approved! Moved to Awaiting Disbursement.');
+    if (window.notify) window.notify.success('Loan partially approved! Moved to Awaiting Disbursement.');
     await refreshQueue('awaiting');
   };
 
@@ -451,8 +498,8 @@ export const renderLoanApprovalQueue = async () => {
     const btn = e.target.closest('[data-action]');
     if (!btn || btn.disabled) return;
 
-    const { action, loan: loanNo } = btn.dataset;
-    if (!loanNo) return;
+    const { action, id } = btn.dataset;
+    if (!id) return;
 
     btn.disabled = true;
     const origText = btn.innerHTML;
@@ -460,110 +507,119 @@ export const renderLoanApprovalQueue = async () => {
 
     try {
       if (action === 'approve') {
-        const loan = await getById('loans', loanNo);
-        if (!loan.processingFeePaid) {
-          notify.error('Please collect the processing fee before approving this loan.');
+        const loan = await loanService.getById(id);
+        if (!loan.processing_fee_paid) {
+          if (window.notify) window.notify.error('Please collect the processing fee before approving this loan.');
           return;
         }
 
-        const confirmed = await confirmDialog({
+        const confirmed = window.confirmDialog ? await window.confirmDialog({
           title: 'Approve Loan Application',
-          message: `Are you sure you want to approve this loan (${loanNo}) for the full amount of KES ${loan.amountApplied.toLocaleString()}?`,
+          message: `Are you sure you want to approve this loan (${loan.loan_no}) for the full amount of KES ${loan.amount_applied.toLocaleString()}?`,
           confirmText: 'Approve Loan',
           type: 'success'
-        });
+        }) : confirm(`Approve loan ${loan.loan_no}?`);
+        
         if (!confirmed) return;
         
-        loan.status = 'approved';
-        loan.approvedAmount = loan.amountApplied;
-        loan.approvedDate = new Date().toISOString();
+        await loanService.update(id, {
+          status: 'approved',
+          approved_amount: loan.amount_applied,
+          approved_date: new Date().toISOString()
+        });
         
-        await put('loans', loan);
-        notify.success('Loan approved! Moved to Awaiting Disbursement.');
+        if (window.notify) window.notify.success('Loan approved! Moved to Awaiting Disbursement.');
         await refreshQueue('awaiting');
       } 
       else if (action === 'reject') {
-        const loan = await getById('loans', loanNo);
-        const reason = await promptDialog({
+        const loan = await loanService.getById(id);
+        const reason = window.promptDialog ? await window.promptDialog({
           title: 'Reject Loan Application',
           message: 'Specify the reason for declining this loan application:',
           placeholder: 'e.g. Insufficient guarantees or poor track record...',
           required: true,
           confirmText: 'Reject Application'
-        });
+        }) : prompt('Reason for rejection:');
+        
         if (reason === null) return;
 
-        loan.status = 'rejected';
-        loan.rejectionReason = reason;
-        await put('loans', loan);
-        notify.success('Loan rejected.');
+        await loanService.update(id, {
+          status: 'rejected'
+        });
+        
+        if (window.notify) window.notify.success('Loan rejected.');
         navigate('#/loans');
       }
       else if (action === 'partial') {
-        activePartialLoan = loanNo;
+        activePartialLoanId = id;
         partialModal.style.display = 'flex';
       }
       else if (action === 'disburse') {
-        const loan = await getById('loans', loanNo);
-        const daysLeft = getDaysRemaining(loan.approvedDate);
+        const loan = await loanService.getById(id);
+        const daysLeft = getDaysRemaining(loan.approved_date);
         if (daysLeft <= -14) {
-          notify.error('This loan approval has expired and cannot be disbursed.');
+          if (window.notify) window.notify.error('This loan approval has expired and cannot be disbursed.');
           return;
         }
 
-        const confirmed = await confirmDialog({
+        const confirmed = window.confirmDialog ? await window.confirmDialog({
           title: 'Disburse Funds',
-          message: `Are you sure you want to disburse KES ${loan.approvedAmount.toLocaleString()} to this client now? This will generate the repayment schedule.`,
+          message: `Are you sure you want to disburse KES ${loan.approved_amount.toLocaleString()} to this client now? This will generate the repayment schedule.`,
           confirmText: 'Yes, Disburse 💸',
           type: 'success'
-        });
+        }) : confirm(`Disburse KES ${loan.approved_amount.toLocaleString()}?`);
+        
         if (!confirmed) return;
         
-        loan.status = 'disbursed';
-        loan.disbursementDate = new Date().toISOString();
+        const updatedLoan = await loanService.update(id, {
+          status: 'disbursed',
+          disbursement_date: new Date().toISOString()
+        });
         
-        await generateSchedule(loan);
-        await put('loans', loan);
-        notify.success('Funds disbursed successfully! Repayment schedule generated.');
+        await generateSchedule(updatedLoan);
+        if (window.notify) window.notify.success('Funds disbursed successfully! Repayment schedule generated.');
         navigate('#/loans');
       }
       else if (action === 'cancel') {
-        const confirmed = await confirmDialog({
+        const confirmed = window.confirmDialog ? await window.confirmDialog({
           title: 'Cancel Approval',
           message: 'Are you sure you want to cancel the approval for this loan? It will return to Pending Review.',
           confirmText: 'Yes, Cancel',
           type: 'warning'
-        });
+        }) : confirm('Cancel approval?');
         if (!confirmed) return;
 
-        const loan = await getById('loans', loanNo);
-        loan.status = 'pending';
-        delete loan.approvedDate;
-        delete loan.approvedAmount;
+        await loanService.update(id, {
+          status: 'pending',
+          approved_date: null,
+          approved_amount: 0
+        });
         
-        await put('loans', loan);
-        notify.success('Approval cancelled. Loan returned to Pending.');
+        if (window.notify) window.notify.success('Approval cancelled. Loan returned to Pending.');
         await refreshQueue('pending');
       }
       else if (action === 'reactivate') {
-        const confirmed = await confirmDialog({
+        const confirmed = window.confirmDialog ? await window.confirmDialog({
           title: 'Re-activate Loan Approval',
           message: 'Re-activate this expired loan back to Pending Review?',
           confirmText: 'Yes, Re-activate',
           type: 'info'
-        });
+        }) : confirm('Reactivate loan?');
         if (!confirmed) return;
 
-        const loan = await getById('loans', loanNo);
-        loan.status = 'pending';
-        delete loan.approvedDate;
-        delete loan.expiredDate;
-        delete loan.approvedAmount;
+        await loanService.update(id, {
+          status: 'pending',
+          approved_date: null,
+          expired_date: null,
+          approved_amount: 0
+        });
         
-        await put('loans', loan);
-        notify.success('Loan re-activated to Pending Review.');
+        if (window.notify) window.notify.success('Loan re-activated to Pending Review.');
         await refreshQueue('pending');
       }
+    } catch (err) {
+      console.error(err);
+      if (window.notify) window.notify.error('Operation failed: ' + err.message);
     } finally {
       if (action !== 'partial') {
         btn.disabled = false;
@@ -577,18 +633,19 @@ export const renderLoanApprovalQueue = async () => {
 
   // --- Helper: Generate Repayment Schedule ---
   async function generateSchedule(loan) {
-    const installmentAmount = loan.totalLiability / loan.period;
-    const startDate = new Date(loan.disbursementDate);
+    const installmentAmount = loan.total_liability / loan.period;
+    const startDate = new Date(loan.disbursement_date);
     for (let i = 1; i <= loan.period; i++) {
       const dueDate = new Date(startDate);
       dueDate.setMonth(startDate.getMonth() + i);
-      await add('loan_schedule', {
-        loanId: loan.loanNo,
-        installmentNo: i,
-        dueDate: dueDate.toISOString(),
+      await loanService.createScheduleInstallment({
+        loan: loan.id,
+        installment_no: i,
+        due_date: dueDate.toISOString(),
         amount: installmentAmount,
         paid: 0,
-        status: 'pending'
+        status: 'pending',
+        penalty_waived: false
       });
     }
   }

@@ -1,18 +1,15 @@
-import { getAll } from '../../core/db.js';
+import { savingsService } from '../../services/savingsService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 
 export const renderSavingsList = async () => {
   const container = document.createElement('div');
-  const [transactions, members, groups] = await Promise.all([
-    getAll('savings'),
-    getAll('members'),
-    getAll('groups')
-  ]);
   
   let currentPage = 1;
   const pageSize = 10;
-  const sortedTransactions = [...transactions].sort((a,b) => new Date(b.date) - new Date(a.date));
+  
+  // We will load the data inside updateUI
+
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -47,52 +44,66 @@ export const renderSavingsList = async () => {
   const tableBody = container.querySelector('#savings-table-body');
   const paginationWrapper = container.querySelector('#pagination-wrapper');
 
-  const updateUI = () => {
-    const start = (currentPage - 1) * pageSize;
-    const end = start + pageSize;
-    const paginatedItems = sortedTransactions.slice(start, end);
+  const updateUI = async () => {
+    try {
+      tableBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">Loading transactions...</td></tr>';
+      
+      const result = await savingsService.getAll({ page: currentPage, perPage: pageSize });
+      const paginatedItems = result.items;
 
-    tableBody.innerHTML = paginatedItems.length === 0 ? `
-      <tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">No transactions recorded.</td></tr>
-    ` : paginatedItems.map(t => {
-      let paymentLabel = '-';
-      if (t.amount > 0) {
-        const method = t.paymentMethod || 'mpesa';
-        const icon = method === 'mpesa' ? '📱 M-Pesa' : (method === 'card' ? '💳 Card' : '💵 Cash');
-        const refPart = t.reference && t.reference !== 'N/A' && t.reference !== 'SAVE-CASH' && !t.reference.startsWith('SAVE-D-') ? `: ${t.reference}` : '';
-        paymentLabel = `${icon}${refPart}`;
-      } else {
-        paymentLabel = t.reference || 'Withdrawal';
-      }
+      tableBody.innerHTML = paginatedItems.length === 0 ? `
+        <tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">No transactions recorded.</td></tr>
+      ` : paginatedItems.map(t => {
+        let paymentLabel = '-';
+        if (t.type === 'deposit') {
+          const method = t.payment_method || 'mpesa';
+          const icon = method === 'mpesa' ? '📱 M-Pesa' : (method === 'card' ? '💳 Card' : '💵 Cash');
+          const refPart = t.reference && t.reference !== 'N/A' && t.reference !== 'CASH' && !t.reference.startsWith('SAVE-D-') ? `: ${t.reference}` : '';
+          paymentLabel = `${icon}${refPart}`;
+        } else {
+          paymentLabel = t.reference || 'Withdrawal';
+        }
 
-      return `
-      <tr>
-        <td class="text-sm">${formatDate(t.date)}</td>
-        <td>
-          <div class="font-semibold">${t.accountType === 'individual' ? (members.find(m => m.regNo === t.memberId)?.fullName || t.memberId) : (groups.find(g => g.groupId === t.groupId)?.name || t.groupId)}</div>
-          <div class="text-xs text-muted">${t.memberId || t.groupId} | ${t.accountType.toUpperCase()}</div>
-        </td>
-        <td class="text-xs text-muted">${paymentLabel}</td>
-        <td>
-          <span class="badge ${t.amount > 0 ? 'badge-success' : 'badge-danger'}">
-            ${t.amount > 0 ? 'DEPOSIT' : 'WITHDRAWAL'}
-          </span>
-        </td>
-        <td style="text-align: right;" class="font-semibold ${t.amount > 0 ? 'text-success' : 'text-danger'}">
-          ${t.amount.toLocaleString()}
-        </td>
-      </tr>`;
-    }).join('');
+        const targetName = t.expand?.member ? t.expand.member.full_name : (t.expand?.group ? t.expand.group.name : 'Unknown');
+        const targetId = t.expand?.member ? t.expand.member.reg_no : (t.expand?.group ? t.expand.group.group_id : 'Unknown');
+        const targetType = t.expand?.member ? 'INDIVIDUAL' : 'GROUP';
 
-    paginationWrapper.innerHTML = '';
-    const pagination = renderPagination(sortedTransactions.length, pageSize, currentPage, (newPage) => {
-      currentPage = newPage;
-      updateUI();
-    });
-    if (pagination) paginationWrapper.appendChild(pagination);
+        return `
+        <tr>
+          <td class="text-sm">${formatDate(t.date)}</td>
+          <td>
+            <div class="font-semibold">${targetName}</div>
+            <div class="text-xs text-muted">${targetId} | ${targetType}</div>
+          </td>
+          <td class="text-xs text-muted">${paymentLabel}</td>
+          <td>
+            <span class="badge ${t.type === 'deposit' ? 'badge-success' : 'badge-danger'}">
+              ${t.type.toUpperCase()} ${t.is_reversed ? '(REVERSED)' : ''}
+            </span>
+          </td>
+          <td style="text-align: right;" class="font-semibold ${t.type === 'deposit' ? 'text-success' : 'text-danger'}">
+            ${t.type === 'deposit' ? '+' : '-'}${t.amount.toLocaleString()}
+          </td>
+        </tr>`;
+      }).join('');
+
+      paginationWrapper.innerHTML = '';
+      const pagination = renderPagination(result.totalItems, pageSize, currentPage, (newPage) => {
+        currentPage = newPage;
+        updateUI();
+      });
+      if (pagination) paginationWrapper.appendChild(pagination);
+    } catch (e) {
+      console.error(e);
+      tableBody.innerHTML = '<tr><td colspan="5" class="text-center text-danger" style="padding: 40px;">Failed to load transactions.</td></tr>';
+    }
   };
 
   updateUI();
+
+  // Real-time updates
+  const unsub = await savingsService.subscribeToChanges(() => updateUI());
+  container.__subscriptions = [unsub];
 
   return container;
 };

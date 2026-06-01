@@ -1,6 +1,7 @@
-import { getSession } from './auth.js';
+import { authService } from '../services/authService.js';
 import { showLoader, hideLoader } from './utils.js';
-const routes = {};
+// Use Map to guarantee route registration order (prevents :id matching /new or /approve)
+const routes = new Map();
 let rootElement = null;
 
 export const initRouter = (rootId) => {
@@ -9,15 +10,24 @@ export const initRouter = (rootId) => {
   handleRoute();
 };
 
-export const addRoute = (path, renderFn, protectedRoute = true) => {
-  routes[path] = { renderFn, protectedRoute };
+export const addRoute = (path, renderFn, { protect = true, roles = [] } = {}) => {
+  routes.set(path, { renderFn, protect, roles });
 };
 
 export const navigate = (path) => {
   window.location.hash = path;
 };
 
+// Track active subscriptions for cleanup
+let activeUnsubscribers = [];
+
 const handleRoute = async () => {
+  // CLEANUP: Unsubscribe from previous page's subscriptions
+  for (const unsub of activeUnsubscribers) {
+    if (typeof unsub === 'function') unsub();
+  }
+  activeUnsubscribers = [];
+
   const fullHash = window.location.hash || '#/';
   const [hash, queryString] = fullHash.split('?');
   
@@ -33,7 +43,7 @@ const handleRoute = async () => {
     }
   }
 
-  for (const path in routes) {
+  for (const [path, routeData] of routes) {
     // Convert path like #/members/:id to regex
     const paramNames = [];
     const regexPath = path.replace(/:([^\/]+)/g, (_, name) => {
@@ -45,7 +55,7 @@ const handleRoute = async () => {
     const result = hash.match(regex);
     
     if (result) {
-      route = routes[path];
+      route = routeData;
       match = result;
       paramNames.forEach((name, index) => {
         params[name] = result[index + 1];
@@ -59,10 +69,19 @@ const handleRoute = async () => {
     return;
   }
 
-  if (route.protectedRoute) {
-    const session = getSession();
-    if (!session) {
+  if (route.protect) {
+    const user = authService.getUser();
+    if (!user || !authService.isAuthenticated()) {
       navigate('#/login');
+      return;
+    }
+    if (route.roles && route.roles.length > 0 && !route.roles.includes(user.role)) {
+      rootElement.innerHTML = `
+        <div class="card" style="max-width: 500px; margin: 60px auto; text-align: center;">
+          <h2 style="color: var(--danger);">🔒 Access Denied</h2>
+          <p class="text-muted">You do not have permission to view this page.</p>
+          <button class="btn btn-primary" style="margin-top: 16px;" onclick="window.location.hash='#/'">Back to Dashboard</button>
+        </div>`;
       return;
     }
   }
@@ -72,6 +91,11 @@ const handleRoute = async () => {
   try {
     const element = await route.renderFn(params);
     rootElement.appendChild(element);
+
+    // Collect any subscriptions the page registered
+    if (element.__subscriptions) {
+      activeUnsubscribers.push(...element.__subscriptions);
+    }
   } catch (error) {
     console.error('Routing Error:', error);
     rootElement.innerHTML = `

@@ -1,11 +1,14 @@
-import { add, getAll, getById, put } from '../../core/db.js';
+import { savingsService } from '../../services/savingsService.js';
+import { memberService } from '../../services/memberService.js';
+import { groupService } from '../../services/groupService.js';
+import { authService } from '../../services/authService.js';
 import { navigate } from '../../core/router.js';
 import { formatDate } from '../../core/utils.js';
 
 export const renderSavingsLedger = async () => {
   const container = document.createElement('div');
-  const members = await getAll('members');
-  const groups = await getAll('groups');
+  const members = await memberService.getAll();
+  const groups = await groupService.getAll();
 
   container.innerHTML = `
     <div style="margin-bottom: 24px;">
@@ -30,7 +33,7 @@ export const renderSavingsLedger = async () => {
             <label class="form-label">Select Member</label>
             <select name="memberId" class="form-control" id="member-id">
               <option value="">Select...</option>
-              ${members.map(m => `<option value="${m.regNo}">${m.fullName} (${m.regNo})</option>`).join('')}
+              ${members.map(m => `<option value="${m.id}">${m.full_name} (${m.reg_no})</option>`).join('')}
             </select>
           </div>
 
@@ -38,7 +41,7 @@ export const renderSavingsLedger = async () => {
             <label class="form-label">Select Group</label>
             <select name="groupId" class="form-control" id="group-id">
               <option value="">Select...</option>
-              ${groups.map(g => `<option value="${g.groupId}">${g.name} (${g.groupId})</option>`).join('')}
+              ${groups.map(g => `<option value="${g.id}">${g.name} (${g.group_id})</option>`).join('')}
             </select>
           </div>
 
@@ -160,76 +163,76 @@ export const renderSavingsLedger = async () => {
     const data = Object.fromEntries(formData.entries());
     
     const amount = parseFloat(data.amount);
-    const multiplier = data.type === 'deposit' ? 1 : -1;
-    const finalAmount = amount * multiplier;
 
     const transaction = {
-      memberId: data.memberId,
-      groupId: data.groupId,
       type: data.type,
-      amount: finalAmount,
-      date: data.date,
-      accountType: accountType.value,
-      timestamp: new Date().toISOString(),
-      paymentMethod: data.type === 'deposit' ? data.paymentMethod : 'cash-out',
+      amount: amount,
+      date: new Date(data.date).toISOString(),
+      payment_method: data.type === 'deposit' ? data.paymentMethod : 'cash',
       reference: data.type === 'deposit' 
-        ? (data.paymentMethod === 'cash' ? `SAVE-CASH` : (data.paymentReference || 'N/A')) 
-        : 'WITHDRAWAL-OUT',
-      remarks: data.remarks || ''
+        ? (data.paymentMethod === 'cash' ? `CASH` : (data.paymentReference || '')) 
+        : '',
+      remarks: data.remarks || '',
+      is_reversed: false
     };
 
-    try {
-      await add('savings', transaction);
-      
-      // Update totals in entity record
-      if (accountType.value === 'individual') {
-        const member = await getById('members', data.memberId);
-        if (member) {
-          member.totalSavings = (member.totalSavings || 0) + finalAmount;
-          await put('members', member);
-        }
-      } else {
-        const group = await getById('groups', data.groupId);
-        if (group) {
-          group.totalSavings = (group.totalSavings || 0) + finalAmount;
-          await put('groups', group);
-        }
-      }
+    const userId = authService.getUser()?.id;
+    if (userId) {
+      transaction.recorded_by = userId;
+    }
 
-      notify.success('Savings recorded successfully!');
+    if (accountType.value === 'individual') {
+      if (!data.memberId) return window.notify?.error('Please select a member');
+      transaction.member = data.memberId;
+    } else {
+      if (!data.groupId) return window.notify?.error('Please select a group');
+      transaction.group = data.groupId;
+    }
+
+    try {
+      await savingsService.recordTransaction(transaction);
+      
+      if (window.notify) window.notify.success('Savings recorded successfully!');
       form.reset();
       updateRecent();
       setTimeout(() => navigate('#/savings'), 1200);
     } catch (err) {
-      notify.error('Error: ' + err.message);
+      if (window.notify) window.notify.error('Error: ' + (err.message || 'Validation failed. Ensure member is not required if saving for a group.'));
+      console.error(err);
     }
   };
 
   const updateRecent = async () => {
-    const all = await getAll('savings');
-    const recent = all.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 5);
-    const listWrap = container.querySelector('#recent-savings');
+    try {
+      const recentList = await savingsService.getAll({ page: 1, perPage: 5 });
+      const recent = recentList.items;
+      const listWrap = container.querySelector('#recent-savings');
     
-    if (recent.length === 0) return;
+    if (!recent || recent.length === 0) return;
 
     listWrap.innerHTML = recent.map(t => {
       let methodIcon = '';
-      if (t.amount > 0) {
-        if (t.paymentMethod === 'mpesa') methodIcon = ' 📱';
-        else if (t.paymentMethod === 'card') methodIcon = ' 💳';
+      if (t.type === 'deposit') {
+        if (t.payment_method === 'mpesa') methodIcon = ' 📱';
+        else if (t.payment_method === 'card') methodIcon = ' 💳';
         else methodIcon = ' 💵';
       }
+      const targetName = t.expand?.member ? t.expand.member.full_name : (t.expand?.group ? t.expand.group.name : 'Unknown');
+      
       return `
       <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border-color);">
         <div>
-          <div class="font-semibold">${t.type.toUpperCase()}${methodIcon}</div>
-          <div class="text-xs text-muted">${t.memberId || t.groupId} | ${formatDate(t.date)}</div>
+          <div class="font-semibold">${t.type.toUpperCase()}${methodIcon} ${t.is_reversed ? '<span class="badge badge-danger">REVERSED</span>' : ''}</div>
+          <div class="text-xs text-muted">${targetName} | ${formatDate(t.date)}</div>
         </div>
-        <div class="font-semibold" style="color: ${t.amount > 0 ? 'var(--success)' : 'var(--danger)'};">
-          ${t.amount > 0 ? '+' : ''}${t.amount.toLocaleString()}
+        <div class="font-semibold" style="color: ${t.type === 'deposit' ? 'var(--success)' : 'var(--danger)'};">
+          ${t.type === 'deposit' ? '+' : '-'}${t.amount.toLocaleString()}
         </div>
       </div>`;
     }).join('');
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   updateRecent();

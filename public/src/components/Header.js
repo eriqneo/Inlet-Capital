@@ -1,14 +1,14 @@
-import { getSession, logout } from '../core/auth.js';
-import { getById } from '../core/db.js';
+import { authService } from '../services/authService.js';
+import { settingsService } from '../services/settingsService.js';
 
 export const renderHeader = async () => {
-  const session = getSession();
+  const user = authService.getUser();
   const header = document.createElement('header');
   header.className = 'header';
   
   // Fetch Org Details
-  const orgName = (await getById('settings', 'org_name'))?.value || 'Inlet Capital';
-  const orgLogo = (await getById('settings', 'org_logo'))?.value;
+  const orgName = (await settingsService.get('org_name')) || 'Inlet Capital';
+  const orgLogo = await settingsService.get('org_logo');
 
   // Greeting logic
   const hour = new Date().getHours();
@@ -16,9 +16,8 @@ export const renderHeader = async () => {
   if (hour < 12) greeting = 'Good morning';
   else if (hour < 18) greeting = 'Good afternoon';
 
-  const user = session ? await getById('users', session.id) : null;
-  const name = user ? user.name : (session ? session.name : 'User');
-  const role = user ? (user.role === 'admin' ? 'Admin' : 'Loan Officer') : (session ? (session.role === 'admin' ? 'Admin' : 'Loan Officer') : '');
+  const name = user ? user.name || user.email : 'User';
+  const role = (user && user.role) ? user.role.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'No Role';
 
   header.innerHTML = `
     <div style="display: flex; align-items: center; gap: 12px;">
@@ -41,9 +40,38 @@ export const renderHeader = async () => {
       </div>
     </div>
     <div style="display: flex; align-items: center; gap: 16px;">
-      <!-- Logout moved to Sidebar -->
+      <div id="sync-status" class="badge" style="background: rgba(16, 185, 129, 0.1); color: var(--success); font-weight: 600; padding: 6px 12px; display: flex; align-items: center; gap: 6px;">
+        <div style="width: 8px; height: 8px; border-radius: 50%; background: var(--success);"></div>
+        Synced
+      </div>
     </div>
   `;
+
+  // Sync status will be updated dynamically by syncManager later
+  if (!navigator.onLine) {
+    const syncBadge = header.querySelector('#sync-status');
+    syncBadge.style.background = 'rgba(239, 68, 68, 0.1)';
+    syncBadge.style.color = 'var(--danger)';
+    syncBadge.innerHTML = `<div style="width: 8px; height: 8px; border-radius: 50%; background: var(--danger);"></div> Offline`;
+  }
+  
+  window.addEventListener('online', () => {
+    const syncBadge = header.querySelector('#sync-status');
+    if (syncBadge) {
+      syncBadge.style.background = 'rgba(16, 185, 129, 0.1)';
+      syncBadge.style.color = 'var(--success)';
+      syncBadge.innerHTML = `<div style="width: 8px; height: 8px; border-radius: 50%; background: var(--success);"></div> Synced`;
+    }
+  });
+  
+  window.addEventListener('offline', () => {
+    const syncBadge = header.querySelector('#sync-status');
+    if (syncBadge) {
+      syncBadge.style.background = 'rgba(239, 68, 68, 0.1)';
+      syncBadge.style.color = 'var(--danger)';
+      syncBadge.innerHTML = `<div style="width: 8px; height: 8px; border-radius: 50%; background: var(--danger);"></div> Offline`;
+    }
+  });
 
   // Mobile Menu Toggle
   const mobileBtn = header.querySelector('#mobile-menu-btn');

@@ -1,4 +1,5 @@
-import { login } from '../../core/auth.js';
+import { authService } from '../../services/authService.js';
+import { handleApiError } from '../../services/api.js';
 import { navigate } from '../../core/router.js';
 
 export const renderLoginPage = async () => {
@@ -13,18 +14,18 @@ export const renderLoginPage = async () => {
       </div>
       <form id="login-form">
         <div class="form-group">
-          <label class="form-label">Username</label>
-          <input type="text" id="username" class="form-control" required autocomplete="off" />
+          <label class="form-label">Email</label>
+          <input type="email" id="email" class="form-control" required autocomplete="email" />
         </div>
         <div class="form-group">
-          <label class="form-label">PIN</label>
-          <input type="password" id="pin" class="form-control" required autocomplete="off" />
+          <label class="form-label">Password</label>
+          <input type="password" id="password" class="form-control" required autocomplete="current-password" />
         </div>
         <div id="login-error" class="text-danger text-sm" style="display: none; margin-bottom: 16px; text-align: center;">Invalid credentials</div>
-        <button type="submit" class="btn btn-primary" style="width: 100%;">Login</button>
+        <button type="submit" id="login-btn" class="btn btn-primary" style="width: 100%;">Login</button>
       </form>
       <div style="text-align: center; margin-top: 24px;">
-        <span class="text-xs text-muted">Default login: admin / 0000</span>
+        <span class="text-xs text-muted">Use your PocketBase credentials</span>
       </div>
     </div>
   `;
@@ -32,16 +33,29 @@ export const renderLoginPage = async () => {
   const form = container.querySelector('#login-form');
   const errorMsg = container.querySelector('#login-error');
 
+  const loginBtn = container.querySelector('#login-btn');
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const username = container.querySelector('#username').value;
-    const pin = container.querySelector('#pin').value;
+    if (loginBtn.disabled) return;
+    
+    errorMsg.style.display = 'none';
+    const email = container.querySelector('#email').value;
+    const password = container.querySelector('#password').value;
 
-    const success = await login(username, pin);
-    if (success) {
+    loginBtn.disabled = true;
+    loginBtn.textContent = 'Logging in...';
+
+    try {
+      await authService.login(email, password);
       navigate('#/');
-    } else {
+    } catch (err) {
       errorMsg.style.display = 'block';
+      errorMsg.textContent = err.message || 'Invalid credentials';
+      handleApiError(err, 'Login');
+    } finally {
+      loginBtn.disabled = false;
+      loginBtn.textContent = 'Login';
     }
   });
 

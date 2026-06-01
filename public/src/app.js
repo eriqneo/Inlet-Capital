@@ -1,7 +1,8 @@
-import { initializeData } from './core/schema.js';
+
 import './components/Toast.js';
 import './components/Dialog.js';
 import { initRouter, addRoute } from './core/router.js';
+import { authService } from './services/authService.js';
 import { renderLoginPage } from './features/auth/LoginPage.js';
 import { renderDashboard } from './features/dashboard/Dashboard.js';
 import { renderMemberList } from './features/members/MemberList.js';
@@ -24,13 +25,7 @@ import { renderAnalyticsDashboard } from './features/analytics/AnalyticsDashboar
 import { withLayout } from './components/Layout.js';
 
 const initApp = async () => {
-  // Initialize DB and Seed Data
-  try {
-    await initializeData();
-    console.log('Database initialized successfully.');
-  } catch (error) {
-    console.error('Failed to initialize database:', error);
-  }
+  // System uses PocketBase which initializes data on server-side
 
   // Register Service Worker for PWA
   if ('serviceWorker' in navigator) {
@@ -43,26 +38,31 @@ const initApp = async () => {
   }
 
   // Define Routes
-  addRoute('#/login', renderLoginPage, false);
-  addRoute('#/', async () => await withLayout(await renderDashboard()), true);
-  addRoute('#/analytics', async () => await withLayout(await renderAnalyticsDashboard()), true);
-  addRoute('#/members', async () => await withLayout(await renderMemberList()), true);
-  addRoute('#/members/new', async () => await withLayout(await renderMemberRegistration()), true);
-  addRoute('#/members/:id', async (params) => await withLayout(await renderMemberProfile(params)), true);
-  addRoute('#/groups', async () => await withLayout(await renderGroupList()), true);
-  addRoute('#/groups/new', async () => await withLayout(await renderGroupRegistration()), true);
-  addRoute('#/groups/:id', async (params) => await withLayout(await renderGroupProfile(params)), true);
-  addRoute('#/loans', async () => await withLayout(await renderLoanList()), true);
-  addRoute('#/loans/new', async (params) => await withLayout(await renderLoanApplicationForm(params || {})), true);
-  addRoute('#/loans/approve', async () => await withLayout(await renderLoanApprovalQueue()), true);
-  addRoute('#/loans/:id', async (params) => await withLayout(await renderLoanDetails(params || {})), true);
-  addRoute('#/savings', async () => await withLayout(await renderSavingsList()), true);
-  addRoute('#/savings/new', async () => await withLayout(await renderSavingsLedger()), true);
-  addRoute('#/expenses', async () => await withLayout(await renderExpenseList()), true);
-  addRoute('#/expenses/new', async () => await withLayout(await renderExpenseEntry()), true);
-  addRoute('#/reports', async () => await withLayout(await renderReportsDashboard()), true);
-  addRoute('#/settings', async () => await withLayout(await renderAdminSettings()), true);
+  addRoute('#/login', renderLoginPage, { protect: false });
+  addRoute('#/', async () => await withLayout(await renderDashboard()), { protect: true });
+  addRoute('#/analytics', async () => await withLayout(await renderAnalyticsDashboard()), { protect: true, roles: ['super_admin', 'admin', 'manager', 'auditor'] });
+  addRoute('#/members', async () => await withLayout(await renderMemberList()), { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'cashier', 'group_officer', 'auditor'] });
+  addRoute('#/members/new', async () => await withLayout(await renderMemberRegistration()), { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'] });
+  addRoute('#/members/:id', async (params) => await withLayout(await renderMemberProfile(params)), { protect: true });
+  addRoute('#/groups', async () => await withLayout(await renderGroupList()), { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'group_officer', 'auditor'] });
+  addRoute('#/groups/new', async () => await withLayout(await renderGroupRegistration()), { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'group_officer'] });
+  addRoute('#/groups/:id', async (params) => await withLayout(await renderGroupProfile(params)), { protect: true });
+  addRoute('#/loans', async () => await withLayout(await renderLoanList()), { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'] });
+  addRoute('#/loans/new', async (params) => await withLayout(await renderLoanApplicationForm(params || {})), { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'] });
+  addRoute('#/loans/approve', async () => await withLayout(await renderLoanApprovalQueue()), { protect: true, roles: ['super_admin', 'admin', 'manager'] });
+  addRoute('#/loans/:id', async (params) => await withLayout(await renderLoanDetails(params || {})), { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'] });
+  addRoute('#/savings', async () => await withLayout(await renderSavingsList()), { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
+  addRoute('#/savings/new', async () => await withLayout(await renderSavingsLedger()), { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
+  addRoute('#/expenses', async () => await withLayout(await renderExpenseList()), { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
+  addRoute('#/expenses/new', async () => await withLayout(await renderExpenseEntry()), { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
+  addRoute('#/reports', async () => await withLayout(await renderReportsDashboard()), { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'auditor'] });
+  addRoute('#/settings', async () => await withLayout(await renderAdminSettings()), { protect: true, roles: ['super_admin', 'admin'] });
   
+  // Refresh session to get latest user role
+  if (authService.isAuthenticated()) {
+    await authService.refreshSession();
+  }
+
   // Initialize Router
   initRouter('app');
 };

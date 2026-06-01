@@ -1,11 +1,32 @@
-import { getSession } from '../core/auth.js';
+import { authService } from '../services/authService.js';
 import { navigate } from '../core/router.js';
-import { getAll } from '../core/db.js';
+import { pb } from '../services/api.js';
+
+const roleLinks = {
+  '#/':           ['*'],
+  '#/analytics':  ['super_admin', 'admin', 'manager', 'auditor'],
+  '#/members':    ['super_admin', 'admin', 'manager', 'loan_officer', 'cashier', 'group_officer', 'auditor'],
+  '#/groups':     ['super_admin', 'admin', 'manager', 'loan_officer', 'group_officer', 'auditor'],
+  '#/loans':      ['super_admin', 'admin', 'manager', 'loan_officer'],
+  '#/savings':    ['super_admin', 'admin', 'cashier'],
+  '#/expenses':   ['super_admin', 'admin', 'cashier'],
+  '#/reports':    ['super_admin', 'admin', 'manager', 'loan_officer', 'auditor'],
+  '#/settings':   ['super_admin', 'admin'],
+};
+
+const canView = (path, role) => {
+  const allowed = roleLinks[path];
+  if (!allowed) return false;
+  return allowed.includes('*') || allowed.includes(role);
+};
 
 export const renderSidebar = async () => {
-  const session = getSession();
-  const allLoans = await getAll('loans');
-  const pendingCount = allLoans.filter(l => l.status === 'pending').length;
+  const session = authService.getUser();
+  let pendingCount = 0;
+  try {
+    const res = await pb.collection('loans').getList(1, 1, { filter: 'status="pending"' });
+    pendingCount = res.totalItems;
+  } catch(e) {}
 
   const sidebar = document.createElement('aside');
   sidebar.className = 'sidebar';
@@ -18,22 +39,20 @@ export const renderSidebar = async () => {
       </button>
     </div>
     <ul class="nav-links">
-      <li><a href="#/" class="nav-item active" data-tooltip="Dashboard"><span class="nav-icon">📊</span> <span class="nav-label">Dashboard</span></a></li>
-      <li><a href="#/analytics" class="nav-item" data-tooltip="Analytics"><span class="nav-icon">📈</span> <span class="nav-label">Analytics</span></a></li>
-      <li><a href="#/members" class="nav-item" data-tooltip="Members"><span class="nav-icon">👥</span> <span class="nav-label">Members</span></a></li>
-      <li><a href="#/groups" class="nav-item" data-tooltip="Groups"><span class="nav-icon">🏘️</span> <span class="nav-label">Groups</span></a></li>
-      <li>
+      ${canView('#/', session?.role) ? `<li><a href="#/" class="nav-item active" data-tooltip="Dashboard"><span class="nav-icon">📊</span> <span class="nav-label">Dashboard</span></a></li>` : ''}
+      ${canView('#/analytics', session?.role) ? `<li><a href="#/analytics" class="nav-item" data-tooltip="Analytics"><span class="nav-icon">📈</span> <span class="nav-label">Analytics</span></a></li>` : ''}
+      ${canView('#/members', session?.role) ? `<li><a href="#/members" class="nav-item" data-tooltip="Members"><span class="nav-icon">👥</span> <span class="nav-label">Members</span></a></li>` : ''}
+      ${canView('#/groups', session?.role) ? `<li><a href="#/groups" class="nav-item" data-tooltip="Groups"><span class="nav-icon">🏘️</span> <span class="nav-label">Groups</span></a></li>` : ''}
+      ${canView('#/loans', session?.role) ? `<li>
         <a href="#/loans" class="nav-item" data-tooltip="Loans">
           <span class="nav-icon">💰</span> <span class="nav-label">Loans</span>
           ${pendingCount > 0 ? `<span class="badge-counter">${pendingCount}</span>` : ''}
         </a>
-      </li>
-      <li><a href="#/savings" class="nav-item" data-tooltip="Savings"><span class="nav-icon">🏦</span> <span class="nav-label">Savings</span></a></li>
-      ${session && session.role === 'admin' ? `
-        <li><a href="#/expenses" class="nav-item" data-tooltip="Expenses"><span class="nav-icon">📉</span> <span class="nav-label">Expenses</span></a></li>
-        <li><a href="#/reports" class="nav-item" data-tooltip="Reports"><span class="nav-icon">📑</span> <span class="nav-label">Reports</span></a></li>
-        <li><a href="#/settings" class="nav-item" data-tooltip="Settings"><span class="nav-icon">⚙️</span> <span class="nav-label">Settings</span></a></li>
-      ` : ''}
+      </li>` : ''}
+      ${canView('#/savings', session?.role) ? `<li><a href="#/savings" class="nav-item" data-tooltip="Savings"><span class="nav-icon">🏦</span> <span class="nav-label">Savings</span></a></li>` : ''}
+      ${canView('#/expenses', session?.role) ? `<li><a href="#/expenses" class="nav-item" data-tooltip="Expenses"><span class="nav-icon">📉</span> <span class="nav-label">Expenses</span></a></li>` : ''}
+      ${canView('#/reports', session?.role) ? `<li><a href="#/reports" class="nav-item" data-tooltip="Reports"><span class="nav-icon">📑</span> <span class="nav-label">Reports</span></a></li>` : ''}
+      ${canView('#/settings', session?.role) ? `<li><a href="#/settings" class="nav-item" data-tooltip="Settings"><span class="nav-icon">⚙️</span> <span class="nav-label">Settings</span></a></li>` : ''}
     </ul>
 
     <div class="sidebar-footer">
@@ -42,8 +61,8 @@ export const renderSidebar = async () => {
           ${session ? session.name.charAt(0).toUpperCase() : 'U'}
         </div>
         <div class="user-info">
-          <div class="user-name">${session ? session.name : 'Unknown User'}</div>
-          <div class="user-role">${session ? (session.role === 'admin' ? 'Super Admin' : 'Loan Officer') : ''}</div>
+          <div class="user-name">${session ? session.name || session.email : 'Unknown User'}</div>
+          <div class="user-role" style="text-transform: capitalize;">${session && session.role ? session.role.replace('_', ' ') : 'No Role'}</div>
         </div>
       </div>
       <button id="sidebar-logout" class="btn-logout" data-tooltip="Logout">
@@ -55,9 +74,7 @@ export const renderSidebar = async () => {
   // Logout Logic
   const logoutBtn = sidebar.querySelector('#sidebar-logout');
   if (logoutBtn) {
-    import('../core/auth.js').then(auth => {
-      logoutBtn.onclick = auth.logout;
-    });
+    logoutBtn.onclick = () => authService.logout();
   }
 
   // Toggle Logic

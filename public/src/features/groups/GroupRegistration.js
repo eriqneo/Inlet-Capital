@@ -1,4 +1,5 @@
-import { add, getById } from '../../core/db.js';
+import { groupService } from '../../services/groupService.js';
+import { authService } from '../../services/authService.js';
 import { generateGroupId } from '../../core/numberGen.js';
 import { navigate } from '../../core/router.js';
 
@@ -27,11 +28,11 @@ export const renderGroupRegistration = async () => {
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
         <div class="form-group">
           <label class="form-label">Registration Date</label>
-          <input type="date" name="registrationDate" class="form-control" value="${new Date().toISOString().split('T')[0]}" required />
+          <input type="date" name="registration_date" class="form-control" value="${new Date().toISOString().split('T')[0]}" required />
         </div>
         <div class="form-group">
           <label class="form-label">Meeting Day</label>
-          <select name="meetingDay" class="form-control">
+          <select name="meeting_day" class="form-control">
             <option value="Monday">Monday</option>
             <option value="Tuesday">Tuesday</option>
             <option value="Wednesday">Wednesday</option>
@@ -69,21 +70,31 @@ export const renderGroupRegistration = async () => {
     const groupData = Object.fromEntries(formData.entries());
     
     const group = {
-      ...groupData,
-      groupId,
+      name: groupData.name,
+      registration_date: new Date(groupData.registration_date).toISOString(),
+      meeting_day: groupData.meeting_day,
+      location: groupData.location,
+      phone: groupData.phone,
+      group_id: groupId,
       status: 'active',
-      memberCount: 0,
-      totalSavings: 0,
-      outstandingLoan: 0
+      member_count: 0,
+      total_savings: 0,
+      outstanding_loan: 0
     };
 
-    try {
-      await add('groups', group);
+    const userId = authService.getUser()?.id;
+    if (userId) {
+      group.created_by = userId;
+    }
 
-      notify.success('Group registered successfully!');
+    try {
+      await groupService.create(group);
+
+      if (window.notify) window.notify.success('Group registered successfully!');
       setTimeout(() => navigate('#/groups'), 1200);
     } catch (err) {
-      notify.error('Error registering group: ' + err.message);
+      if (window.notify) window.notify.error('Error registering group: ' + (err.message || 'Unknown error'));
+      console.error(err);
     }
   };
 
