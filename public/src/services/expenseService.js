@@ -33,11 +33,21 @@ export const expenseService = {
    * Get all voteheads (expense categories)
    */
   async getVoteheads({ includeArchived = false } = {}) {
-    const filter = includeArchived ? '' : 'status != "archived"';
-    return await pb.collection('voteheads').getFullList({
-      sort: 'name',
-      filter
-    });
+    try {
+      const filter = includeArchived ? '' : 'status != "archived"';
+      return await pb.collection('voteheads').getFullList({
+        sort: 'name',
+        filter
+      });
+    } catch (err) {
+      // Fallback if the 'status' field doesn't exist in the PocketBase schema yet
+      if (err.status === 400) {
+        return await pb.collection('voteheads').getFullList({
+          sort: 'name'
+        });
+      }
+      throw err;
+    }
   },
 
   /**

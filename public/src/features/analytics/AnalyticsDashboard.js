@@ -1,30 +1,32 @@
 import { pb } from '../../services/api.js';
 import { renderPagination } from '../../components/Pagination.js';
+import { dataCache, debounce } from '../../services/dataCache.js';
 
 export const renderAnalyticsDashboard = async () => {
   const container = document.createElement('div');
   container.innerHTML = `<div class="card text-center text-muted" style="padding:40px;">Loading analytics...</div>`;
   
-  // Fetch Data
-  let members, loans, repayments, groups, savings, schedules;
-  try {
-    [members, loans, repayments, groups, savings, schedules] = await Promise.all([
-      pb.collection('members').getFullList(),
-      pb.collection('loans').getFullList(),
-      pb.collection('loan_repayments').getFullList(),
-      pb.collection('groups').getFullList(),
-      pb.collection('savings').getFullList(),
-      pb.collection('loan_schedule').getFullList()
-    ]);
-  } catch (err) {
-    console.error('Failed to load analytics data:', err);
-    container.innerHTML = `<div class="card text-center text-danger" style="padding: 40px; margin: 20px;">
-      <h3 style="margin-bottom: 12px;">Failed to load analytics</h3>
-      <p class="text-muted" style="margin-bottom: 20px;">${err.message}</p>
-      <button class="btn btn-primary" onclick="window.location.reload()">Retry Connection</button>
-    </div>`;
-    return container;
-  }
+  const refresh = async () => {
+    // Fetch Data
+    let members, loans, repayments, groups, savings, schedules;
+    try {
+      [members, loans, repayments, groups, savings, schedules] = await Promise.all([
+        dataCache.get('members', () => pb.collection('members').getFullList()),
+        dataCache.get('loans', () => pb.collection('loans').getFullList()),
+        dataCache.get('loan_repayments', () => pb.collection('loan_repayments').getFullList()),
+        dataCache.get('groups', () => pb.collection('groups').getFullList()),
+        dataCache.get('savings', () => pb.collection('savings').getFullList()),
+        dataCache.get('loan_schedule', () => pb.collection('loan_schedule').getFullList())
+      ]);
+    } catch (err) {
+      console.error('Failed to load analytics data:', err);
+      container.innerHTML = `<div class="card text-center text-danger" style="padding: 40px; margin: 20px;">
+        <h3 style="margin-bottom: 12px;">Failed to load analytics</h3>
+        <p class="text-muted" style="margin-bottom: 20px;">${err.message}</p>
+        <button class="btn btn-primary" onclick="window.location.reload()">Retry Connection</button>
+      </div>`;
+      return;
+    }
 
   let currentFilter = 'all'; // '30days', 'quarter', 'ytd', 'all'
   let chartInstances = [];
@@ -468,7 +470,28 @@ export const renderAnalyticsDashboard = async () => {
     }
   };
 
-  renderData();
+  await refresh();
+
+  // Debounced refresh for real-time events
+  const debouncedRefresh = debounce(async () => {
+    await refresh();
+  }, 500);
+
+  // Helper to safely invalidate cache and refresh
+  const handleUpdate = (collection) => async () => {
+    await dataCache.invalidate(collection);
+    debouncedRefresh();
+  };
+
+  const subs = await Promise.all([
+    pb.collection('members').subscribe('*', handleUpdate('members')),
+    pb.collection('groups').subscribe('*', handleUpdate('groups')),
+    pb.collection('loans').subscribe('*', handleUpdate('loans')),
+    pb.collection('loan_repayments').subscribe('*', handleUpdate('loan_repayments')),
+    pb.collection('savings').subscribe('*', handleUpdate('savings')),
+    pb.collection('loan_schedule').subscribe('*', handleUpdate('loan_schedule'))
+  ]);
+  container.__subscriptions = subs;
 
   return container;
 };

@@ -1,4 +1,5 @@
 import { pb } from '../../services/api.js';
+import { dataCache, debounce } from '../../services/dataCache.js';
 
 export const renderDashboard = async () => {
   const container = document.createElement('div');
@@ -7,11 +8,11 @@ export const renderDashboard = async () => {
     let members, groups, loans, savings, schedules;
     try {
       [members, groups, loans, savings, schedules] = await Promise.all([
-        pb.collection('members').getFullList(),
-        pb.collection('groups').getFullList(),
-        pb.collection('loans').getFullList(),
-        pb.collection('savings').getFullList(),
-        pb.collection('loan_schedule').getFullList()
+        dataCache.get('members', () => pb.collection('members').getFullList()),
+        dataCache.get('groups', () => pb.collection('groups').getFullList()),
+        dataCache.get('loans', () => pb.collection('loans').getFullList()),
+        dataCache.get('savings', () => pb.collection('savings').getFullList()),
+        dataCache.get('loan_schedule', () => pb.collection('loan_schedule').getFullList())
       ]);
     } catch (err) {
       console.error('Failed to load dashboard data:', err);
@@ -177,13 +178,23 @@ export const renderDashboard = async () => {
 
   await refresh();
 
-  // Real-time updates
+  // Debounced refresh for real-time events
+  const debouncedRefresh = debounce(async () => {
+    await refresh();
+  }, 500);
+
+  // Helper to safely invalidate cache and refresh
+  const handleUpdate = (collection) => async () => {
+    await dataCache.invalidate(collection);
+    debouncedRefresh();
+  };
+
   const subs = await Promise.all([
-    pb.collection('members').subscribe('*', refresh),
-    pb.collection('groups').subscribe('*', refresh),
-    pb.collection('loans').subscribe('*', refresh),
-    pb.collection('savings').subscribe('*', refresh),
-    pb.collection('loan_schedule').subscribe('*', refresh)
+    pb.collection('members').subscribe('*', handleUpdate('members')),
+    pb.collection('groups').subscribe('*', handleUpdate('groups')),
+    pb.collection('loans').subscribe('*', handleUpdate('loans')),
+    pb.collection('savings').subscribe('*', handleUpdate('savings')),
+    pb.collection('loan_schedule').subscribe('*', handleUpdate('loan_schedule'))
   ]);
   container.__subscriptions = subs;
 

@@ -1,9 +1,10 @@
 import { memberService } from '../../services/memberService.js';
 import { renderPagination } from '../../components/Pagination.js';
+import { dataCache, debounce } from '../../services/dataCache.js';
 
 export const renderMemberList = async () => {
   const container = document.createElement('div');
-  const members = await memberService.getAll();
+  const members = await dataCache.get('members', () => memberService.getAll());
   
   let currentPage = 1;
   const pageSize = 10;
@@ -100,12 +101,18 @@ export const renderMemberList = async () => {
     updateUI();
   });
 
-  // Real-time updates
-  const unsub = await memberService.subscribeToChanges(async () => {
-    const freshMembers = await memberService.getAll();
+  // Debounced refresh for real-time events
+  const debouncedRefresh = debounce(async () => {
+    const freshMembers = await dataCache.refresh('members', () => memberService.getAll());
     members.length = 0;
     members.push(...freshMembers);
     searchInput.dispatchEvent(new Event('input')); // re-trigger search and filter
+  }, 500);
+
+  // Real-time updates
+  const unsub = await memberService.subscribeToChanges(async () => {
+    await dataCache.invalidate('members');
+    debouncedRefresh();
   });
   container.__subscriptions = [unsub];
 

@@ -5,30 +5,24 @@ import { expenseService } from '../../services/expenseService.js';
 import { pb } from '../../services/api.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
+import { dataCache } from '../../services/dataCache.js';
 
 export const renderReportsDashboard = async () => {
   const container = document.createElement('div');
   container.innerHTML = `<div class="card text-center" style="padding:60px;"><p class="text-muted">Loading reports...</p></div>`;
   
-  // Fetch all required data for reports from PocketBase
+  // Fetch all required data for reports from PocketBase via Cache
   let members = [], groups = [], loans = [], expenses = [], schedules = [], savings = [], repayments = [];
   try {
-    const [mRes, gRes, lRes, eRes, schRes, savRes, repRes] = await Promise.all([
-      memberService.getAll(),
-      groupService.getAll(),
-      pb.collection('loans').getFullList({ expand: 'member,group' }),
-      expenseService.getFullList(),
-      pb.collection('loan_schedule').getFullList(),
-      pb.collection('savings').getFullList({ expand: 'member,group' }),
-      pb.collection('loan_repayments').getFullList({ expand: 'loan' })
+    [members, groups, loans, expenses, schedules, savings, repayments] = await Promise.all([
+      dataCache.get('members', () => memberService.getAll()),
+      dataCache.get('groups', () => groupService.getAll()),
+      dataCache.get('loans_expanded', () => pb.collection('loans').getFullList({ expand: 'member,group' })),
+      dataCache.get('expenses', () => expenseService.getFullList()),
+      dataCache.get('loan_schedule', () => pb.collection('loan_schedule').getFullList()),
+      dataCache.get('savings_expanded', () => pb.collection('savings').getFullList({ expand: 'member,group' })),
+      dataCache.get('loan_repayments_expanded', () => pb.collection('loan_repayments').getFullList({ expand: 'loan' }))
     ]);
-    members = mRes;
-    groups = gRes;
-    loans = lRes;
-    expenses = eRes;
-    schedules = schRes;
-    savings = savRes;
-    repayments = repRes;
   } catch (err) {
     console.error('Error loading report data:', err);
     container.innerHTML = `<div class="card text-center text-danger">Failed to load reports: ${err.message}</div>`;
