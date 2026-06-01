@@ -39,39 +39,41 @@ export const renderGroupProfile = async (params) => {
   let inactiveMembersCount = 0;
 
   const enrichedMembers = [];
-  for (const m of allGroupMembers) {
+  await Promise.all(allGroupMembers.map(async (m) => {
     let mSavings = [], mLoans = [];
-    try { mSavings = await savingsService.getByMember(m.id); } catch(e) {}
-    try { mLoans = await loanService.getByMember(m.id); } catch(e) {}
+    try { 
+      [mSavings, mLoans] = await Promise.all([
+        savingsService.getByMember(m.id),
+        loanService.getByMember(m.id)
+      ]);
+    } catch(e) {}
 
     const totalSavings = mSavings.filter(s => !s.is_reversed).reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
 
     const activeLoans = mLoans.filter(l => ['disbursed', 'completed', 'closed'].includes(l.status));
     const totalLiability = activeLoans.reduce((sum, l) => sum + (l.total_liability || l.amount_applied * 1.1), 0);
 
-    // Get repayments for member loans
+    // Get repayments for member loans in parallel
     let totalRepaid = 0;
     let totalArrears = 0;
-    for (const loan of activeLoans) {
+    await Promise.all(activeLoans.map(async (loan) => {
       try {
-        const reps = await loanService.getRepaymentsForLoan(loan.id);
+        const [reps, scheds] = await Promise.all([
+          loanService.getRepaymentsForLoan(loan.id),
+          loanService.getScheduleForLoan(loan.id)
+        ]);
         totalRepaid += reps.reduce((sum, r) => sum + r.amount, 0);
-        const scheds = await loanService.getScheduleForLoan(loan.id);
         const overdue = scheds.filter(s => s.status !== 'paid' && new Date(s.due_date) < new Date());
         totalArrears += overdue.reduce((sum, s) => sum + s.amount, 0);
       } catch(e) {}
-    }
+    }));
 
     const olBalance = Math.max(0, totalLiability - totalRepaid);
     const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
     const isActive = lastSavingsDate && (new Date() - lastSavingsDate <= 90 * 24 * 60 * 60 * 1000);
 
-    totalGroupArrears += totalArrears;
-    if (totalArrears > 0) membersInArrearsCount++;
-    if (!isActive) inactiveMembersCount++;
-
     enrichedMembers.push({ ...m, totalSavings, olBalance, totalArrears, isActive, lastSavingsDate });
-  }
+  }));
 
   // Aggregate group savings
   const totalMemberSavings = enrichedMembers.reduce((sum, m) => sum + m.totalSavings, 0);
@@ -81,13 +83,20 @@ export const renderGroupProfile = async (params) => {
   // Group-level loan arrears
   const activeGroupLoans = groupLoans.filter(l => !l.member && ['disbursed', 'completed', 'closed'].includes(l.status));
   let groupLevelArrears = 0;
-  for (const gl of activeGroupLoans) {
+  await Promise.all(activeGroupLoans.map(async (gl) => {
     try {
       const scheds = await loanService.getScheduleForLoan(gl.id);
       groupLevelArrears += scheds.filter(s => s.status !== 'paid' && new Date(s.due_date) < new Date()).reduce((sum, s) => sum + s.amount, 0);
     } catch(e) {}
-  }
+  }));
   totalGroupArrears += groupLevelArrears;
+
+  // Calculate totals from enrichedMembers
+  for (const m of enrichedMembers) {
+    totalGroupArrears += m.totalArrears;
+    if (m.totalArrears > 0) membersInArrearsCount++;
+    if (!m.isActive) inactiveMembersCount++;
+  }
 
   // All unassigned members for add-member modal
   let unassignedMembers = [];
