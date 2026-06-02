@@ -1,16 +1,11 @@
 import { expenseService } from '../../services/expenseService.js';
 import { navigate } from '../../core/router.js';
-import { formatToInputDate } from '../../core/utils.js';
+import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderExpenseEntry = async () => {
   const container = document.createElement('div');
-  
   let voteheads = [];
-  try {
-    voteheads = await expenseService.getVoteheads();
-  } catch (err) {
-    console.error('Failed to load voteheads', err);
-  }
+  const todayInputValue = new Date().toISOString().split('T')[0];
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; align-items: center; gap: 16px;">
@@ -27,8 +22,7 @@ export const renderExpenseEntry = async () => {
           <label class="form-label">Expense Category (Votehead)</label>
           <div style="display: flex; gap: 8px;">
             <select name="votehead" class="form-control" required style="flex: 1;">
-              <option value="">Select category...</option>
-              ${voteheads.map(v => `<option value="${v.id}">${v.name}</option>`).join('')}
+              <option value="">Loading categories...</option>
             </select>
             <button type="button" class="btn btn-outline" id="new-votehead-btn" title="Add new category">+</button>
           </div>
@@ -41,7 +35,7 @@ export const renderExpenseEntry = async () => {
 
         <div class="form-group">
           <label class="form-label">Date</label>
-          <input type="date" name="date" class="form-control" required value="${formatToInputDate(new Date())}" />
+          <input type="date" name="date" class="form-control" required value="${todayInputValue}" />
         </div>
 
         <div class="form-group">
@@ -86,8 +80,7 @@ export const renderExpenseEntry = async () => {
     // ISO string handling if pb requires it
     data.date = new Date(data.date).toISOString();
     
-    btn.disabled = true;
-    btn.textContent = 'Recording...';
+    const restoreButton = setButtonLoading(btn, 'Recording...');
 
     try {
       await expenseService.create(data);
@@ -95,8 +88,7 @@ export const renderExpenseEntry = async () => {
       navigate('#/expenses');
     } catch (err) {
       if (window.notify) window.notify.error('Failed to record: ' + err.message);
-      btn.disabled = false;
-      btn.textContent = 'Record Expense';
+      restoreButton();
     }
   };
 
@@ -105,12 +97,25 @@ export const renderExpenseEntry = async () => {
   const qForm = container.querySelector('#quick-votehead-form');
   const select = container.querySelector('[name="votehead"]');
 
+  const populateVoteheads = () => {
+    select.innerHTML = `<option value="">Select category...</option>${voteheads.map(v => `<option value="${v.id}">${v.name}</option>`).join('')}`;
+  };
+
+  expenseService.getVoteheads().then(result => {
+    voteheads = result || [];
+    populateVoteheads();
+  }).catch(err => {
+    console.error('Failed to load voteheads', err);
+    select.innerHTML = '<option value="">Failed to load categories</option>';
+  });
+
   container.querySelector('#new-votehead-btn').onclick = () => modal.style.display = 'flex';
   container.querySelector('#close-modal').onclick = () => modal.style.display = 'none';
 
   qForm.onsubmit = async (e) => {
     e.preventDefault();
     const name = qForm.querySelector('[name="name"]').value;
+    const restoreButton = setButtonLoading(qForm.querySelector('button[type="submit"]'), 'Adding...');
     try {
       const v = await expenseService.createVotehead({ name, description: '' });
       const opt = document.createElement('option');
@@ -120,9 +125,11 @@ export const renderExpenseEntry = async () => {
       select.appendChild(opt);
       modal.style.display = 'none';
       qForm.reset();
+      restoreButton();
       if (window.notify) window.notify.success('Category added');
     } catch (err) {
       if (window.notify) window.notify.error(err.message);
+      restoreButton();
     }
   };
 

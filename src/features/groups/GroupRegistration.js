@@ -2,6 +2,7 @@ import { groupService } from '../../services/groupService.js';
 import { authService } from '../../services/authService.js';
 import { generateGroupId } from '../../core/numberGen.js';
 import { navigate } from '../../core/router.js';
+import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderGroupRegistration = async () => {
   const container = document.createElement('div');
@@ -87,6 +88,8 @@ export const renderGroupRegistration = async () => {
       group.created_by = userId;
     }
 
+    const restoreButton = setButtonLoading(form.querySelector('button[type="submit"]'), 'Registering...');
+
     try {
       await groupService.create(group);
 
@@ -95,6 +98,7 @@ export const renderGroupRegistration = async () => {
     } catch (err) {
       if (window.notify) window.notify.error('Error registering group: ' + (err.message || 'Unknown error'));
       console.error(err);
+      restoreButton();
     }
   };
 

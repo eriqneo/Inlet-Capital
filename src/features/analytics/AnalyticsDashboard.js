@@ -473,8 +473,9 @@ export const renderAnalyticsDashboard = async () => {
     }
   };
 
-  const ok = await refresh();
-  if (ok) renderData();
+  refresh().then(ok => {
+    if (ok) renderData();
+  });
 
   // Debounced refresh for real-time events
   const debouncedRefresh = debounce(async () => {
@@ -488,7 +489,7 @@ export const renderAnalyticsDashboard = async () => {
     debouncedRefresh();
   };
 
-  const subs = await Promise.all([
+  container.__subscriptionPromise = Promise.all([
     pb.collection('members').subscribe('*', handleUpdate('members')),
     pb.collection('groups').subscribe('*', handleUpdate('groups')),
     pb.collection('loans').subscribe('*', handleUpdate('loans')),
@@ -496,7 +497,6 @@ export const renderAnalyticsDashboard = async () => {
     pb.collection('savings').subscribe('*', handleUpdate('savings')),
     pb.collection('loan_schedule').subscribe('*', handleUpdate('loan_schedule'))
   ]);
-  container.__subscriptions = subs;
 
   return container;
 };

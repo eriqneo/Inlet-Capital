@@ -4,10 +4,11 @@ import { authService } from '../../services/authService.js';
 import { pb } from '../../services/api.js';
 import { openCamera } from '../../components/Camera.js';
 import { renderPagination } from '../../components/Pagination.js';
+import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderAdminSettings = async () => {
   const container = document.createElement('div');
-  
+
   // State
   let settings = {};
   let timestamps = {};
@@ -15,6 +16,10 @@ export const renderAdminSettings = async () => {
   let voteheads = [];
   let auditLogs = [];
   let showArchivedVoteheads = false;
+  let isSettingsLoading = true;
+  let isUsersLoading = true;
+  let isVoteheadsLoading = true;
+  let isAuditLoading = true;
   
   let auditPage = 1;
   const auditPageSize = 20;
@@ -23,24 +28,63 @@ export const renderAdminSettings = async () => {
 
   const isSuperAdmin = authService.hasRole('super_admin');
 
-  // Fetch initial data
-  const loadData = async () => {
+  const loadSettingsData = async () => {
+    isSettingsLoading = true;
+    renderUI();
     try {
-      [settings, timestamps] = await Promise.all([
-        settingsService.getAll(),
-        settingsService.getTimestamps()
-      ]);
-      users = await pb.collection('users').getFullList({ sort: '-created' });
-      voteheads = await expenseService.getVoteheads({ includeArchived: true });
+      const records = await pb.collection('settings').getFullList();
+      settings = Object.fromEntries(records.map(r => [r.key, r.value]));
+      timestamps = Object.fromEntries(records.map(r => [r.key, r.updated]));
     } catch (err) {
       console.error("Failed to load settings data", err);
-      container.innerHTML = `<div class="card text-center text-danger">Failed to load settings: ${err.message}</div>`;
-      return false;
+      if (window.notify) window.notify.error('Failed to load settings: ' + err.message);
+    } finally {
+      isSettingsLoading = false;
+      renderUI();
     }
-    return true;
+  };
+
+  const loadUsers = async () => {
+    isUsersLoading = true;
+    renderUI();
+    try {
+      users = await pb.collection('users').getFullList({ sort: '-created' });
+    } catch (err) {
+      console.error("Failed to load users", err);
+      users = [];
+      if (window.notify) window.notify.error('Failed to load users: ' + err.message);
+    } finally {
+      isUsersLoading = false;
+      renderUI();
+    }
+  };
+
+  const loadVoteheads = async () => {
+    isVoteheadsLoading = true;
+    renderUI();
+    try {
+      voteheads = await expenseService.getVoteheads({ includeArchived: true });
+    } catch (err) {
+      console.error("Failed to load voteheads", err);
+      voteheads = [];
+      if (window.notify) window.notify.error('Failed to load voteheads: ' + err.message);
+    } finally {
+      isVoteheadsLoading = false;
+      renderUI();
+    }
+  };
+
+  const loadData = async () => {
+    await Promise.all([
+      loadSettingsData(),
+      loadUsers(),
+      loadVoteheads()
+    ]);
   };
 
   const loadAuditLogs = async () => {
+    isAuditLoading = true;
+    renderUI();
     try {
       let filter = '';
       if (auditFilter !== 'all') {
@@ -57,11 +101,19 @@ export const renderAdminSettings = async () => {
       console.warn("Audit logs error:", e);
       auditLogs = [];
       auditTotal = 0;
+    } finally {
+      isAuditLoading = false;
+      renderUI();
     }
   };
 
-  if (!(await loadData())) return container;
-  await loadAuditLogs();
+  const initialize = async () => {
+    renderUI();
+    loadSettingsData();
+    loadUsers();
+    loadVoteheads();
+    loadAuditLogs();
+  };
 
   const renderUI = () => {
     // Determine active tab based on current DOM if re-rendering, default to org
@@ -94,6 +146,7 @@ export const renderAdminSettings = async () => {
           <!-- 1. Organisation Profile -->
           <div id="org-tab" class="tab-section" style="display: ${activeTab === 'org' ? 'block' : 'none'};">
             <form id="org-form">
+              ${isSettingsLoading ? `<div class="text-xs text-muted" style="margin-bottom: 16px;">Loading current organisation settings...</div>` : ''}
               <div style="display: grid; grid-template-columns: 200px 1fr; gap: 32px;">
                 <div>
                   <div class="form-label">Company Logo</div>
@@ -135,7 +188,7 @@ export const renderAdminSettings = async () => {
                 </div>
               </div>
               <div style="display: flex; justify-content: flex-end; margin-top: 24px; border-top: 1px solid var(--border-color); padding-top: 16px;">
-                <button type="submit" class="btn btn-primary">Save Organisation Details</button>
+                <button type="submit" class="btn btn-primary" ${isSettingsLoading ? 'disabled' : ''}>Save Organisation Details</button>
               </div>
             </form>
           </div>
@@ -159,7 +212,18 @@ export const renderAdminSettings = async () => {
                   </tr>
                 </thead>
                 <tbody>
-                  ${users.map(u => `
+                  ${isUsersLoading ? `
+                    <tr>
+                      <td colspan="5" class="text-center text-muted" style="padding: 32px;">
+                        <div class="spinner" style="margin: 0 auto 12px;"></div>
+                        Loading users...
+                      </td>
+                    </tr>
+                  ` : users.length === 0 ? `
+                    <tr>
+                      <td colspan="5" class="text-center text-muted" style="padding: 24px;">No users found.</td>
+                    </tr>
+                  ` : users.map(u => `
                     <tr>
                       <td>
                         <div class="font-semibold">${u.name || 'Unnamed'}</div>
@@ -251,7 +315,12 @@ export const renderAdminSettings = async () => {
               </div>
             </div>
             <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">
-              ${visibleVoteheads.length === 0 ? '<p class="text-muted">No voteheads found.</p>' : visibleVoteheads.map(v => `
+              ${isVoteheadsLoading ? `
+                <div class="card text-center text-muted" style="grid-column: 1/-1;">
+                  <div class="spinner" style="margin: 0 auto 12px;"></div>
+                  Loading voteheads...
+                </div>
+              ` : visibleVoteheads.length === 0 ? '<p class="text-muted">No voteheads found.</p>' : visibleVoteheads.map(v => `
                 <div class="card" style="background: var(--bg-light); border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: flex-start; opacity: ${v.status === 'archived' ? '0.6' : '1'};">
                   <div>
                     <div class="font-semibold" style="color: var(--primary);">${v.name} ${v.status === 'archived' ? '<span class="badge badge-secondary text-xs">ARCHIVED</span>' : ''}</div>
@@ -294,6 +363,7 @@ export const renderAdminSettings = async () => {
           <!-- 4. Rates & Fees -->
           <div id="rates-tab" class="tab-section" style="display: ${activeTab === 'rates' ? 'block' : 'none'};">
             <form id="rates-form">
+              ${isSettingsLoading ? `<div class="text-xs text-muted" style="margin-bottom: 16px;">Loading current financial settings...</div>` : ''}
               <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px;">
                 <div class="card" style="background: var(--bg-light);">
                   <h4 style="margin-bottom: 12px;">Financial Rates</h4>
@@ -337,7 +407,7 @@ export const renderAdminSettings = async () => {
                 </div>
               </div>
               <div style="display: flex; justify-content: flex-end; margin-top: 24px; border-top: 1px solid var(--border-color); padding-top: 16px;">
-                <button type="submit" class="btn btn-primary">Save Rates & Settings</button>
+                <button type="submit" class="btn btn-primary" ${isSettingsLoading ? 'disabled' : ''}>Save Rates & Settings</button>
               </div>
             </form>
           </div>
@@ -357,7 +427,12 @@ export const renderAdminSettings = async () => {
               </div>
             </div>
             <div class="table-responsive card" style="padding: 0;">
-              ${auditLogs.length === 0 ? `<p class="text-muted text-center" style="padding: 20px;">No audit logs found.</p>` : `
+              ${isAuditLoading ? `
+                <div class="text-muted text-center" style="padding: 32px;">
+                  <div class="spinner" style="margin: 0 auto 12px;"></div>
+                  Loading audit trail...
+                </div>
+              ` : auditLogs.length === 0 ? `<p class="text-muted text-center" style="padding: 20px;">No audit logs found.</p>` : `
                 <table class="table" style="font-size: 0.8rem;">
                   <thead>
                     <tr>
@@ -453,6 +528,7 @@ export const renderAdminSettings = async () => {
       
       const formData = new FormData(e.target);
       const obj = Object.fromEntries(formData.entries());
+      const restoreButton = setButtonLoading(e.target.querySelector('button[type="submit"]'), 'Saving...');
       
       try {
         await settingsService.saveBulk(obj);
@@ -462,6 +538,7 @@ export const renderAdminSettings = async () => {
         renderUI();
       } catch (err) {
         if (window.notify) window.notify.error('Error: ' + err.message);
+        restoreButton();
       }
     };
 
@@ -520,6 +597,7 @@ export const renderAdminSettings = async () => {
       }
       
       data.emailVisibility = true;
+      const restoreButton = setButtonLoading(userForm.querySelector('button[type="submit"]'), editId ? 'Updating...' : 'Creating...');
 
       try {
         if (editId) {
@@ -536,12 +614,14 @@ export const renderAdminSettings = async () => {
         renderUI();
       } catch (err) {
         if (window.notify) window.notify.error(err.message);
+        restoreButton();
       }
     };
 
     container.querySelectorAll('.suspend-user-btn').forEach(btn => {
       btn.onclick = async () => {
         if (!confirm("Are you sure you want to suspend this user?")) return;
+        const restoreButton = setButtonLoading(btn, 'Suspending...');
         try {
           await authService.suspendUser(btn.dataset.id);
           await logAudit('user_suspended', `User ID ${btn.dataset.id} suspended`);
@@ -550,12 +630,14 @@ export const renderAdminSettings = async () => {
           renderUI();
         } catch (e) {
           if (window.notify) window.notify.error(e.message);
+          restoreButton();
         }
       };
     });
 
     container.querySelectorAll('.activate-user-btn').forEach(btn => {
       btn.onclick = async () => {
+        const restoreButton = setButtonLoading(btn, 'Activating...');
         try {
           await authService.activateUser(btn.dataset.id);
           await logAudit('user_activated', `User ID ${btn.dataset.id} activated`);
@@ -564,6 +646,7 @@ export const renderAdminSettings = async () => {
           renderUI();
         } catch (e) {
           if (window.notify) window.notify.error(e.message);
+          restoreButton();
         }
       };
     });
@@ -571,6 +654,7 @@ export const renderAdminSettings = async () => {
     container.querySelectorAll('.delete-user-btn').forEach(btn => {
       btn.onclick = async () => {
         if (!confirm("WARNING: This permanently deletes the user. Proceed?")) return;
+        const restoreButton = setButtonLoading(btn, 'Deleting...');
         try {
           await authService.deleteUser(btn.dataset.id);
           await logAudit('user_deleted', `User ID ${btn.dataset.id} permanently deleted`);
@@ -579,6 +663,7 @@ export const renderAdminSettings = async () => {
           renderUI();
         } catch (e) {
           if (window.notify) window.notify.error(e.message);
+          restoreButton();
         }
       };
     });
@@ -619,6 +704,7 @@ export const renderAdminSettings = async () => {
       const formData = new FormData(voteheadForm);
       const data = Object.fromEntries(formData.entries());
       const editId = container.querySelector('#votehead-edit-id').value;
+      const restoreButton = setButtonLoading(voteheadForm.querySelector('button[type="submit"]'), editId ? 'Updating...' : 'Creating...');
 
       try {
         if (editId) {
@@ -634,12 +720,14 @@ export const renderAdminSettings = async () => {
         renderUI();
       } catch (err) {
         if (window.notify) window.notify.error(err.message);
+        restoreButton();
       }
     };
 
     container.querySelectorAll('.archive-votehead-btn').forEach(btn => {
       btn.onclick = async () => {
         if (!confirm("Are you sure you want to archive this category? It will no longer be available for new expenses.")) return;
+        const restoreButton = setButtonLoading(btn, 'Archiving...');
         try {
           await expenseService.deleteVotehead(btn.dataset.id);
           await logAudit('votehead_archived', `Votehead ID ${btn.dataset.id} archived`);
@@ -648,12 +736,14 @@ export const renderAdminSettings = async () => {
           renderUI();
         } catch (err) {
           if (window.notify) window.notify.error(err.message);
+          restoreButton();
         }
       };
     });
 
     container.querySelectorAll('.restore-votehead-btn').forEach(btn => {
       btn.onclick = async () => {
+        const restoreButton = setButtonLoading(btn, 'Restoring...');
         try {
           await expenseService.updateVotehead(btn.dataset.id, { status: 'active' });
           await logAudit('votehead_restored', `Votehead ID ${btn.dataset.id} restored`);
@@ -662,6 +752,7 @@ export const renderAdminSettings = async () => {
           renderUI();
         } catch (err) {
           if (window.notify) window.notify.error(err.message);
+          restoreButton();
         }
       };
     });
@@ -687,6 +778,6 @@ export const renderAdminSettings = async () => {
     }
   };
 
-  renderUI();
+  initialize();
   return container;
 };

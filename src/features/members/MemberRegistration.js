@@ -5,13 +5,12 @@ import { generateRegNo } from '../../core/numberGen.js';
 import { navigate } from '../../core/router.js';
 import { openCamera } from '../../components/Camera.js';
 import { initDateMask, parseInputDate } from '../../core/utils.js';
+import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderMemberRegistration = async () => {
   const container = document.createElement('div');
   const regNo = generateRegNo();
-  
-  // Get current registration fee from settings
-  const regFee = (await settingsService.get('individual_reg_fee')) || 1000;
+  let regFee = 1000;
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -111,7 +110,7 @@ export const renderMemberRegistration = async () => {
             <h4 style="margin-bottom: 12px; font-size: 0.875rem; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">Registration Summary</h4>
             <div style="display: flex; justify-content: space-between; font-size: 0.875rem; margin-bottom: 16px;">
               <span>Registration Fee</span>
-              <span class="font-semibold" style="color: var(--success);">KES ${regFee.toLocaleString()}</span>
+              <span id="registration-fee-display" class="font-semibold" style="color: var(--success);">KES ${regFee.toLocaleString()}</span>
             </div>
             
             <div class="form-group" style="margin-bottom: 16px;">
@@ -141,6 +140,15 @@ export const renderMemberRegistration = async () => {
 
   // Date of Birth input mask
   initDateMask(container.querySelector('#dob-input'));
+
+  settingsService.get('individual_reg_fee').then(value => {
+    const parsedFee = Number(value);
+    if (!Number.isNaN(parsedFee) && parsedFee > 0) {
+      regFee = parsedFee;
+      const feeDisplay = container.querySelector('#registration-fee-display');
+      if (feeDisplay) feeDisplay.textContent = `KES ${regFee.toLocaleString()}`;
+    }
+  }).catch(err => console.warn('[MemberRegistration] Registration fee fetch failed:', err));
 
   // Photo Capture logic
   const takePhotoBtn = container.querySelector('#take-photo-btn');
@@ -196,6 +204,8 @@ export const renderMemberRegistration = async () => {
       registered_by: authService.getUser()?.id || null
     };
 
+    const restoreButton = setButtonLoading(form.querySelector('button[type="submit"]'), 'Registering...');
+
     try {
       await memberService.create(member);
       
@@ -206,6 +216,7 @@ export const renderMemberRegistration = async () => {
     } catch (err) {
       if (window.notify) window.notify.error('Error registering member: ' + (err.message || 'Unknown error'));
       console.error(err);
+      restoreButton();
     }
   };
 

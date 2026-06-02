@@ -1,14 +1,15 @@
 import { memberService } from '../../services/memberService.js';
 import { renderPagination } from '../../components/Pagination.js';
-import { dataCache, debounce } from '../../services/dataCache.js';
+import { debounce } from '../../services/dataCache.js';
 
 export const renderMemberList = async () => {
   const container = document.createElement('div');
-  const members = await dataCache.get('members', () => memberService.getAll());
   
   let currentPage = 1;
   const pageSize = 10;
-  let filteredMembers = [...members];
+  let currentSearch = '';
+  let totalItems = 0;
+  let requestId = 0;
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -36,7 +37,7 @@ export const renderMemberList = async () => {
             </tr>
           </thead>
           <tbody id="member-table-body">
-            <!-- Table content will be injected here -->
+            <tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">Loading members...</td></tr>
           </tbody>
         </table>
       </div>
@@ -46,15 +47,20 @@ export const renderMemberList = async () => {
 
   const tableBody = container.querySelector('#member-table-body');
   const paginationWrapper = container.querySelector('#pagination-wrapper');
+  const searchInput = container.querySelector('#member-search');
 
-  const updateUI = () => {
-    const start = (currentPage - 1) * pageSize;
-    const end = start + pageSize;
-    const paginatedItems = filteredMembers.slice(start, end);
+  const escapeFilterValue = (value) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
-    tableBody.innerHTML = paginatedItems.length === 0 ? `
+  const buildSearchFilter = (term) => {
+    const q = escapeFilterValue(term.trim());
+    if (!q) return '';
+    return `full_name~"${q}" || reg_no~"${q}" || id_number~"${q}" || phone_number~"${q}"`;
+  };
+
+  const renderRows = (members) => {
+    tableBody.innerHTML = members.length === 0 ? `
       <tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">No members found.</td></tr>
-    ` : paginatedItems.map(m => `
+    ` : members.map(m => `
       <tr>
         <td>
           <div style="display: flex; align-items: center; gap: 12px;">
@@ -77,44 +83,60 @@ export const renderMemberList = async () => {
     `).join('');
 
     paginationWrapper.innerHTML = '';
-    const pagination = renderPagination(filteredMembers.length, pageSize, currentPage, (newPage) => {
+    const pagination = renderPagination(totalItems, pageSize, currentPage, (newPage) => {
       currentPage = newPage;
-      updateUI();
+      loadMembers();
     });
     if (pagination) paginationWrapper.appendChild(pagination);
   };
 
-  // Initial render
-  updateUI();
+  const loadMembers = async () => {
+    const thisRequest = ++requestId;
+    tableBody.innerHTML = `<tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">Loading members...</td></tr>`;
+    paginationWrapper.innerHTML = '';
+
+    try {
+      const result = await memberService.list({
+        page: currentPage,
+        perPage: pageSize,
+        filter: buildSearchFilter(currentSearch),
+        sort: '-created'
+      });
+
+      if (thisRequest !== requestId) return;
+      totalItems = result.totalItems;
+      renderRows(result.items);
+    } catch (err) {
+      console.error('[MemberList] Failed to load members:', err);
+      tableBody.innerHTML = `
+        <tr>
+          <td colspan="5" class="text-center text-danger" style="padding: 40px;">
+            Failed to load members. ${err.message || ''}
+          </td>
+        </tr>
+      `;
+    }
+  };
 
   // Search logic
-  const searchInput = container.querySelector('#member-search');
-  searchInput.addEventListener('input', (e) => {
-    const term = e.target.value.toLowerCase();
-    filteredMembers = members.filter(m => 
-      (m.full_name || m.fullName)?.toLowerCase().includes(term) || 
-      (m.reg_no || m.regNo)?.toLowerCase().includes(term) || 
-      (m.id_number || m.idNo)?.includes(term) || 
-      (m.phone_number)?.includes(term)
-    );
+  const debouncedSearch = debounce(() => {
     currentPage = 1;
-    updateUI();
-  });
+    currentSearch = searchInput.value;
+    loadMembers();
+  }, 300);
+
+  searchInput.addEventListener('input', debouncedSearch);
+
+  loadMembers();
 
   // Debounced refresh for real-time events
   const debouncedRefresh = debounce(async () => {
-    const freshMembers = await dataCache.refresh('members', () => memberService.getAll());
-    members.length = 0;
-    members.push(...freshMembers);
-    searchInput.dispatchEvent(new Event('input')); // re-trigger search and filter
+    await loadMembers();
   }, 500);
 
   // Real-time updates
-  const unsub = await memberService.subscribeToChanges(async () => {
-    await dataCache.invalidate('members');
-    debouncedRefresh();
-  });
-  container.__subscriptions = [unsub];
+  container.__subscriptionPromise = memberService.subscribeToChanges(debouncedRefresh)
+    .then(unsub => [unsub]);
 
   return container;
 };

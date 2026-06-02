@@ -1,8 +1,8 @@
 import { loanService } from '../../services/loanService.js';
-import { memberService } from '../../services/memberService.js';
-import { groupService } from '../../services/groupService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
+import { debounce } from '../../services/dataCache.js';
+import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderLoanList = async () => {
   const container = document.createElement('div');
@@ -11,6 +11,7 @@ export const renderLoanList = async () => {
   let currentPage = 1;
   const pageSize = 10;
   let searchTerm = '';
+  let requestId = 0;
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -98,6 +99,7 @@ export const renderLoanList = async () => {
   const paginationWrapper = container.querySelector('#pagination-wrapper');
 
   const updateUI = async () => {
+    const thisRequest = ++requestId;
     try {
       tableBody.innerHTML = `<tr><td colspan="8" class="text-center text-muted" style="padding: 40px;">Loading loans...</td></tr>`;
 
@@ -112,6 +114,8 @@ export const renderLoanList = async () => {
         perPage: pageSize,
         filter: pbFilter
       });
+
+      if (thisRequest !== requestId) return;
 
       const paginatedLoans = result.items;
 
@@ -246,6 +250,7 @@ export const renderLoanList = async () => {
   form.onsubmit = async (e) => {
     e.preventDefault();
     if (!activeFeeRecordId) return;
+    const restoreButton = setButtonLoading(form.querySelector('button[type="submit"]'), 'Recording...');
 
     try {
       await loanService.update(activeFeeRecordId, {
@@ -266,21 +271,23 @@ export const renderLoanList = async () => {
     } catch (err) {
       if (window.notify) window.notify.error('Error recording fee: ' + (err.message || 'Validation Failed'));
       console.error(err);
+      restoreButton();
     }
   };
 
   const searchInput = container.querySelector('#loan-search');
-  searchInput.addEventListener('input', (e) => {
-    searchTerm = e.target.value.toLowerCase();
+  const debouncedSearch = debounce(() => {
+    searchTerm = searchInput.value.trim();
     currentPage = 1;
     updateUI();
-  });
+  }, 300);
+  searchInput.addEventListener('input', debouncedSearch);
 
   updateUI();
 
   // Real-time updates
-  const unsub = await loanService.subscribeToChanges(() => updateUI());
-  container.__subscriptions = [unsub];
+  container.__subscriptionPromise = loanService.subscribeToChanges(() => updateUI())
+    .then(unsub => [unsub]);
 
   return container;
 };

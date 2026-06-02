@@ -3,6 +3,9 @@ import { settingsService } from '../../services/settingsService.js';
 import { navigate } from '../../core/router.js';
 import { formatDate } from '../../core/utils.js';
 import { pb } from '../../services/api.js'; // We'll use pb to get all loans for the queue
+import { setButtonLoading } from '../../core/uiState.js';
+
+const QUEUE_FILTER = 'status="pending" || status="approved" || status="partial_approved" || status="expired"';
 
 export const renderLoanApprovalQueue = async () => {
   const container = document.createElement('div');
@@ -20,7 +23,7 @@ export const renderLoanApprovalQueue = async () => {
 
   let allLoans;
   try {
-    allLoans = await pb.collection('loans').getFullList({ expand: 'member,group' });
+    allLoans = await pb.collection('loans').getFullList({ filter: QUEUE_FILTER, expand: 'member,group' });
   } catch (err) {
     console.error('[LoanApprovalQueue] Failed to fetch loans:', err);
     container.innerHTML = `
@@ -55,7 +58,7 @@ export const renderLoanApprovalQueue = async () => {
   }
 
   // Fetch fresh loans if statuses changed
-  const freshLoans = updatedAny ? await pb.collection('loans').getFullList({ expand: 'member,group' }) : allLoans;
+  const freshLoans = updatedAny ? await pb.collection('loans').getFullList({ filter: QUEUE_FILTER, expand: 'member,group' }) : allLoans;
 
   // Filter queues
   const pendingLoans = freshLoans.filter(l => l.status === 'pending');
@@ -442,6 +445,7 @@ export const renderLoanApprovalQueue = async () => {
   feeForm.onsubmit = async (e) => {
     e.preventDefault();
     if (!currentFeeLoanId) return;
+    const restoreButton = setButtonLoading(feeForm.querySelector('button[type="submit"]'), 'Recording...');
 
     try {
       await loanService.update(currentFeeLoanId, {
@@ -461,6 +465,7 @@ export const renderLoanApprovalQueue = async () => {
     } catch (err) {
       console.error(err);
       if (window.notify) window.notify.error('Failed to save fee: ' + err.message);
+      restoreButton();
     }
   };
 
@@ -470,28 +475,35 @@ export const renderLoanApprovalQueue = async () => {
   let activePartialLoanId = null;
 
   container.querySelector('#confirm-partial-btn').onclick = async () => {
+    const btn = container.querySelector('#confirm-partial-btn');
     const amount = parseFloat(container.querySelector('#partial-amount').value);
     const reason = container.querySelector('#partial-reason').value;
     if (!amount) return;
+    const restoreButton = setButtonLoading(btn, 'Approving...');
 
-    const loan = await loanService.getById(activePartialLoanId);
-    const interestRate = (await settingsService.get('interest_rate_percent')) || 20;
-    const interestAmount = amount * (interestRate / 100);
+    try {
+      const loan = await loanService.getById(activePartialLoanId);
+      const interestRate = (await settingsService.get('interest_rate_percent')) || 20;
+      const interestAmount = amount * (interestRate / 100);
 
-    await loanService.update(activePartialLoanId, {
-      status: 'partial_approved',
-      approved_amount: amount,
-      approved_date: new Date().toISOString(),
-      interest_amount: interestAmount,
-      total_liability: amount + interestAmount,
-      // Since PocketBase JSON fields are restrictive, we might just store this in notes or there is no field for partial_reason in schema.
-      // Wait, there is no `partial_reason` field. Let's append to purpose if there is no notes field.
-      // Actually, we'll just omit it, or update it locally if we add a 'reason' field later. For now, it will be skipped by PB if not in schema.
-    });
+      await loanService.update(activePartialLoanId, {
+        status: 'partial_approved',
+        approved_amount: amount,
+        approved_date: new Date().toISOString(),
+        interest_amount: interestAmount,
+        total_liability: amount + interestAmount,
+        // Since PocketBase JSON fields are restrictive, we might just store this in notes or there is no field for partial_reason in schema.
+        // Wait, there is no `partial_reason` field. Let's append to purpose if there is no notes field.
+        // Actually, we'll just omit it, or update it locally if we add a 'reason' field later. For now, it will be skipped by PB if not in schema.
+      });
 
-    partialModal.style.display = 'none';
-    if (window.notify) window.notify.success('Loan partially approved! Moved to Awaiting Disbursement.');
-    await refreshQueue('awaiting');
+      partialModal.style.display = 'none';
+      if (window.notify) window.notify.success('Loan partially approved! Moved to Awaiting Disbursement.');
+      await refreshQueue('awaiting');
+    } catch (err) {
+      if (window.notify) window.notify.error('Partial approval failed: ' + err.message);
+      restoreButton();
+    }
   };
 
   container.addEventListener('click', async (e) => {
@@ -501,9 +513,7 @@ export const renderLoanApprovalQueue = async () => {
     const { action, id } = btn.dataset;
     if (!id) return;
 
-    btn.disabled = true;
-    const origText = btn.innerHTML;
-    btn.innerHTML = 'Processing...';
+    const restoreButton = setButtonLoading(btn, action === 'disburse' ? 'Disbursing...' : 'Processing...');
 
     try {
       if (action === 'approve') {
@@ -622,11 +632,9 @@ export const renderLoanApprovalQueue = async () => {
       if (window.notify) window.notify.error('Operation failed: ' + err.message);
     } finally {
       if (action !== 'partial') {
-        btn.disabled = false;
-        btn.innerHTML = origText;
+        restoreButton();
       } else {
-        btn.disabled = false;
-        btn.innerHTML = origText;
+        restoreButton();
       }
     }
   });

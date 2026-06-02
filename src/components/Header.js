@@ -1,14 +1,45 @@
 import { authService } from '../services/authService.js';
 import { settingsService } from '../services/settingsService.js';
 
+let cachedOrgSettings = null;
+let orgSettingsPromise = null;
+
+const loadOrgSettings = async () => {
+  if (cachedOrgSettings) return cachedOrgSettings;
+  if (!orgSettingsPromise) {
+    orgSettingsPromise = settingsService.getAll()
+      .then(settings => {
+        cachedOrgSettings = settings;
+        return settings;
+      })
+      .catch(() => ({}))
+      .finally(() => {
+        orgSettingsPromise = null;
+      });
+  }
+  return orgSettingsPromise;
+};
+
+const applyOrgSettings = (header, settings = {}) => {
+  const orgName = settings.org_name || 'Inlet Capital';
+  const orgLogo = settings.org_logo;
+  const orgNameEl = header.querySelector('#header-org-name');
+  const logoSlot = header.querySelector('#header-logo-slot');
+
+  if (orgNameEl) orgNameEl.textContent = `@ ${orgName}`;
+  if (logoSlot && orgLogo) {
+    logoSlot.innerHTML = `
+      <div style="height: 40px; width: 40px; background: white; border-radius: 8px; overflow: hidden; padding: 4px; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+        <img src="${orgLogo}" style="max-width: 100%; max-height: 100%; object-fit: contain;" />
+      </div>
+    `;
+  }
+};
+
 export const renderHeader = async () => {
   const user = authService.getUser();
   const header = document.createElement('header');
   header.className = 'header';
-  
-  // Fetch Org Details
-  const orgName = (await settingsService.get('org_name')) || 'Inlet Capital';
-  const orgLogo = await settingsService.get('org_logo');
 
   // Greeting logic
   const hour = new Date().getHours();
@@ -25,17 +56,13 @@ export const renderHeader = async () => {
         <span style="font-size: 24px;">☰</span>
       </button>
       
-      ${orgLogo ? `
-        <div style="height: 40px; width: 40px; background: white; border-radius: 8px; overflow: hidden; padding: 4px; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-          <img src="${orgLogo}" style="max-width: 100%; max-height: 100%; object-fit: contain;" />
-        </div>
-      ` : ''}
+      <div id="header-logo-slot"></div>
 
       <div>
         <h2 style="font-size: 1.125rem; margin: 0;">${greeting}, <span style="color: var(--secondary);">${name}</span></h2>
         <div style="display: flex; align-items: center; gap: 6px;">
           <span class="text-xs text-muted" style="background: rgba(27,61,114,0.05); padding: 1px 6px; border-radius: 4px;">${role}</span>
-          <span class="text-xs text-muted" style="opacity: 0.5;">@ ${orgName}</span>
+          <span id="header-org-name" class="text-xs text-muted" style="opacity: 0.5;">@ Inlet Capital</span>
         </div>
       </div>
     </div>
@@ -81,6 +108,12 @@ export const renderHeader = async () => {
       sidebar.classList.toggle('open');
     }
   });
+
+  if (cachedOrgSettings) {
+    applyOrgSettings(header, cachedOrgSettings);
+  } else {
+    loadOrgSettings().then(settings => applyOrgSettings(header, settings));
+  }
 
   // Logout handled in Sidebar
   return header;

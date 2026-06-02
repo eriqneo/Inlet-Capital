@@ -4,11 +4,12 @@ import { groupService } from '../../services/groupService.js';
 import { authService } from '../../services/authService.js';
 import { navigate } from '../../core/router.js';
 import { formatDate } from '../../core/utils.js';
+import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderSavingsLedger = async () => {
   const container = document.createElement('div');
-  const members = await memberService.getAll();
-  const groups = await groupService.getAll();
+  let members = [];
+  let groups = [];
 
   container.innerHTML = `
     <div style="margin-bottom: 24px;">
@@ -32,16 +33,14 @@ export const renderSavingsLedger = async () => {
           <div class="form-group" id="member-select-wrap">
             <label class="form-label">Select Member</label>
             <select name="memberId" class="form-control" id="member-id">
-              <option value="">Select...</option>
-              ${members.map(m => `<option value="${m.id}">${m.full_name} (${m.reg_no})</option>`).join('')}
+              <option value="">Loading members...</option>
             </select>
           </div>
 
           <div class="form-group" id="group-select-wrap" style="display: none;">
             <label class="form-label">Select Group</label>
             <select name="groupId" class="form-control" id="group-id">
-              <option value="">Select...</option>
-              ${groups.map(g => `<option value="${g.id}">${g.name} (${g.group_id})</option>`).join('')}
+              <option value="">Loading groups...</option>
             </select>
           </div>
 
@@ -113,6 +112,25 @@ export const renderSavingsLedger = async () => {
   const payMethodInput = container.querySelector('#pay-method-val');
   const payRefGroup = container.querySelector('#pay-ref-group');
   const payRefInput = container.querySelector('#pay-ref-val');
+  const memberSelect = container.querySelector('#member-id');
+  const groupSelect = container.querySelector('#group-id');
+
+  const populateAccountOptions = () => {
+    memberSelect.innerHTML = `<option value="">Select...</option>${members.map(m => `<option value="${m.id}">${m.full_name} (${m.reg_no})</option>`).join('')}`;
+    groupSelect.innerHTML = `<option value="">Select...</option>${groups.map(g => `<option value="${g.id}">${g.name} (${g.group_id})</option>`).join('')}`;
+  };
+
+  Promise.all([
+    memberService.getAll(),
+    groupService.getAll()
+  ]).then(([membersData, groupsData]) => {
+    members = membersData || [];
+    groups = groupsData || [];
+    populateAccountOptions();
+  }).catch(err => {
+    console.warn('[SavingsLedger] Account options preload failed:', err);
+    populateAccountOptions();
+  });
 
   accountType.onchange = () => {
     if (accountType.value === 'individual') {
@@ -189,6 +207,8 @@ export const renderSavingsLedger = async () => {
       transaction.group = data.groupId;
     }
 
+    const restoreButton = setButtonLoading(form.querySelector('button[type="submit"]'), 'Recording...');
+
     try {
       await savingsService.recordTransaction(transaction);
       
@@ -199,6 +219,7 @@ export const renderSavingsLedger = async () => {
     } catch (err) {
       if (window.notify) window.notify.error('Error: ' + (err.message || 'Validation failed. Ensure member is not required if saving for a group.'));
       console.error(err);
+      restoreButton();
     }
   };
 

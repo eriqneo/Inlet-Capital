@@ -6,19 +6,15 @@ import { settingsService } from '../../services/settingsService.js';
 import { generateLoanNo } from '../../core/numberGen.js';
 import { navigate } from '../../core/router.js';
 import { openCamera } from '../../components/Camera.js';
+import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderLoanApplicationForm = async (params = {}) => {
   const container = document.createElement('div');
   const loanNo = generateLoanNo();
   
-  // Settings (Now fetched directly from PocketBase settings collection via settingsService)
-  const settings = {
-    interestRate: (await settingsService.get('interest_rate_percent')) || 20,
-    processingFeeRate: (await settingsService.get('processing_fee_percent')) || 8,
-  };
-
-  const members = await memberService.getAll();
-  const groups = await groupService.getAll();
+  const settings = { interestRate: 20, processingFeeRate: 8 };
+  let members = [];
+  let groups = [];
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -50,16 +46,14 @@ export const renderLoanApplicationForm = async (params = {}) => {
           <div class="form-group" id="member-select-group">
             <label class="form-label">Select Member</label>
             <select name="memberId" class="form-control" id="member-select">
-              <option value="">Select a member...</option>
-              ${members.map(m => `<option value="${m.id}" data-group="${m.group || ''}">${m.full_name} (${m.reg_no})</option>`).join('')}
+              <option value="">Loading members...</option>
             </select>
           </div>
 
           <div class="form-group" id="group-select-group" style="display: none;">
             <label class="form-label">Select Group</label>
             <select name="groupId" class="form-control" id="group-select">
-              <option value="">Select a group...</option>
-              ${groups.map(g => `<option value="${g.id}">${g.name} (${g.group_id})</option>`).join('')}
+              <option value="">Loading groups...</option>
             </select>
             <div id="group-autofill-status" style="display: none; margin-top: 8px; font-size: 0.75rem; padding: 6px 10px; border-radius: 4px; transition: all 0.3s ease;"></div>
           </div>
@@ -118,7 +112,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
               <span id="summary-applied">KES 0</span>
             </div>
             <div style="display: flex; justify-content: space-between;">
-              <span>Interest (${settings.interestRate}%):</span>
+              <span id="summary-interest-label">Interest (${settings.interestRate}%):</span>
               <span id="summary-interest">KES 0</span>
             </div>
             <div style="display: flex; justify-content: space-between; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px; font-weight: 700;">
@@ -127,7 +121,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
             </div>
             <div style="display: flex; justify-content: space-between; margin-top: 12px; background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; border-left: 4px solid var(--secondary);">
               <div>
-                <div style="font-size: 0.75rem; opacity: 0.7;">Processing Fee (${settings.processingFeeRate}%)</div>
+                <div id="summary-processing-label" style="font-size: 0.75rem; opacity: 0.7;">Processing Fee (${settings.processingFeeRate}%)</div>
                 <div id="summary-processing" style="font-size: 1rem; font-weight: 700;">KES 0</div>
               </div>
               <div style="text-align: right; font-size: 0.75rem; opacity: 0.7;">Payable before<br>disbursement</div>
@@ -187,6 +181,29 @@ export const renderLoanApplicationForm = async (params = {}) => {
   const groupSelect = container.querySelector('#group-select');
   const autofillStatus = container.querySelector('#group-autofill-status');
 
+  const populateApplicantOptions = () => {
+    memberSelect.innerHTML = `<option value="">Select a member...</option>${members.map(m => `<option value="${m.id}" data-group="${m.group || ''}">${m.full_name} (${m.reg_no})</option>`).join('')}`;
+    groupSelect.innerHTML = `<option value="">Select a group...</option>${groups.map(g => `<option value="${g.id}">${g.name} (${g.group_id})</option>`).join('')}`;
+  };
+
+  const applyRoutePrefill = () => {
+    if (params.memberId) {
+      const member = members.find(m => m.id === params.memberId || m.reg_no === params.memberId);
+      if (member && member.group) {
+        applicantTypeSelect.value = 'group-member';
+      } else {
+        applicantTypeSelect.value = 'individual';
+      }
+      memberSelect.value = member ? member.id : '';
+      applicantTypeSelect.dispatchEvent(new Event('change'));
+    } else if (params.groupId) {
+      applicantTypeSelect.value = 'group';
+      const group = groups.find(g => g.id === params.groupId || g.group_id === params.groupId);
+      groupSelect.value = group ? group.id : '';
+      applicantTypeSelect.dispatchEvent(new Event('change'));
+    }
+  };
+
   memberSelect.onchange = () => {
     if (applicantTypeSelect.value !== 'group-member') {
       autofillStatus.style.display = 'none';
@@ -233,23 +250,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
     }
   };
 
-  // Pre-fill from Params
-  if (params.memberId) {
-    // If we have an ID from router params, try to match it
-    const member = members.find(m => m.id === params.memberId || m.reg_no === params.memberId);
-    if (member && member.group) {
-      applicantTypeSelect.value = 'group-member';
-    } else {
-      applicantTypeSelect.value = 'individual';
-    }
-    memberSelect.value = member ? member.id : '';
-    applicantTypeSelect.dispatchEvent(new Event('change'));
-  } else if (params.groupId) {
-    applicantTypeSelect.value = 'group';
-    const group = groups.find(g => g.id === params.groupId || g.group_id === params.groupId);
-    groupSelect.value = group ? group.id : '';
-    applicantTypeSelect.dispatchEvent(new Event('change'));
-  }
+  populateApplicantOptions();
 
   // Logic: Real-time Calculations
   const amountInput = container.querySelector('#loan-amount');
@@ -257,6 +258,8 @@ export const renderLoanApplicationForm = async (params = {}) => {
   const sInterest = container.querySelector('#summary-interest');
   const sTotal = container.querySelector('#summary-total');
   const sProcessing = container.querySelector('#summary-processing');
+  const sInterestLabel = container.querySelector('#summary-interest-label');
+  const sProcessingLabel = container.querySelector('#summary-processing-label');
 
   const updateCalculations = () => {
     const amount = parseFloat(amountInput.value) || 0;
@@ -271,6 +274,26 @@ export const renderLoanApplicationForm = async (params = {}) => {
   };
 
   amountInput.oninput = updateCalculations;
+
+  Promise.all([
+    settingsService.get('interest_rate_percent'),
+    settingsService.get('processing_fee_percent'),
+    memberService.getAll(),
+    groupService.getAll()
+  ]).then(([interestRate, processingFeeRate, membersData, groupsData]) => {
+    settings.interestRate = Number(interestRate) || settings.interestRate;
+    settings.processingFeeRate = Number(processingFeeRate) || settings.processingFeeRate;
+    sInterestLabel.textContent = `Interest (${settings.interestRate}%):`;
+    sProcessingLabel.textContent = `Processing Fee (${settings.processingFeeRate}%)`;
+    members = membersData || [];
+    groups = groupsData || [];
+    populateApplicantOptions();
+    applyRoutePrefill();
+    updateCalculations();
+  }).catch(err => {
+    console.warn('[LoanApplicationForm] Applicant/settings preload failed:', err);
+    populateApplicantOptions();
+  });
 
   // Logic: Dynamic Collateral
   const collateralList = container.querySelector('#collateral-list');
@@ -395,6 +418,8 @@ export const renderLoanApplicationForm = async (params = {}) => {
     const userId = authService.getUser()?.id;
     if (userId) loan.processed_by = userId;
 
+    const restoreButton = setButtonLoading(form.querySelector('button[type="submit"]'), 'Submitting...');
+
     try {
       await loanService.apply(loan);
       if (window.notify) window.notify.success('Loan application submitted successfully!');
@@ -402,6 +427,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
     } catch (err) {
       if (window.notify) window.notify.error('Error submitting loan: ' + (err.message || 'Validation Failed'));
       console.error(err);
+      restoreButton();
     }
   };
 

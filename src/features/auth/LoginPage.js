@@ -1,6 +1,7 @@
 import { authService } from '../../services/authService.js';
 import { handleApiError } from '../../services/api.js';
 import { navigate } from '../../core/router.js';
+import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderLoginPage = async () => {
   const container = document.createElement('div');
@@ -43,8 +44,7 @@ export const renderLoginPage = async () => {
     const email = container.querySelector('#email').value.trim();
     const password = container.querySelector('#password').value;
 
-    loginBtn.disabled = true;
-    loginBtn.textContent = 'Logging in...';
+    const restoreButton = setButtonLoading(loginBtn, 'Logging in...');
 
     try {
       await authService.login(email, password);
@@ -53,9 +53,7 @@ export const renderLoginPage = async () => {
       errorMsg.style.display = 'block';
       errorMsg.textContent = err.message || 'Invalid credentials';
       handleApiError(err, 'Login');
-    } finally {
-      loginBtn.disabled = false;
-      loginBtn.textContent = 'Login';
+      restoreButton();
     }
   });
 

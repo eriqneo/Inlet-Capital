@@ -27,6 +27,13 @@ export const savingsService = {
     });
   },
 
+  async getAllBasic({ page = 1, perPage = 50, filter = '', sort = '-date' } = {}) {
+    return await pb.collection('savings').getList(page, perPage, {
+      filter,
+      sort
+    });
+  },
+
   /**
    * Get total balance for a specific member
    */

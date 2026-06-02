@@ -3,7 +3,6 @@ import './components/Toast.js';
 import './components/Dialog.js';
 import { initRouter, addRoute } from './core/router.js';
 import { authService } from './services/authService.js';
-import { withLayout } from './components/Layout.js';
 
 const initApp = async () => {
   // System uses PocketBase which initializes data on server-side
@@ -33,92 +32,92 @@ const initApp = async () => {
   
   addRoute('#/', async () => {
     const { renderDashboard } = await import('./features/dashboard/Dashboard.js');
-    return await withLayout(await renderDashboard());
+    return await renderDashboard();
   }, { protect: true });
 
   addRoute('#/analytics', async () => {
     const { renderAnalyticsDashboard } = await import('./features/analytics/AnalyticsDashboard.js');
-    return await withLayout(await renderAnalyticsDashboard());
+    return await renderAnalyticsDashboard();
   }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'auditor'] });
 
   addRoute('#/members', async () => {
     const { renderMemberList } = await import('./features/members/MemberList.js');
-    return await withLayout(await renderMemberList());
+    return await renderMemberList();
   }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'cashier', 'group_officer', 'auditor'] });
 
   addRoute('#/members/new', async () => {
     const { renderMemberRegistration } = await import('./features/members/MemberRegistration.js');
-    return await withLayout(await renderMemberRegistration());
+    return await renderMemberRegistration();
   }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'] });
 
   addRoute('#/members/:id', async (params) => {
     const { renderMemberProfile } = await import('./features/members/MemberProfile.js');
-    return await withLayout(await renderMemberProfile(params));
+    return await renderMemberProfile(params);
   }, { protect: true });
 
   addRoute('#/groups', async () => {
     const { renderGroupList } = await import('./features/groups/GroupList.js');
-    return await withLayout(await renderGroupList());
+    return await renderGroupList();
   }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'group_officer', 'auditor'] });
 
   addRoute('#/groups/new', async () => {
     const { renderGroupRegistration } = await import('./features/groups/GroupRegistration.js');
-    return await withLayout(await renderGroupRegistration());
+    return await renderGroupRegistration();
   }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'group_officer'] });
 
   addRoute('#/groups/:id', async (params) => {
     const { renderGroupProfile } = await import('./features/groups/GroupProfile.js');
-    return await withLayout(await renderGroupProfile(params));
+    return await renderGroupProfile(params);
   }, { protect: true });
 
   addRoute('#/loans', async () => {
     const { renderLoanList } = await import('./features/loans/LoanList.js');
-    return await withLayout(await renderLoanList());
+    return await renderLoanList();
   }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'] });
 
   addRoute('#/loans/new', async (params) => {
     const { renderLoanApplicationForm } = await import('./features/loans/LoanApplicationForm.js');
-    return await withLayout(await renderLoanApplicationForm(params || {}));
+    return await renderLoanApplicationForm(params || {});
   }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'] });
 
   addRoute('#/loans/approve', async () => {
     const { renderLoanApprovalQueue } = await import('./features/loans/LoanApprovalQueue.js');
-    return await withLayout(await renderLoanApprovalQueue());
+    return await renderLoanApprovalQueue();
   }, { protect: true, roles: ['super_admin', 'admin', 'manager'] });
 
   addRoute('#/loans/:id', async (params) => {
     const { renderLoanDetails } = await import('./features/loans/LoanDetails.js');
-    return await withLayout(await renderLoanDetails(params || {}));
+    return await renderLoanDetails(params || {});
   }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'] });
 
   addRoute('#/savings', async () => {
     const { renderSavingsList } = await import('./features/savings/SavingsList.js');
-    return await withLayout(await renderSavingsList());
+    return await renderSavingsList();
   }, { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
 
   addRoute('#/savings/new', async () => {
     const { renderSavingsLedger } = await import('./features/savings/SavingsLedger.js');
-    return await withLayout(await renderSavingsLedger());
+    return await renderSavingsLedger();
   }, { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
 
   addRoute('#/expenses', async () => {
     const { renderExpenseList } = await import('./features/expenses/ExpenseList.js');
-    return await withLayout(await renderExpenseList());
+    return await renderExpenseList();
   }, { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
 
   addRoute('#/expenses/new', async () => {
     const { renderExpenseEntry } = await import('./features/expenses/ExpenseEntry.js');
-    return await withLayout(await renderExpenseEntry());
+    return await renderExpenseEntry();
   }, { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
 
   addRoute('#/reports', async () => {
     const { renderReportsDashboard } = await import('./features/reports/ReportsDashboard.js');
-    return await withLayout(await renderReportsDashboard());
+    return await renderReportsDashboard();
   }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'auditor'] });
 
   addRoute('#/settings', async () => {
     const { renderAdminSettings } = await import('./features/settings/AdminSettings.js');
-    return await withLayout(await renderAdminSettings());
+    return await renderAdminSettings();
   }, { protect: true, roles: ['super_admin', 'admin'] });
   
   // Refresh session to get latest user role

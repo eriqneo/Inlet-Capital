@@ -2,6 +2,10 @@ import { authService } from '../services/authService.js';
 import { navigate } from '../core/router.js';
 import { pb } from '../services/api.js';
 
+const PENDING_LOANS_CACHE_KEY = 'inlet_pending_loans_count';
+const PENDING_LOANS_TTL = 2 * 60 * 1000;
+let pendingLoanCountPromise = null;
+
 const roleLinks = {
   '#/':           ['*'],
   '#/analytics':  ['super_admin', 'admin', 'manager', 'auditor'],
@@ -20,13 +24,68 @@ const canView = (path, role) => {
   return allowed.includes('*') || allowed.includes(role);
 };
 
+export const updateSidebarActiveRoute = (currentHash = window.location.hash || '#/') => {
+  const [hash] = currentHash.split('?');
+  const links = document.querySelectorAll('.sidebar .nav-item');
+
+  links.forEach(link => {
+    const href = link.getAttribute('href');
+    const isDashboard = href === '#/' && hash === '#/';
+    const isSection = href !== '#/' && (hash === href || hash.startsWith(`${href}/`));
+    link.classList.toggle('active', isDashboard || isSection);
+  });
+};
+
+const getCachedPendingLoanCount = () => {
+  try {
+    const cached = JSON.parse(localStorage.getItem(PENDING_LOANS_CACHE_KEY) || 'null');
+    if (cached && Date.now() - cached.ts < PENDING_LOANS_TTL) return cached.count;
+  } catch (e) {}
+  return 0;
+};
+
+const setCachedPendingLoanCount = (count) => {
+  try {
+    localStorage.setItem(PENDING_LOANS_CACHE_KEY, JSON.stringify({ count, ts: Date.now() }));
+  } catch (e) {}
+};
+
+const fetchPendingLoanCount = async () => {
+  if (!pendingLoanCountPromise) {
+    pendingLoanCountPromise = pb.collection('loans')
+      .getList(1, 1, { filter: 'status="pending"' })
+      .then(res => {
+        setCachedPendingLoanCount(res.totalItems);
+        return res.totalItems;
+      })
+      .catch(() => getCachedPendingLoanCount())
+      .finally(() => {
+        pendingLoanCountPromise = null;
+      });
+  }
+  return pendingLoanCountPromise;
+};
+
+const updatePendingLoanBadge = (sidebar, count) => {
+  const loansLink = sidebar.querySelector('[data-nav-path="#/loans"]');
+  if (!loansLink) return;
+
+  let badge = loansLink.querySelector('.badge-counter');
+  if (count > 0) {
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'badge-counter';
+      loansLink.appendChild(badge);
+    }
+    badge.textContent = count;
+  } else if (badge) {
+    badge.remove();
+  }
+};
+
 export const renderSidebar = async () => {
   const session = authService.getUser();
-  let pendingCount = 0;
-  try {
-    const res = await pb.collection('loans').getList(1, 1, { filter: 'status="pending"' });
-    pendingCount = res.totalItems;
-  } catch(e) {}
+  const pendingCount = getCachedPendingLoanCount();
 
   const sidebar = document.createElement('aside');
   sidebar.className = 'sidebar';
@@ -39,20 +98,20 @@ export const renderSidebar = async () => {
       </button>
     </div>
     <ul class="nav-links">
-      ${canView('#/', session?.role) ? `<li><a href="#/" class="nav-item active" data-tooltip="Dashboard"><span class="nav-icon">📊</span> <span class="nav-label">Dashboard</span></a></li>` : ''}
-      ${canView('#/analytics', session?.role) ? `<li><a href="#/analytics" class="nav-item" data-tooltip="Analytics"><span class="nav-icon">📈</span> <span class="nav-label">Analytics</span></a></li>` : ''}
-      ${canView('#/members', session?.role) ? `<li><a href="#/members" class="nav-item" data-tooltip="Members"><span class="nav-icon">👥</span> <span class="nav-label">Members</span></a></li>` : ''}
-      ${canView('#/groups', session?.role) ? `<li><a href="#/groups" class="nav-item" data-tooltip="Groups"><span class="nav-icon">🏘️</span> <span class="nav-label">Groups</span></a></li>` : ''}
+      ${canView('#/', session?.role) ? `<li><a href="#/" class="nav-item active" data-nav-path="#/" data-tooltip="Dashboard"><span class="nav-icon">📊</span> <span class="nav-label">Dashboard</span></a></li>` : ''}
+      ${canView('#/analytics', session?.role) ? `<li><a href="#/analytics" class="nav-item" data-nav-path="#/analytics" data-tooltip="Analytics"><span class="nav-icon">📈</span> <span class="nav-label">Analytics</span></a></li>` : ''}
+      ${canView('#/members', session?.role) ? `<li><a href="#/members" class="nav-item" data-nav-path="#/members" data-tooltip="Members"><span class="nav-icon">👥</span> <span class="nav-label">Members</span></a></li>` : ''}
+      ${canView('#/groups', session?.role) ? `<li><a href="#/groups" class="nav-item" data-nav-path="#/groups" data-tooltip="Groups"><span class="nav-icon">🏘️</span> <span class="nav-label">Groups</span></a></li>` : ''}
       ${canView('#/loans', session?.role) ? `<li>
-        <a href="#/loans" class="nav-item" data-tooltip="Loans">
+        <a href="#/loans" class="nav-item" data-nav-path="#/loans" data-tooltip="Loans">
           <span class="nav-icon">💰</span> <span class="nav-label">Loans</span>
           ${pendingCount > 0 ? `<span class="badge-counter">${pendingCount}</span>` : ''}
         </a>
       </li>` : ''}
-      ${canView('#/savings', session?.role) ? `<li><a href="#/savings" class="nav-item" data-tooltip="Savings"><span class="nav-icon">🏦</span> <span class="nav-label">Savings</span></a></li>` : ''}
-      ${canView('#/expenses', session?.role) ? `<li><a href="#/expenses" class="nav-item" data-tooltip="Expenses"><span class="nav-icon">📉</span> <span class="nav-label">Expenses</span></a></li>` : ''}
-      ${canView('#/reports', session?.role) ? `<li><a href="#/reports" class="nav-item" data-tooltip="Reports"><span class="nav-icon">📑</span> <span class="nav-label">Reports</span></a></li>` : ''}
-      ${canView('#/settings', session?.role) ? `<li><a href="#/settings" class="nav-item" data-tooltip="Settings"><span class="nav-icon">⚙️</span> <span class="nav-label">Settings</span></a></li>` : ''}
+      ${canView('#/savings', session?.role) ? `<li><a href="#/savings" class="nav-item" data-nav-path="#/savings" data-tooltip="Savings"><span class="nav-icon">🏦</span> <span class="nav-label">Savings</span></a></li>` : ''}
+      ${canView('#/expenses', session?.role) ? `<li><a href="#/expenses" class="nav-item" data-nav-path="#/expenses" data-tooltip="Expenses"><span class="nav-icon">📉</span> <span class="nav-label">Expenses</span></a></li>` : ''}
+      ${canView('#/reports', session?.role) ? `<li><a href="#/reports" class="nav-item" data-nav-path="#/reports" data-tooltip="Reports"><span class="nav-icon">📑</span> <span class="nav-label">Reports</span></a></li>` : ''}
+      ${canView('#/settings', session?.role) ? `<li><a href="#/settings" class="nav-item" data-nav-path="#/settings" data-tooltip="Settings"><span class="nav-icon">⚙️</span> <span class="nav-label">Settings</span></a></li>` : ''}
     </ul>
 
     <div class="sidebar-footer">
@@ -107,22 +166,12 @@ export const renderSidebar = async () => {
   }
 
   // Highlight active link
-  const currentHash = window.location.hash || '#/';
   const links = sidebar.querySelectorAll('.nav-item');
   links.forEach(link => {
-    if (link.getAttribute('href') === currentHash) {
-      link.classList.add('active');
-    } else {
-      link.classList.remove('active');
-    }
-    
     link.addEventListener('click', (e) => {
       e.preventDefault();
       navigate(link.getAttribute('href'));
-      
-      // Update active state
-      links.forEach(l => l.classList.remove('active'));
-      link.classList.add('active');
+      updateSidebarActiveRoute(link.getAttribute('href'));
       
       // Close sidebar on mobile
       if (window.innerWidth <= 768) {
@@ -130,6 +179,9 @@ export const renderSidebar = async () => {
       }
     });
   });
+
+  updateSidebarActiveRoute();
+  fetchPendingLoanCount().then(count => updatePendingLoanBadge(sidebar, count));
 
   return sidebar;
 };

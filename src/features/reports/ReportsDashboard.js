@@ -6,29 +6,11 @@ import { pb } from '../../services/api.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 import { dataCache } from '../../services/dataCache.js';
+import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderReportsDashboard = async () => {
   const container = document.createElement('div');
-  container.innerHTML = `<div class="card text-center" style="padding:60px;"><p class="text-muted">Loading reports...</p></div>`;
-  
-  // Fetch all required data for reports from PocketBase via Cache
   let members = [], groups = [], loans = [], expenses = [], schedules = [], savings = [], repayments = [];
-  try {
-    [members, groups, loans, expenses, schedules, savings, repayments] = await Promise.all([
-      dataCache.get('members', () => memberService.getAll()),
-      dataCache.get('groups', () => groupService.getAll()),
-      dataCache.get('loans_expanded', () => pb.collection('loans').getFullList({ expand: 'member,group' })),
-      dataCache.get('expenses', () => expenseService.getFullList()),
-      dataCache.get('loan_schedule', () => pb.collection('loan_schedule').getFullList()),
-      dataCache.get('savings_expanded', () => pb.collection('savings').getFullList({ expand: 'member,group' })),
-      dataCache.get('loan_repayments_expanded', () => pb.collection('loan_repayments').getFullList({ expand: 'loan' }))
-    ]);
-  } catch (err) {
-    console.error('Error loading report data:', err);
-    container.innerHTML = `<div class="card text-center text-danger">Failed to load reports: ${err.message}</div>`;
-    return container;
-  }
-
   const pageSize = 10;
   let pages = {
     individuals: 1,
@@ -46,19 +28,6 @@ export const renderReportsDashboard = async () => {
     registrations: 'all',
     cashflow: 'all'
   };
-
-  // Profit & Loss Calculation
-  const totalExpenses = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-  const approvedLoans = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date);
-  const totalCapitalDisbursed = approvedLoans.reduce((sum, l) => sum + (l.approved_amount || 0), 0);
-  const expectedInterest = approvedLoans.reduce((sum, l) => sum + (l.interest_amount || 0), 0);
-  
-  // Processing fees are now stored on loans
-  const processingFeesCollected = loans.filter(l => l.processing_fee_paid).reduce((sum, l) => sum + (l.processing_fee || 0), 0);
-  
-  // Registration fees are on members
-  const registrationFeesCollected = members.reduce((sum, m) => sum + (m.registration_fee || 0), 0);
-  const totalRevenue = processingFeesCollected + registrationFeesCollected;
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;" class="no-print">
@@ -99,25 +68,25 @@ export const renderReportsDashboard = async () => {
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; margin-bottom: 32px;">
           <div class="card" style="background: var(--bg-light); border: none; border-left: 4px solid var(--primary); box-shadow: var(--shadow-sm); transition: transform 0.2s, box-shadow 0.2s;">
             <div class="text-xs text-muted" style="font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;">Total Capital Disbursed</div>
-            <div class="text-xl font-semibold" style="margin-top: 8px;">KES ${totalCapitalDisbursed.toLocaleString()}</div>
+            <div class="text-xl font-semibold" id="pl-capital-disbursed" style="margin-top: 8px;">KES 0</div>
           </div>
           <div class="card" style="background: var(--bg-light); border: none; border-left: 4px solid #10b981; box-shadow: var(--shadow-sm); transition: transform 0.2s, box-shadow 0.2s;">
             <div class="text-xs text-muted" style="font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;">Total Reg Fees</div>
-            <div class="text-xl font-semibold text-success" style="margin-top: 8px;">KES ${registrationFeesCollected.toLocaleString()}</div>
+            <div class="text-xl font-semibold text-success" id="pl-registration-fees" style="margin-top: 8px;">KES 0</div>
             <div class="text-xs text-muted" style="margin-top: 4px; font-size: 0.7rem; opacity: 0.75;">Members & Groups</div>
           </div>
           <div class="card" style="background: var(--bg-light); border: none; border-left: 4px solid #06b6d4; box-shadow: var(--shadow-sm); transition: transform 0.2s, box-shadow 0.2s;">
             <div class="text-xs text-muted" style="font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;">Total Processing Fees</div>
-            <div class="text-xl font-semibold text-success" style="margin-top: 8px;">KES ${processingFeesCollected.toLocaleString()}</div>
+            <div class="text-xl font-semibold text-success" id="pl-processing-fees" style="margin-top: 8px;">KES 0</div>
             <div class="text-xs text-muted" style="margin-top: 4px; font-size: 0.7rem; opacity: 0.75;">Loan Origination</div>
           </div>
           <div class="card" style="background: var(--bg-light); border: none; border-left: 4px solid #f59e0b; box-shadow: var(--shadow-sm); transition: transform 0.2s, box-shadow 0.2s;">
             <div class="text-xs text-muted" style="font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;">Expected Interest Portfolio</div>
-            <div class="text-xl font-semibold text-primary" style="margin-top: 8px;">KES ${expectedInterest.toLocaleString()}</div>
+            <div class="text-xl font-semibold text-primary" id="pl-expected-interest" style="margin-top: 8px;">KES 0</div>
           </div>
           <div class="card" style="background: var(--bg-light); border: none; border-left: 4px solid #ef4444; box-shadow: var(--shadow-sm); transition: transform 0.2s, box-shadow 0.2s;">
             <div class="text-xs text-muted" style="font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;">Total Operating Costs</div>
-            <div class="text-xl font-semibold text-danger" style="margin-top: 8px;">KES ${totalExpenses.toLocaleString()}</div>
+            <div class="text-xl font-semibold text-danger" id="pl-operating-costs" style="margin-top: 8px;">KES 0</div>
           </div>
         </div>
       </div>
@@ -278,6 +247,36 @@ export const renderReportsDashboard = async () => {
       }
     </style>
   `;
+
+  const setReportLoadingRows = () => {
+    ['individuals', 'groups', 'disbursements', 'registrations', 'cashflow'].forEach(tab => {
+      const tbody = container.querySelector(`#${tab}-table-body`);
+      if (tbody) tbody.innerHTML = `<tr><td colspan="9" class="text-center text-muted" style="padding: 32px;">Loading report data...</td></tr>`;
+    });
+    container.querySelector('#alerts-container').innerHTML = `
+      <div class="card text-center text-muted" style="grid-column: 1/-1;">
+        <div class="spinner" style="margin: 0 auto 12px;"></div>
+        Loading repayment alerts...
+      </div>
+    `;
+  };
+
+  const updatePLSummary = () => {
+    const approvedLoans = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date);
+    const totalExpenses = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+    const totalCapitalDisbursed = approvedLoans.reduce((sum, l) => sum + (l.approved_amount || 0), 0);
+    const expectedInterest = approvedLoans.reduce((sum, l) => sum + (l.interest_amount || 0), 0);
+    const processingFeesCollected = loans.filter(l => l.processing_fee_paid).reduce((sum, l) => sum + (l.processing_fee || 0), 0);
+    const registrationFeesCollected = members.reduce((sum, m) => sum + (m.registration_fee || 0), 0);
+
+    container.querySelector('#pl-capital-disbursed').textContent = `KES ${totalCapitalDisbursed.toLocaleString()}`;
+    container.querySelector('#pl-registration-fees').textContent = `KES ${registrationFeesCollected.toLocaleString()}`;
+    container.querySelector('#pl-processing-fees').textContent = `KES ${processingFeesCollected.toLocaleString()}`;
+    container.querySelector('#pl-expected-interest').textContent = `KES ${expectedInterest.toLocaleString()}`;
+    container.querySelector('#pl-operating-costs').textContent = `KES ${totalExpenses.toLocaleString()}`;
+  };
+
+  setReportLoadingRows();
 
   const updateIndividuals = () => {
     const filtered = members.filter(m => {
@@ -680,6 +679,7 @@ export const renderReportsDashboard = async () => {
     container.querySelectorAll('.call-reminder-btn').forEach(btn => {
       btn.onclick = async () => {
         const { loan, member } = btn.dataset;
+        const restoreButton = setButtonLoading(btn, 'Logging...');
         // Optional Phase: Audit log using pb if desired
         try {
           await pb.collection('audit_log').create({
@@ -689,10 +689,12 @@ export const renderReportsDashboard = async () => {
           });
         } catch (e) {
           console.warn('Audit log create failed, maybe collection does not exist yet', e);
+          restoreButton();
+          return;
         }
         if (window.notify) window.notify.success('Call reminder logged');
         btn.disabled = true;
-        btn.textContent = '✅ Logged';
+        btn.textContent = 'Logged';
       };
     });
 
@@ -701,11 +703,6 @@ export const renderReportsDashboard = async () => {
     const ctrl = renderPagination(alertItems.length, 6, pages.alerts, (p) => { pages.alerts = p; updateAlerts(); });
     if (ctrl) pag.appendChild(ctrl);
   };
-
-  updateIndividuals();
-  updateGroups();
-  updateDisbursements();
-  updateRegistrations();
 
   // Tab switching and Filter logic
   const tabs = container.querySelectorAll('.tab-btn');
@@ -836,6 +833,40 @@ export const renderReportsDashboard = async () => {
 
   const initialBtn = Array.from(tabs).find(t => t.dataset.tab === initialTab) || tabs[0];
   initialBtn.click();
+
+  const loadReportsData = async () => {
+    try {
+      [members, groups, loans, expenses] = await Promise.all([
+        dataCache.get('members', () => memberService.getAll()),
+        dataCache.get('groups', () => groupService.getAll()),
+        dataCache.get('loans_expanded', () => pb.collection('loans').getFullList({ expand: 'member,group' })),
+        dataCache.get('expenses', () => expenseService.getFullList())
+      ]);
+
+      updatePLSummary();
+      updateDisbursements();
+      updateRegistrations();
+
+      [schedules, savings, repayments] = await Promise.all([
+        dataCache.get('loan_schedule', () => pb.collection('loan_schedule').getFullList()),
+        dataCache.get('savings_expanded', () => pb.collection('savings').getFullList({ expand: 'member,group' })),
+        dataCache.get('loan_repayments_expanded', () => pb.collection('loan_repayments').getFullList({ expand: 'loan' }))
+      ]);
+
+      updateIndividuals();
+      updateGroups();
+
+      const activeTab = Array.from(tabs).find(t => t.classList.contains('active'))?.dataset.tab;
+      if (activeTab === 'cashflow') updateCashFlow();
+      if (activeTab === 'alerts') updateAlerts();
+    } catch (err) {
+      console.error('Error loading report data:', err);
+      const activeSection = container.querySelector('.report-section[style*="block"]') || container.querySelector('#pl-tab');
+      activeSection.innerHTML = `<div class="card text-center text-danger">Failed to load reports: ${err.message}</div>`;
+    }
+  };
+
+  loadReportsData();
 
   return container;
 };

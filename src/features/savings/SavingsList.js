@@ -7,6 +7,7 @@ export const renderSavingsList = async () => {
   
   let currentPage = 1;
   const pageSize = 10;
+  let requestId = 0;
   
   // We will load the data inside updateUI
 
@@ -44,48 +45,64 @@ export const renderSavingsList = async () => {
   const tableBody = container.querySelector('#savings-table-body');
   const paginationWrapper = container.querySelector('#pagination-wrapper');
 
+  const renderTransactions = (items) => {
+    return items.map(t => {
+      const type = t.type || 'deposit';
+      const amount = Number(t.amount) || 0;
+      const reference = String(t.reference || '');
+      let paymentLabel = '-';
+      if (type === 'deposit') {
+        const method = t.payment_method || 'mpesa';
+        const icon = method === 'mpesa' ? '📱 M-Pesa' : (method === 'card' ? '💳 Card' : '💵 Cash');
+        const refPart = reference && reference !== 'N/A' && reference !== 'CASH' && !reference.startsWith('SAVE-D-') ? `: ${reference}` : '';
+        paymentLabel = `${icon}${refPart}`;
+      } else {
+        paymentLabel = reference || 'Withdrawal';
+      }
+
+      const targetName = t.expand?.member ? t.expand.member.full_name : (t.expand?.group ? t.expand.group.name : 'Unknown');
+      const targetId = t.expand?.member ? t.expand.member.reg_no : (t.expand?.group ? t.expand.group.group_id : (t.member || t.group || 'Unknown'));
+      const targetType = t.expand?.member || t.member ? 'INDIVIDUAL' : 'GROUP';
+
+      return `
+      <tr>
+        <td class="text-sm">${formatDate(t.date)}</td>
+        <td>
+          <div class="font-semibold">${targetName}</div>
+          <div class="text-xs text-muted">${targetId} | ${targetType}</div>
+        </td>
+        <td class="text-xs text-muted">${paymentLabel}</td>
+        <td>
+          <span class="badge ${type === 'deposit' ? 'badge-success' : 'badge-danger'}">
+            ${type.toUpperCase()} ${t.is_reversed ? '(REVERSED)' : ''}
+          </span>
+        </td>
+        <td style="text-align: right;" class="font-semibold ${type === 'deposit' ? 'text-success' : 'text-danger'}">
+          ${type === 'deposit' ? '+' : '-'}${amount.toLocaleString()}
+        </td>
+      </tr>`;
+    }).join('');
+  };
+
   const updateUI = async () => {
+    const thisRequest = ++requestId;
     try {
       tableBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">Loading transactions...</td></tr>';
       
-      const result = await savingsService.getAll({ page: currentPage, perPage: pageSize });
+      let result;
+      try {
+        result = await savingsService.getAll({ page: currentPage, perPage: pageSize });
+      } catch (err) {
+        console.warn('[SavingsList] Expanded transaction load failed, retrying basic query:', err);
+        result = await savingsService.getAllBasic({ page: currentPage, perPage: pageSize });
+      }
+
+      if (thisRequest !== requestId) return;
       const paginatedItems = result.items;
 
       tableBody.innerHTML = paginatedItems.length === 0 ? `
         <tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">No transactions recorded.</td></tr>
-      ` : paginatedItems.map(t => {
-        let paymentLabel = '-';
-        if (t.type === 'deposit') {
-          const method = t.payment_method || 'mpesa';
-          const icon = method === 'mpesa' ? '📱 M-Pesa' : (method === 'card' ? '💳 Card' : '💵 Cash');
-          const refPart = t.reference && t.reference !== 'N/A' && t.reference !== 'CASH' && !t.reference.startsWith('SAVE-D-') ? `: ${t.reference}` : '';
-          paymentLabel = `${icon}${refPart}`;
-        } else {
-          paymentLabel = t.reference || 'Withdrawal';
-        }
-
-        const targetName = t.expand?.member ? t.expand.member.full_name : (t.expand?.group ? t.expand.group.name : 'Unknown');
-        const targetId = t.expand?.member ? t.expand.member.reg_no : (t.expand?.group ? t.expand.group.group_id : 'Unknown');
-        const targetType = t.expand?.member ? 'INDIVIDUAL' : 'GROUP';
-
-        return `
-        <tr>
-          <td class="text-sm">${formatDate(t.date)}</td>
-          <td>
-            <div class="font-semibold">${targetName}</div>
-            <div class="text-xs text-muted">${targetId} | ${targetType}</div>
-          </td>
-          <td class="text-xs text-muted">${paymentLabel}</td>
-          <td>
-            <span class="badge ${t.type === 'deposit' ? 'badge-success' : 'badge-danger'}">
-              ${t.type.toUpperCase()} ${t.is_reversed ? '(REVERSED)' : ''}
-            </span>
-          </td>
-          <td style="text-align: right;" class="font-semibold ${t.type === 'deposit' ? 'text-success' : 'text-danger'}">
-            ${t.type === 'deposit' ? '+' : '-'}${t.amount.toLocaleString()}
-          </td>
-        </tr>`;
-      }).join('');
+      ` : renderTransactions(paginatedItems);
 
       paginationWrapper.innerHTML = '';
       const pagination = renderPagination(result.totalItems, pageSize, currentPage, (newPage) => {
@@ -94,16 +111,16 @@ export const renderSavingsList = async () => {
       });
       if (pagination) paginationWrapper.appendChild(pagination);
     } catch (e) {
-      console.error(e);
-      tableBody.innerHTML = '<tr><td colspan="5" class="text-center text-danger" style="padding: 40px;">Failed to load transactions.</td></tr>';
+      console.error('[SavingsList] Failed to load transactions:', e);
+      tableBody.innerHTML = `<tr><td colspan="5" class="text-center text-danger" style="padding: 40px;">Failed to load transactions. ${e.message || ''}</td></tr>`;
     }
   };
 
   updateUI();
 
   // Real-time updates
-  const unsub = await savingsService.subscribeToChanges(() => updateUI());
-  container.__subscriptions = [unsub];
+  container.__subscriptionPromise = savingsService.subscribeToChanges(() => updateUI())
+    .then(unsub => [unsub]);
 
   return container;
 };

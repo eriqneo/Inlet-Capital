@@ -1,7 +1,6 @@
 import { groupService } from '../../services/groupService.js';
-import { memberService } from '../../services/memberService.js';
 import { renderPagination } from '../../components/Pagination.js';
-import { dataCache, debounce } from '../../services/dataCache.js';
+import { debounce } from '../../services/dataCache.js';
 import { pb } from '../../services/api.js';
 
 export const renderGroupList = async () => {
@@ -33,30 +32,31 @@ export const renderGroupList = async () => {
   const searchInput = container.querySelector('#group-search');
   let groups = [];
   let currentPage = 1;
+  let currentSearch = '';
+  let totalItems = 0;
+  let requestId = 0;
   const pageSize = 12; // Good for a 3-column or 4-column grid
 
-  const renderCards = (query = '') => {
-    const q = query.toLowerCase().trim();
-    const filtered = groups.filter(g =>
-      g.name?.toLowerCase().includes(q) ||
-      g.group_id?.toLowerCase().includes(q) ||
-      (g.meeting_day && g.meeting_day.toLowerCase().includes(q))
-    );
+  const relationFilter = (field, ids) => ids.map(id => `${field}="${id}"`).join(' || ');
+  const escapeFilterValue = (value) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const buildSearchFilter = (term) => {
+    const q = escapeFilterValue(term.trim());
+    if (!q) return '';
+    return `name~"${q}" || group_id~"${q}" || meeting_day~"${q}"`;
+  };
 
-    if (filtered.length === 0) {
+  const renderCards = () => {
+    if (groups.length === 0) {
       grid.innerHTML = `
         <div class="card text-center" style="grid-column: 1 / -1; padding: 60px;">
-          <p class="text-muted">${query ? 'No groups found matching your search.' : 'No groups registered yet.'}</p>
-          ${!query ? `<button class="btn btn-outline" style="margin-top: 16px;" onclick="window.location.hash = '#/groups/new'">Create Your First Group</button>` : ''}
+          <p class="text-muted">${currentSearch ? 'No groups found matching your search.' : 'No groups registered yet.'}</p>
+          ${!currentSearch ? `<button class="btn btn-outline" style="margin-top: 16px;" onclick="window.location.hash = '#/groups/new'">Create Your First Group</button>` : ''}
         </div>
       `;
       return;
     }
 
-    const start = (currentPage - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
-
-    grid.innerHTML = paginated.map(g => `
+    grid.innerHTML = groups.map(g => `
       <div class="card" style="cursor: pointer;" onclick="window.location.hash = '#/groups/${g.id}'">
         <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
           <div>
@@ -96,31 +96,62 @@ export const renderGroupList = async () => {
       grid.appendChild(paginationWrapper); // move to end
     }
 
-    const pagination = renderPagination(filtered.length, pageSize, currentPage, (newPage) => {
+    const pagination = renderPagination(totalItems, pageSize, currentPage, (newPage) => {
       currentPage = newPage;
-      renderCards(query);
+      loadGroups();
     });
     if (pagination) paginationWrapper.appendChild(pagination);
   };
 
-  searchInput.addEventListener('input', (e) => {
+  const debouncedSearch = debounce(() => {
     currentPage = 1;
-    renderCards(e.target.value);
-  });
+    currentSearch = searchInput.value;
+    loadGroups();
+  }, 300);
 
-  const fetchAndRender = async () => {
+  searchInput.addEventListener('input', debouncedSearch);
+
+  const loadGroups = async () => {
+    const thisRequest = ++requestId;
+    grid.innerHTML = `
+      <div class="card text-center" style="grid-column: 1/-1; padding: 60px;">
+        <div class="spinner" style="margin: 0 auto 16px;"></div>
+        <p class="text-muted">Loading groups...</p>
+      </div>
+    `;
+
     try {
-      const [groupsData, membersList, savingsList] = await Promise.all([
-        dataCache.get('groups', () => groupService.getAll()),
-        dataCache.get('members', () => memberService.getAll()),
-        dataCache.get('savings', () => pb.collection('savings').getFullList())
-      ]);
+      const groupResult = await groupService.list({
+        page: currentPage,
+        perPage: pageSize,
+        filter: buildSearchFilter(currentSearch),
+        sort: 'name'
+      });
+
+      if (thisRequest !== requestId) return;
+      totalItems = groupResult.totalItems;
+      const pageGroups = groupResult.items;
+      const groupIds = pageGroups.map(g => g.id);
+
+      let membersList = [];
+      let savingsList = [];
+      if (groupIds.length > 0) {
+        [membersList, savingsList] = await Promise.all([
+          pb.collection('members').getFullList({
+            filter: relationFilter('group', groupIds)
+          }),
+          pb.collection('savings').getFullList({
+            filter: `${relationFilter('group', groupIds)} && is_reversed=false`
+          })
+        ]);
+      }
       
-      groups = groupsData.map(g => {
+      if (thisRequest !== requestId) return;
+      groups = pageGroups.map(g => {
         const count = membersList.filter(m => m.group === g.id).length;
         
         // Calculate realtime savings directly from the ledger
-        const groupSavingsTransactions = savingsList.filter(s => s.group === g.id && !s.is_reversed);
+        const groupSavingsTransactions = savingsList.filter(s => s.group === g.id);
         const realtime_savings = groupSavingsTransactions.reduce((sum, s) => {
           return s.type === 'deposit' ? sum + s.amount : sum - s.amount;
         }, 0);
@@ -128,7 +159,7 @@ export const renderGroupList = async () => {
         return { ...g, dynamic_member_count: count, realtime_savings };
       });
       
-      renderCards(searchInput.value);
+      renderCards();
     } catch (err) {
       console.error('[GroupList] Failed to load groups:', err);
       grid.innerHTML = `
@@ -141,26 +172,24 @@ export const renderGroupList = async () => {
     }
   };
 
-  await fetchAndRender();
+  loadGroups();
 
   // Debounced refresh for real-time events
   const debouncedRefresh = debounce(async () => {
-    await fetchAndRender();
+    await loadGroups();
   }, 500);
 
   // Helper to safely invalidate cache and refresh
-  const handleUpdate = (collection) => async () => {
-    await dataCache.invalidate(collection);
+  const handleUpdate = () => async () => {
     debouncedRefresh();
   };
 
   // Real-time updates
-  const subs = await Promise.all([
-    pb.collection('groups').subscribe('*', handleUpdate('groups')),
-    pb.collection('members').subscribe('*', handleUpdate('members')),
-    pb.collection('savings').subscribe('*', handleUpdate('savings'))
+  container.__subscriptionPromise = Promise.all([
+    pb.collection('groups').subscribe('*', handleUpdate()),
+    pb.collection('members').subscribe('*', handleUpdate()),
+    pb.collection('savings').subscribe('*', handleUpdate())
   ]);
-  container.__subscriptions = subs;
 
   return container;
 };

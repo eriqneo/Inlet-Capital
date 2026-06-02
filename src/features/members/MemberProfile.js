@@ -5,18 +5,25 @@ import { renderPagination } from '../../components/Pagination.js';
 import { formatDate, initDateMask, parseInputDate, formatToInputDate } from '../../core/utils.js';
 import { openCamera } from '../../components/Camera.js';
 import { navigate } from '../../core/router.js';
+import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderMemberProfile = async (params) => {
   const { id } = params;
   const container = document.createElement('div');
-  container.innerHTML = `<div class="card text-center" style="padding:60px;"><p class="text-muted">Loading member profile…</p></div>`;
+  container.innerHTML = `
+    <div class="card text-center" style="padding:60px;">
+      <div class="spinner" style="margin: 0 auto 16px;"></div>
+      <p class="text-muted">Loading member profile...</p>
+    </div>
+  `;
 
+  (async () => {
   let member;
   try {
     member = await memberService.getByRegNo(id);
   } catch (err) {
     container.innerHTML = `<div class="card text-center"><h2>Member Not Found</h2><button class="btn btn-primary" onclick="window.location.hash = '#/members'">Back to List</button></div>`;
-    return container;
+    return;
   }
 
   const legacyRegNo = member.reg_no || member.regNo;
@@ -255,6 +262,7 @@ export const renderMemberProfile = async (params) => {
     const formData = new FormData(editForm);
     const updatedData = Object.fromEntries(formData.entries());
     const updatedMember = { ...member, ...updatedData, dob: updatedData.dob ? parseInputDate(updatedData.dob) : member.dob };
+    const restoreButton = setButtonLoading(editForm.querySelector('button[type="submit"]'), 'Saving...');
     try {
       await memberService.update(member.id, updatedMember);
       if (window.notify) window.notify.success('Profile updated successfully!');
@@ -262,6 +270,7 @@ export const renderMemberProfile = async (params) => {
       navigate(`#/members/${legacyRegNo}`);
     } catch (err) {
       if (window.notify) window.notify.error('Error updating profile: ' + err.message);
+      restoreButton();
     }
   };
 
@@ -284,11 +293,11 @@ export const renderMemberProfile = async (params) => {
     } catch(e) { console.warn('[MemberProfile] Savings refresh:', e.message); }
   };
 
-  const subs = await Promise.all([
+  container.__subscriptionPromise = Promise.all([
     loanService.subscribeToChanges(fetchAndRenderLoans),
     savingsService.subscribeToChanges(fetchAndRenderSavings)
   ]);
-  container.__subscriptions = subs;
 
+  })();
   return container;
 };

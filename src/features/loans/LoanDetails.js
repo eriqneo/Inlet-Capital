@@ -3,10 +3,19 @@ import { authService } from '../../services/authService.js';
 import { settingsService } from '../../services/settingsService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
+import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderLoanDetails = async (params) => {
   const { id: loanNo } = params;
+  const container = document.createElement('div');
+  container.innerHTML = `
+    <div class="card text-center" style="padding:60px;">
+      <div class="spinner" style="margin: 0 auto 16px;"></div>
+      <p class="text-muted">Loading loan details...</p>
+    </div>
+  `;
   
+  (async () => {
   let loan;
   try {
     loan = await loanService.getByLoanNo(loanNo);
@@ -15,9 +24,8 @@ export const renderLoanDetails = async (params) => {
   }
 
   if (!loan) {
-    const el = document.createElement('div');
-    el.innerHTML = `<div class="card text-center"><h2>Loan Not Found</h2><button class="btn btn-primary" onclick="window.location.hash = '#/loans'">Back to List</button></div>`;
-    return el;
+    container.innerHTML = `<div class="card text-center"><h2>Loan Not Found</h2><button class="btn btn-primary" onclick="window.location.hash = '#/loans'">Back to List</button></div>`;
+    return;
   }
 
   // Fetch related data — fall back to empty arrays on error (new collections may have auth issues)
@@ -48,8 +56,6 @@ export const renderLoanDetails = async (params) => {
   let schedulePage = 1;
   const pageSize = 10;
 
-  const container = document.createElement('div');
-  
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
       <div style="display: flex; align-items: center; gap: 16px;">
@@ -397,17 +403,29 @@ export const renderLoanDetails = async (params) => {
                 'Waive Penalty',
                 `Are you sure you want to waive the KES ${penaltyAmount} penalty for Installment #${scheduleItem.installment_no}?`,
                 async () => {
-                  await loanService.updateScheduleInstallment(scheduleId, { penalty_waived: true });
-                  if (window.notify) window.notify.success('Penalty waived successfully');
-                  scheduleItem.penalty_waived = true;
-                  updateScheduleUI();
+                  const restoreButton = setButtonLoading(btn, 'Waiving...');
+                  try {
+                    await loanService.updateScheduleInstallment(scheduleId, { penalty_waived: true });
+                    if (window.notify) window.notify.success('Penalty waived successfully');
+                    scheduleItem.penalty_waived = true;
+                    updateScheduleUI();
+                  } catch (err) {
+                    if (window.notify) window.notify.error('Penalty waiver failed: ' + err.message);
+                    restoreButton();
+                  }
                 }
               );
             } else {
               if (confirm('Waive penalty?')) {
-                await loanService.updateScheduleInstallment(scheduleId, { penalty_waived: true });
-                scheduleItem.penalty_waived = true;
-                updateScheduleUI();
+                const restoreButton = setButtonLoading(btn, 'Waiving...');
+                try {
+                  await loanService.updateScheduleInstallment(scheduleId, { penalty_waived: true });
+                  scheduleItem.penalty_waived = true;
+                  updateScheduleUI();
+                } catch (err) {
+                  if (window.notify) window.notify.error('Penalty waiver failed: ' + err.message);
+                  restoreButton();
+                }
               }
             }
           }
@@ -469,8 +487,7 @@ export const renderLoanDetails = async (params) => {
   paymentForm.onsubmit = async (e) => {
     e.preventDefault();
     const btn = paymentForm.querySelector('button[type="submit"]');
-    btn.disabled = true;
-    btn.innerHTML = 'Processing...';
+    const restoreButton = setButtonLoading(btn, 'Recording...');
 
     const formData = new FormData(paymentForm);
     const data = Object.fromEntries(formData.entries());
@@ -521,8 +538,7 @@ export const renderLoanDetails = async (params) => {
     } catch (err) {
       console.error(err);
       if (window.notify) window.notify.error('Error: ' + err.message);
-      btn.disabled = false;
-      btn.innerHTML = 'Confirm Repayment';
+      restoreButton();
     }
   };
 
@@ -539,15 +555,21 @@ export const renderLoanDetails = async (params) => {
       
       if (!confirmed) return;
       
+      const restoreButton = setButtonLoading(disburseBtn, 'Disbursing...');
       const disbursementDate = new Date().toISOString();
-      const updatedLoan = await loanService.update(loan.id, {
-        status: 'disbursed',
-        disbursement_date: disbursementDate
-      });
-      
-      await generateSchedule(updatedLoan);
-      if (window.notify) window.notify.success('Funds disbursed successfully! Repayment schedule generated.');
-      window.location.reload();
+      try {
+        const updatedLoan = await loanService.update(loan.id, {
+          status: 'disbursed',
+          disbursement_date: disbursementDate
+        });
+        
+        await generateSchedule(updatedLoan);
+        if (window.notify) window.notify.success('Funds disbursed successfully! Repayment schedule generated.');
+        window.location.reload();
+      } catch (err) {
+        if (window.notify) window.notify.error('Disbursement failed: ' + err.message);
+        restoreButton();
+      }
     };
   }
 
@@ -563,15 +585,21 @@ export const renderLoanDetails = async (params) => {
       }) : confirm('Reactivate?');
       if (!confirmed) return;
       
-      await loanService.update(loan.id, {
-        status: 'pending',
-        approved_date: null,
-        expired_date: null,
-        approved_amount: 0
-      });
+      const restoreButton = setButtonLoading(reactivateBtn, 'Re-activating...');
+      try {
+        await loanService.update(loan.id, {
+          status: 'pending',
+          approved_date: null,
+          expired_date: null,
+          approved_amount: 0
+        });
 
-      if (window.notify) window.notify.success('Loan re-activated to Pending Review.');
-      window.location.reload();
+        if (window.notify) window.notify.success('Loan re-activated to Pending Review.');
+        window.location.reload();
+      } catch (err) {
+        if (window.notify) window.notify.error('Re-activation failed: ' + err.message);
+        restoreButton();
+      }
     };
   }
 
@@ -593,6 +621,8 @@ export const renderLoanDetails = async (params) => {
       });
     }
   }
+
+  })();
 
   return container;
 };

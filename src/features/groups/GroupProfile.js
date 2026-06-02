@@ -7,73 +7,101 @@ import { navigate } from '../../core/router.js';
 import { formatDate } from '../../core/utils.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { pb } from '../../services/api.js';
+import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderGroupProfile = async (params) => {
   const { id } = params;
   const container = document.createElement('div');
 
   // Loading state
-  container.innerHTML = `<div class="card text-center" style="padding:60px;"><p class="text-muted">Loading group profile…</p></div>`;
+  container.innerHTML = `
+    <div class="card text-center" style="padding:60px;">
+      <div class="spinner" style="margin: 0 auto 16px;"></div>
+      <p class="text-muted">Loading group profile...</p>
+    </div>
+  `;
 
+  (async () => {
   let group;
   try {
     group = await groupService.getById(id);
   } catch (err) {
     container.innerHTML = `<div class="card text-center"><h2>Group Not Found</h2><button class="btn btn-primary" onclick="window.location.hash = '#/groups'">Back to List</button></div>`;
-    return container;
+    return;
   }
 
-  // Fetch all live data from PocketBase
+  const relationFilter = (field, ids) => ids.map(itemId => `${field}="${itemId}"`).join(' || ');
+
+  // Fetch live group data in batches. This avoids a per-member/per-loan network waterfall.
   let allGroupMembers = [], groupLoans = [], groupSavings = [], allRepayments = [], allSchedules = [];
   try {
-    const membersResult = await pb.collection('members').getFullList({ filter: `group="${id}"`, expand: 'group' });
-    allGroupMembers = membersResult;
-  } catch (e) { console.warn('[GroupProfile] Members fetch:', e.message); }
+    allGroupMembers = await pb.collection('members').getFullList({ filter: `group="${id}"`, expand: 'group' });
+  } catch (e) { console.warn('[GroupProfile] Batch profile fetch:', e.message); }
 
-  try { groupLoans = await loanService.getByGroup(id); } catch (e) { console.warn('[GroupProfile] Loans fetch:', e.message); }
-  try { groupSavings = await savingsService.getByGroup(id); } catch (e) { console.warn('[GroupProfile] Savings fetch:', e.message); }
+  const memberIds = allGroupMembers.map(m => m.id);
+  const memberLoanFilter = memberIds.length > 0 ? ` || ${relationFilter('member', memberIds)}` : '';
+  const memberSavingsFilter = memberIds.length > 0 ? ` || ${relationFilter('member', memberIds)}` : '';
+
+  try {
+    [groupLoans, groupSavings] = await Promise.all([
+      pb.collection('loans').getFullList({
+        filter: `group="${id}"${memberLoanFilter}`,
+        sort: '-application_date',
+        expand: 'member,group,processed_by'
+      }),
+      pb.collection('savings').getFullList({
+        filter: `group="${id}"${memberSavingsFilter}`,
+        sort: '-date',
+        expand: 'member,group,recorded_by'
+      })
+    ]);
+  } catch (e) { console.warn('[GroupProfile] Batch loans/savings fetch:', e.message); }
+
+  const activeLoansForProfile = groupLoans.filter(l => ['disbursed', 'completed', 'closed'].includes(l.status));
+  const activeLoanIds = new Set(activeLoansForProfile.map(l => l.id));
+
+  if (activeLoanIds.size > 0) {
+    try {
+      [allRepayments, allSchedules] = await Promise.all([
+        pb.collection('loan_repayments').getFullList({
+          filter: Array.from(activeLoanIds).map(loanId => `loan="${loanId}"`).join(' || '),
+          sort: '-date'
+        }),
+        pb.collection('loan_schedule').getFullList({
+          filter: Array.from(activeLoanIds).map(loanId => `loan="${loanId}"`).join(' || '),
+          sort: 'installment_no'
+        })
+      ]);
+    } catch (e) { console.warn('[GroupProfile] Batch repayment/schedule fetch:', e.message); }
+  }
 
   // For each member, fetch their savings/loans for the enriched table
   let totalGroupArrears = 0;
   let membersInArrearsCount = 0;
   let inactiveMembersCount = 0;
 
-  const enrichedMembers = [];
-  await Promise.all(allGroupMembers.map(async (m) => {
-    let mSavings = [], mLoans = [];
-    try { 
-      [mSavings, mLoans] = await Promise.all([
-        savingsService.getByMember(m.id),
-        loanService.getByMember(m.id)
-      ]);
-    } catch(e) {}
+  const enrichedMembers = allGroupMembers.map((m) => {
+    const mSavings = groupSavings.filter(s => s.member === m.id);
+    const mLoans = groupLoans.filter(l => l.member === m.id);
 
     const totalSavings = mSavings.filter(s => !s.is_reversed).reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
 
     const activeLoans = mLoans.filter(l => ['disbursed', 'completed', 'closed'].includes(l.status));
     const totalLiability = activeLoans.reduce((sum, l) => sum + (l.total_liability || l.amount_applied * 1.1), 0);
 
-    // Get repayments for member loans in parallel
-    let totalRepaid = 0;
-    let totalArrears = 0;
-    await Promise.all(activeLoans.map(async (loan) => {
-      try {
-        const [reps, scheds] = await Promise.all([
-          loanService.getRepaymentsForLoan(loan.id),
-          loanService.getScheduleForLoan(loan.id)
-        ]);
-        totalRepaid += reps.reduce((sum, r) => sum + r.amount, 0);
-        const overdue = scheds.filter(s => s.status !== 'paid' && new Date(s.due_date) < new Date());
-        totalArrears += overdue.reduce((sum, s) => sum + s.amount, 0);
-      } catch(e) {}
-    }));
+    const memberLoanIds = new Set(activeLoans.map(l => l.id));
+    const totalRepaid = allRepayments
+      .filter(r => memberLoanIds.has(r.loan))
+      .reduce((sum, r) => sum + r.amount, 0);
+    const overdue = allSchedules.filter(s => memberLoanIds.has(s.loan) && s.status !== 'paid' && new Date(s.due_date) < new Date());
+    const totalArrears = overdue.reduce((sum, s) => sum + s.amount, 0);
 
     const olBalance = Math.max(0, totalLiability - totalRepaid);
     const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
     const isActive = lastSavingsDate && (new Date() - lastSavingsDate <= 90 * 24 * 60 * 60 * 1000);
 
-    enrichedMembers.push({ ...m, totalSavings, olBalance, totalArrears, isActive, lastSavingsDate });
-  }));
+    return { ...m, totalSavings, olBalance, totalArrears, isActive, lastSavingsDate };
+  });
 
   // Aggregate group savings
   const totalMemberSavings = enrichedMembers.reduce((sum, m) => sum + m.totalSavings, 0);
@@ -82,13 +110,10 @@ export const renderGroupProfile = async (params) => {
 
   // Group-level loan arrears
   const activeGroupLoans = groupLoans.filter(l => !l.member && ['disbursed', 'completed', 'closed'].includes(l.status));
-  let groupLevelArrears = 0;
-  await Promise.all(activeGroupLoans.map(async (gl) => {
-    try {
-      const scheds = await loanService.getScheduleForLoan(gl.id);
-      groupLevelArrears += scheds.filter(s => s.status !== 'paid' && new Date(s.due_date) < new Date()).reduce((sum, s) => sum + s.amount, 0);
-    } catch(e) {}
-  }));
+  const activeGroupLoanIds = new Set(activeGroupLoans.map(gl => gl.id));
+  const groupLevelArrears = allSchedules
+    .filter(s => activeGroupLoanIds.has(s.loan) && s.status !== 'paid' && new Date(s.due_date) < new Date())
+    .reduce((sum, s) => sum + s.amount, 0);
   totalGroupArrears += groupLevelArrears;
 
   // Calculate totals from enrichedMembers
@@ -254,8 +279,10 @@ export const renderGroupProfile = async (params) => {
   container.querySelector('#close-modal-btn').onclick = () => modal.style.display = 'none';
 
   container.querySelector('#confirm-add-btn').onclick = async () => {
+    const btn = container.querySelector('#confirm-add-btn');
     const memberId = container.querySelector('#member-select').value;
     if (!memberId) return;
+    const restoreButton = setButtonLoading(btn, 'Adding...');
     try {
       await memberService.update(memberId, { group: id });
       group.member_count = (group.member_count || 0) + 1;
@@ -265,6 +292,7 @@ export const renderGroupProfile = async (params) => {
       navigate(`#/groups/${id}`);
     } catch (err) {
       if (window.notify) window.notify.error('Error adding member: ' + err.message);
+      restoreButton();
     }
   };
 
@@ -344,8 +372,11 @@ export const renderGroupProfile = async (params) => {
       star.onmouseleave = () => updateRatingUI(0);
       star.onclick = async () => {
         group.performance_rating = val;
+        starsWrapper.style.pointerEvents = 'none';
+        labelWrapper.innerHTML = `<div class="text-xs text-muted" style="margin-top: 4px;">Saving rating...</div>`;
         try { await groupService.update(group.id, { performance_rating: val }); if (window.notify) window.notify.success('Group rating updated!'); updateRatingUI(0); }
-        catch (err) { if (window.notify) window.notify.error('Error saving rating'); }
+        catch (err) { if (window.notify) window.notify.error('Error saving rating'); updateRatingUI(0); }
+        finally { starsWrapper.style.pointerEvents = 'auto'; }
       };
     });
   }
@@ -455,12 +486,12 @@ export const renderGroupProfile = async (params) => {
     } catch(e) {}
   };
 
-  const subs = await Promise.all([
+  container.__subscriptionPromise = Promise.all([
     memberService.subscribeToChanges(fetchAndRenderMembers),
     loanService.subscribeToChanges(fetchAndRenderLoans),
     savingsService.subscribeToChanges(fetchAndRenderSavings)
   ]);
-  container.__subscriptions = subs;
 
+  })();
   return container;
 };
