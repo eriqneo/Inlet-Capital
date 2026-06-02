@@ -22,9 +22,12 @@ export const renderExpenseList = async () => {
       container.innerHTML = `<div class="card text-center text-danger">Failed to load expenses: ${err.message}</div>`;
       return;
     }
+  };
+
+  await refresh();
 
   // Map votehead ID to name
-  const vMap = Object.fromEntries(voteheads.map(v => [v.id, v.name]));
+  let vMap = Object.fromEntries(voteheads.map(v => [v.id, v.name]));
 
   let currentPage = 1;
   const pageSize = 10;
@@ -88,14 +91,10 @@ export const renderExpenseList = async () => {
     if (pagination) paginationWrapper.appendChild(pagination);
   };
 
-    if (pagination) paginationWrapper.appendChild(pagination);
-  };
-
-  await refresh();
-
   // Debounced refresh for real-time events
   const debouncedRefresh = debounce(async () => {
     await refresh();
+    vMap = Object.fromEntries(voteheads.map(v => [v.id, v.name]));
     sortedExpenses.length = 0;
     sortedExpenses.push(...[...expenses].sort((a,b) => new Date(b.date) - new Date(a.date)));
     updateUI();

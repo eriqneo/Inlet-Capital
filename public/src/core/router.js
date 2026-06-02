@@ -98,6 +98,7 @@ const handleRoute = async () => {
     }
   } catch (error) {
     console.error('Routing Error:', error);
+    console.error('Stack:', error.stack);
     rootElement.innerHTML = `
       <div class="card" style="max-width: 600px; margin: 40px auto; text-align: center; border-top: 4px solid var(--danger);">
         <h2 style="color: var(--danger); margin-bottom: 16px;">Oops! Something went wrong</h2>

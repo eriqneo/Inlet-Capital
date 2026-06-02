@@ -6,9 +6,10 @@ export const renderAnalyticsDashboard = async () => {
   const container = document.createElement('div');
   container.innerHTML = `<div class="card text-center text-muted" style="padding:40px;">Loading analytics...</div>`;
   
+  // Data variables
+  let members = [], loans = [], repayments = [], groups = [], savings = [], schedules = [];
+
   const refresh = async () => {
-    // Fetch Data
-    let members, loans, repayments, groups, savings, schedules;
     try {
       [members, loans, repayments, groups, savings, schedules] = await Promise.all([
         dataCache.get('members', () => pb.collection('members').getFullList()),
@@ -25,8 +26,10 @@ export const renderAnalyticsDashboard = async () => {
         <p class="text-muted" style="margin-bottom: 20px;">${err.message}</p>
         <button class="btn btn-primary" onclick="window.location.reload()">Retry Connection</button>
       </div>`;
-      return;
+      return false;
     }
+    return true;
+  };
 
   let currentFilter = 'all'; // '30days', 'quarter', 'ytd', 'all'
   let chartInstances = [];
@@ -470,11 +473,13 @@ export const renderAnalyticsDashboard = async () => {
     }
   };
 
-  await refresh();
+  const ok = await refresh();
+  if (ok) renderData();
 
   // Debounced refresh for real-time events
   const debouncedRefresh = debounce(async () => {
-    await refresh();
+    const ok = await refresh();
+    if (ok) renderData();
   }, 500);
 
   // Helper to safely invalidate cache and refresh
