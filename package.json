@@ -4,13 +4,17 @@
   "description": "Kenyan Microfinance PWA",
   "main": "src/app.js",
   "scripts": {
-    "start": "python3 -m http.server 8001 --directory public",
-    "dev": "python3 -m http.server 8001 --directory public"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "pocketbase": "^0.27.0"
+  },
+  "devDependencies": {
+    "vite": "^5.2.0"
   }
 }

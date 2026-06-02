@@ -53,22 +53,24 @@ Inlet Capital is a high-fidelity, "Premium Standard" Progressive Web Application
 ## 💻 Local Development
 
 ### Prerequisites
-*   Python 3 (for the local dev server)
+*   Node.js (for Vite dev server)
 
 ### Running the App
 1. Clone the repository.
-2. Run the development server:
+2. Install dependencies:
    ```bash
-   npm start
-   or
-   python3 -m http.server 8001
-
+   npm install
    ```
-3. Open your browser to `http://localhost:8001`.
+3. Run the development server:
+   ```bash
+   npm run dev
+   ```
+4. Open your browser to the URL provided by Vite (typically `http://localhost:3000` or `http://localhost:5173`).
 
 ## ☁️ Deployment
 This system is optimized for **Cloudflare Pages**. 
-*   **Build Output Directory**: Set to `public` in the Cloudflare settings.
+*   **Build Command**: Set to `npm run build` in the Cloudflare settings.
+*   **Build Output Directory**: Set to `dist` in the Cloudflare settings.
 *   **Data Security**: Since the app uses IndexedDB, all client and financial data is stored securely on the user's local device, ensuring zero server-side data leaks.
 
 ---

@@ -8,13 +8,20 @@ import { withLayout } from './components/Layout.js';
 const initApp = async () => {
   // System uses PocketBase which initializes data on server-side
 
-  // Register Service Worker for PWA
-  if ('serviceWorker' in navigator) {
+  // Register Service Worker for PWA (Production Only)
+  if ('serviceWorker' in navigator && !import.meta.env.DEV) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('/sw.js').then(
         (registration) => console.log('SW registered:', registration.scope),
         (error) => console.log('SW registration failed:', error)
       );
+    });
+  } else if ('serviceWorker' in navigator && import.meta.env.DEV) {
+    // Unregister in dev mode to ensure clean local debugging
+    navigator.serviceWorker.getRegistrations().then((registrations) => {
+      for (const registration of registrations) {
+        registration.unregister();
+      }
     });
   }
 

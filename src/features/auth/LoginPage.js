@@ -40,7 +40,7 @@ export const renderLoginPage = async () => {
     if (loginBtn.disabled) return;
     
     errorMsg.style.display = 'none';
-    const email = container.querySelector('#email').value;
+    const email = container.querySelector('#email').value.trim();
     const password = container.querySelector('#password').value;
 
     loginBtn.disabled = true;
