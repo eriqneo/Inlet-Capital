@@ -1,6 +1,8 @@
 import { groupService } from '../../services/groupService.js';
 import { memberService } from '../../services/memberService.js';
 import { renderPagination } from '../../components/Pagination.js';
+import { dataCache, debounce } from '../../services/dataCache.js';
+import { pb } from '../../services/api.js';
 
 export const renderGroupList = async () => {
   const container = document.createElement('div');
@@ -77,7 +79,7 @@ export const renderGroupList = async () => {
 
         <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-color); padding-top: 12px;">
           <span class="text-sm text-muted">Total Savings</span>
-          <span class="font-semibold" style="color: var(--success);">KES ${(g.total_savings || 0).toLocaleString()}</span>
+          <span class="font-semibold" style="color: var(--success);">KES ${(g.realtime_savings || 0).toLocaleString()}</span>
         </div>
       </div>
     `).join('');
@@ -107,36 +109,56 @@ export const renderGroupList = async () => {
   });
 
   const fetchAndRender = async () => {
-    const [groupsData, membersList] = await Promise.all([
-      groupService.getAll(),
-      memberService.getAll()
-    ]);
-    
-    groups = groupsData.map(g => {
-      const count = membersList.filter(m => m.group === g.id).length;
-      return { ...g, dynamic_member_count: count };
-    });
-    
-    renderCards(searchInput.value);
+    try {
+      const [groupsData, membersList, savingsList] = await Promise.all([
+        dataCache.get('groups', () => groupService.getAll()),
+        dataCache.get('members', () => memberService.getAll()),
+        dataCache.get('savings', () => pb.collection('savings').getFullList())
+      ]);
+      
+      groups = groupsData.map(g => {
+        const count = membersList.filter(m => m.group === g.id).length;
+        
+        // Calculate realtime savings directly from the ledger
+        const groupSavingsTransactions = savingsList.filter(s => s.group === g.id && !s.is_reversed);
+        const realtime_savings = groupSavingsTransactions.reduce((sum, s) => {
+          return s.type === 'deposit' ? sum + s.amount : sum - s.amount;
+        }, 0);
+
+        return { ...g, dynamic_member_count: count, realtime_savings };
+      });
+      
+      renderCards(searchInput.value);
+    } catch (err) {
+      console.error('[GroupList] Failed to load groups:', err);
+      grid.innerHTML = `
+        <div class="card text-center" style="grid-column: 1/-1; padding: 60px; border-top: 3px solid var(--danger);">
+          <p class="text-danger font-semibold">Failed to load groups.</p>
+          <p class="text-muted text-sm">${err.message || 'Network error — check your connection.'}</p>
+          <button class="btn btn-outline" style="margin-top: 16px;" onclick="window.location.reload()">Retry</button>
+        </div>
+      `;
+    }
   };
 
-  try {
+  await fetchAndRender();
+
+  // Debounced refresh for real-time events
+  const debouncedRefresh = debounce(async () => {
     await fetchAndRender();
-  } catch (err) {
-    console.error('[GroupList] Failed to load groups:', err);
-    grid.innerHTML = `
-      <div class="card text-center" style="grid-column: 1/-1; padding: 60px; border-top: 3px solid var(--danger);">
-        <p class="text-danger font-semibold">Failed to load groups.</p>
-        <p class="text-muted text-sm">${err.message || 'Network error — check your connection.'}</p>
-        <button class="btn btn-outline" style="margin-top: 16px;" onclick="window.location.reload()">Retry</button>
-      </div>
-    `;
-  }
+  }, 500);
+
+  // Helper to safely invalidate cache and refresh
+  const handleUpdate = (collection) => async () => {
+    await dataCache.invalidate(collection);
+    debouncedRefresh();
+  };
 
   // Real-time updates
   const subs = await Promise.all([
-    groupService.subscribeToChanges(() => fetchAndRender()),
-    memberService.subscribeToChanges(() => fetchAndRender())
+    pb.collection('groups').subscribe('*', handleUpdate('groups')),
+    pb.collection('members').subscribe('*', handleUpdate('members')),
+    pb.collection('savings').subscribe('*', handleUpdate('savings'))
   ]);
   container.__subscriptions = subs;
 
