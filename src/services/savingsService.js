@@ -1,4 +1,5 @@
 import { pb } from './api.js';
+import { dataCache } from './dataCache.js';
 
 export const savingsService = {
   /**
@@ -9,6 +10,7 @@ export const savingsService = {
     console.log('[savingsService] Recording transaction:', data);
     try {
       const result = await pb.collection('savings').create(data);
+      await dataCache.invalidatePrefix('savings:');
       return result;
     } catch (err) {
       console.error('[savingsService] Transaction failed:', err);
@@ -27,11 +29,23 @@ export const savingsService = {
     });
   },
 
+  async getAllCached(options = {}, onUpdate = null) {
+    const { page = 1, perPage = 50, filter = '', sort = '-date' } = options;
+    const key = `savings:list:${page}:${perPage}:${sort}:${filter}:expanded`;
+    return await dataCache.get(key, () => this.getAll({ page, perPage, filter, sort }), onUpdate);
+  },
+
   async getAllBasic({ page = 1, perPage = 50, filter = '', sort = '-date' } = {}) {
     return await pb.collection('savings').getList(page, perPage, {
       filter,
       sort
     });
+  },
+
+  async getAllBasicCached(options = {}, onUpdate = null) {
+    const { page = 1, perPage = 50, filter = '', sort = '-date' } = options;
+    const key = `savings:list:${page}:${perPage}:${sort}:${filter}:basic`;
+    return await dataCache.get(key, () => this.getAllBasic({ page, perPage, filter, sort }), onUpdate);
   },
 
   /**
@@ -76,9 +90,11 @@ export const savingsService = {
    * Reverse a transaction
    */
   async reverseTransaction(id) {
-    return await pb.collection('savings').update(id, {
+    const record = await pb.collection('savings').update(id, {
       is_reversed: true
     });
+    await dataCache.invalidatePrefix('savings:');
+    return record;
   },
 
   subscribeToChanges(callback) {

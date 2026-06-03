@@ -62,6 +62,17 @@ const clearDB = async () => {
   });
 };
 
+const getAllKeys = async () => {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.getAllKeys();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+};
+
 export const dataCache = {
   /**
    * Get data from cache, or fetch it if missing/stale.
@@ -118,6 +129,25 @@ export const dataCache = {
       await deleteFromDB(key);
     } catch (e) {
       console.error(`[dataCache] Invalidate failed for ${key}`, e);
+    }
+  },
+
+  async invalidatePrefix(prefix) {
+    try {
+      const keys = await getAllKeys();
+      await Promise.all(keys
+        .filter(key => String(key).startsWith(prefix))
+        .map(key => deleteFromDB(key)));
+    } catch (e) {
+      console.error(`[dataCache] Prefix invalidate failed for ${prefix}`, e);
+    }
+  },
+
+  async set(key, data) {
+    try {
+      await putToDB(key, data);
+    } catch (e) {
+      console.error(`[dataCache] Set failed for ${key}`, e);
     }
   },
   

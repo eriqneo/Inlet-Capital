@@ -96,11 +96,16 @@ export const renderMemberList = async () => {
     paginationWrapper.innerHTML = '';
 
     try {
-      const result = await memberService.list({
+      const query = {
         page: currentPage,
         perPage: pageSize,
         filter: buildSearchFilter(currentSearch),
         sort: '-created'
+      };
+      const result = await memberService.listCached(query, freshResult => {
+        if (thisRequest !== requestId) return;
+        totalItems = freshResult.totalItems;
+        renderRows(freshResult.items);
       });
 
       if (thisRequest !== requestId) return;

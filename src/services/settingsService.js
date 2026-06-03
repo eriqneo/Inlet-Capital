@@ -1,11 +1,16 @@
 import { pb } from './api.js';
+import { dataCache } from './dataCache.js';
 
 export const settingsService = {
+  async getRecords() {
+    return await dataCache.get('settings:records', () => pb.collection('settings').getFullList());
+  },
+
   /**
    * Get all settings as a key-value object
    */
   async getAll() {
-    const records = await pb.collection('settings').getFullList();
+    const records = await this.getRecords();
     return Object.fromEntries(records.map(r => [r.key, r.value]));
   },
 
@@ -14,7 +19,7 @@ export const settingsService = {
    */
   async getTimestamps() {
     try {
-      const records = await pb.collection('settings').getFullList();
+      const records = await this.getRecords();
       return Object.fromEntries(records.map(r => [r.key, r.updated]));
     } catch (e) {
       return {};
@@ -39,10 +44,14 @@ export const settingsService = {
   async save(key, value) {
     try {
       const existing = await pb.collection('settings').getFirstListItem(`key="${key}"`);
-      return await pb.collection('settings').update(existing.id, { value: String(value) });
+      const record = await pb.collection('settings').update(existing.id, { value: String(value) });
+      await dataCache.invalidatePrefix('settings:');
+      return record;
     } catch (e) {
       // Doesn't exist, create it
-      return await pb.collection('settings').create({ key, value: String(value) });
+      const record = await pb.collection('settings').create({ key, value: String(value) });
+      await dataCache.invalidatePrefix('settings:');
+      return record;
     }
   },
 

@@ -1,4 +1,5 @@
 import { pb } from './api.js';
+import { dataCache } from './dataCache.js';
 
 export const loanService = {
   /**
@@ -6,7 +7,9 @@ export const loanService = {
    */
   async apply(data) {
     console.log('[loanService] Applying for loan:', data);
-    return await pb.collection('loans').create(data);
+    const record = await pb.collection('loans').create(data);
+    await dataCache.invalidatePrefix('loans:');
+    return record;
   },
 
   /**
@@ -18,6 +21,12 @@ export const loanService = {
       sort,
       expand: 'member,group,processed_by'
     });
+  },
+
+  async getAllCached(options = {}, onUpdate = null) {
+    const { page = 1, perPage = 50, filter = '', sort = '-application_date' } = options;
+    const key = `loans:list:${page}:${perPage}:${sort}:${filter}`;
+    return await dataCache.get(key, () => this.getAll({ page, perPage, filter, sort }), onUpdate);
   },
 
   /**
@@ -54,7 +63,9 @@ export const loanService = {
    * Update a loan (approve, disburse, reject, etc.)
    */
   async update(id, data) {
-    return await pb.collection('loans').update(id, data);
+    const record = await pb.collection('loans').update(id, data);
+    await dataCache.invalidatePrefix('loans:');
+    return record;
   },
 
   /**
@@ -89,11 +100,15 @@ export const loanService = {
   },
 
   async createScheduleInstallment(data) {
-    return await pb.collection('loan_schedule').create(data);
+    const record = await pb.collection('loan_schedule').create(data);
+    await dataCache.invalidatePrefix('loan_schedule:');
+    return record;
   },
 
   async updateScheduleInstallment(id, data) {
-    return await pb.collection('loan_schedule').update(id, data);
+    const record = await pb.collection('loan_schedule').update(id, data);
+    await dataCache.invalidatePrefix('loan_schedule:');
+    return record;
   },
 
   // --- Repayments ---
@@ -107,7 +122,10 @@ export const loanService = {
   },
 
   async recordRepayment(data) {
-    return await pb.collection('loan_repayments').create(data);
+    const record = await pb.collection('loan_repayments').create(data);
+    await dataCache.invalidatePrefix('loan_repayments:');
+    await dataCache.invalidatePrefix('loans:');
+    return record;
   },
 
   subscribeToChanges(callback) {

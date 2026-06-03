@@ -32,7 +32,7 @@ export const renderAdminSettings = async () => {
     isSettingsLoading = true;
     renderUI();
     try {
-      const records = await pb.collection('settings').getFullList();
+      const records = await settingsService.getRecords();
       settings = Object.fromEntries(records.map(r => [r.key, r.value]));
       timestamps = Object.fromEntries(records.map(r => [r.key, r.updated]));
     } catch (err) {

@@ -1,4 +1,5 @@
 import { pb } from './api.js';
+import { dataCache } from './dataCache.js';
 
 export const memberService = {
   async list({ page = 1, perPage = 20, filter = '', sort = '-created' } = {}) {
@@ -9,11 +10,17 @@ export const memberService = {
     });
   },
 
+  async listCached(options = {}, onUpdate = null) {
+    const { page = 1, perPage = 20, filter = '', sort = '-created' } = options;
+    const key = `members:list:${page}:${perPage}:${sort}:${filter}`;
+    return await dataCache.get(key, () => this.list({ page, perPage, filter, sort }), onUpdate);
+  },
+
   async getAll() {
-    return await pb.collection('members').getFullList({
+    return await dataCache.get('members:all', () => pb.collection('members').getFullList({
       expand: 'group',
       sort: '-created'
-    });
+    }));
   },
 
   async getById(id) {
@@ -29,11 +36,15 @@ export const memberService = {
   },
 
   async create(data) {
-    return await pb.collection('members').create(data);
+    const record = await pb.collection('members').create(data);
+    await dataCache.invalidatePrefix('members:');
+    return record;
   },
 
   async update(id, data) {
-    return await pb.collection('members').update(id, data);
+    const record = await pb.collection('members').update(id, data);
+    await dataCache.invalidatePrefix('members:');
+    return record;
   },
 
   async getSavingsBalance(memberId) {

@@ -120,19 +120,18 @@ export const renderGroupList = async () => {
       </div>
     `;
 
-    try {
-      const groupResult = await groupService.list({
-        page: currentPage,
-        perPage: pageSize,
-        filter: buildSearchFilter(currentSearch),
-        sort: 'name'
-      });
-
+    const hydrateGroupPage = async (groupResult) => {
       if (thisRequest !== requestId) return;
       totalItems = groupResult.totalItems;
       const pageGroups = groupResult.items;
-      const groupIds = pageGroups.map(g => g.id);
+      groups = pageGroups.map(g => ({
+        ...g,
+        dynamic_member_count: g.dynamic_member_count ?? g.member_count ?? 0,
+        realtime_savings: g.realtime_savings ?? g.total_savings ?? 0
+      }));
+      renderCards();
 
+      const groupIds = pageGroups.map(g => g.id);
       let membersList = [];
       let savingsList = [];
       if (groupIds.length > 0) {
@@ -150,7 +149,6 @@ export const renderGroupList = async () => {
       groups = pageGroups.map(g => {
         const count = membersList.filter(m => m.group === g.id).length;
         
-        // Calculate realtime savings directly from the ledger
         const groupSavingsTransactions = savingsList.filter(s => s.group === g.id);
         const realtime_savings = groupSavingsTransactions.reduce((sum, s) => {
           return s.type === 'deposit' ? sum + s.amount : sum - s.amount;
@@ -160,6 +158,19 @@ export const renderGroupList = async () => {
       });
       
       renderCards();
+    };
+
+    try {
+      const query = {
+        page: currentPage,
+        perPage: pageSize,
+        filter: buildSearchFilter(currentSearch),
+        sort: 'name'
+      };
+      const groupResult = await groupService.listCached(query, freshResult => {
+        hydrateGroupPage(freshResult).catch(err => console.warn('[GroupList] Cached refresh hydration failed:', err));
+      });
+      await hydrateGroupPage(groupResult);
     } catch (err) {
       console.error('[GroupList] Failed to load groups:', err);
       grid.innerHTML = `

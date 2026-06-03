@@ -1,4 +1,5 @@
 import { pb } from './api.js';
+import { dataCache } from './dataCache.js';
 
 export const expenseService = {
   /**
@@ -10,6 +11,12 @@ export const expenseService = {
       sort,
       expand: 'votehead,recorded_by'
     });
+  },
+
+  async getAllCached(options = {}, onUpdate = null) {
+    const { page = 1, perPage = 50, filter = '', sort = '-date' } = options;
+    const key = `expenses:list:${page}:${perPage}:${sort}:${filter}`;
+    return await dataCache.get(key, () => this.getAll({ page, perPage, filter, sort }), onUpdate);
   },
 
   /**
@@ -26,28 +33,33 @@ export const expenseService = {
    * Record new expense
    */
   async create(data) {
-    return await pb.collection('expenses').create(data);
+    const record = await pb.collection('expenses').create(data);
+    await dataCache.invalidatePrefix('expenses:');
+    return record;
   },
 
   /**
    * Get all voteheads (expense categories)
    */
   async getVoteheads({ includeArchived = false } = {}) {
-    try {
-      const filter = includeArchived ? '' : 'status != "archived"';
-      return await pb.collection('voteheads').getFullList({
-        sort: 'name',
-        filter
-      });
-    } catch (err) {
-      // Fallback if the 'status' field doesn't exist in the PocketBase schema yet
-      if (err.status === 400) {
+    const key = `voteheads:${includeArchived ? 'all' : 'active'}`;
+    return await dataCache.get(key, async () => {
+      try {
+        const filter = includeArchived ? '' : 'status != "archived"';
         return await pb.collection('voteheads').getFullList({
-          sort: 'name'
+          sort: 'name',
+          filter
         });
+      } catch (err) {
+        // Fallback if the 'status' field doesn't exist in the PocketBase schema yet
+        if (err.status === 400) {
+          return await pb.collection('voteheads').getFullList({
+            sort: 'name'
+          });
+        }
+        throw err;
       }
-      throw err;
-    }
+    });
   },
 
   /**
@@ -55,21 +67,27 @@ export const expenseService = {
    */
   async createVotehead(data) {
     if (!data.status) data.status = 'active';
-    return await pb.collection('voteheads').create(data);
+    const record = await pb.collection('voteheads').create(data);
+    await dataCache.invalidatePrefix('voteheads:');
+    return record;
   },
 
   /**
    * Update votehead
    */
   async updateVotehead(id, data) {
-    return await pb.collection('voteheads').update(id, data);
+    const record = await pb.collection('voteheads').update(id, data);
+    await dataCache.invalidatePrefix('voteheads:');
+    return record;
   },
 
   /**
    * Soft-delete votehead (archive)
    */
   async deleteVotehead(id) {
-    return await pb.collection('voteheads').update(id, { status: 'archived' });
+    const record = await pb.collection('voteheads').update(id, { status: 'archived' });
+    await dataCache.invalidatePrefix('voteheads:');
+    return record;
   },
 
   subscribeToChanges(callback) {

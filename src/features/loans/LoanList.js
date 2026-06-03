@@ -1,7 +1,7 @@
 import { loanService } from '../../services/loanService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
-import { debounce } from '../../services/dataCache.js';
+import { dataCache, debounce } from '../../services/dataCache.js';
 import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderLoanList = async () => {
@@ -109,92 +109,90 @@ export const renderLoanList = async () => {
         pbFilter = `loan_no ~ "${searchTerm}" || status ~ "${searchTerm}"`;
       }
 
-      const result = await loanService.getAll({
-        page: currentPage,
-        perPage: pageSize,
-        filter: pbFilter
-      });
+      const renderLoanResult = (result) => {
+        if (thisRequest !== requestId) return;
+        const paginatedLoans = result.items;
 
-      if (thisRequest !== requestId) return;
+        tableBody.innerHTML = paginatedLoans.length === 0 ? `
+          <tr><td colspan="8" class="text-center text-muted" style="padding: 40px;">No loans found.</td></tr>
+        ` : paginatedLoans.map(l => {
+          const clientName = l.expand?.member ? l.expand.member.full_name : (l.expand?.group ? l.expand.group.name : 'Unknown');
+          const clientReg = l.expand?.member ? l.expand.member.reg_no : (l.expand?.group ? l.expand.group.group_id : 'Unknown');
+          
+          return `
+          <tr>
+            <td>
+              <div class="font-semibold">${l.loan_no}</div>
+              <div class="text-xs text-muted">${formatDate(l.application_date)}</div>
+            </td>
+            <td class="font-semibold">${clientName}</td>
+            <td class="text-sm">
+              ${l.expand?.member 
+                ? `<span class="badge badge-primary" style="font-size: 0.7rem;">INDIV</span> ${clientReg}` 
+                : `<span class="badge" style="background: var(--surface-dark); color: white; font-size: 0.7rem;">GROUP</span> ${clientReg}`}
+            </td>
+            <td>KES ${l.amount_applied.toLocaleString()}</td>
+            <td>KES ${l.total_liability.toLocaleString()}</td>
+            <td>
+              <div class="fee-status-cell" data-loan="${l.id}">
+                ${l.processing_fee_paid
+                  ? `<div style="display: flex; align-items: center; gap: 6px;">
+                       <span class="badge badge-success" style="gap: 4px;">✓ PAID</span>
+                       <div class="text-xs text-muted">KES ${l.processing_fee.toLocaleString()}</div>
+                     </div>`
+                  : `<div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start;">
+                       <span class="badge badge-warning">⚠ UNPAID</span>
+                       <span class="text-xs text-muted">KES ${l.processing_fee.toLocaleString()}</span>
+                       ${l.status === 'pending' ? `<button class="btn-fee-pay" data-id="${l.id}" data-loan="${l.loan_no}" data-amount="${l.processing_fee}" style="font-size: 0.7rem; padding: 4px 10px; background: var(--secondary); color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 2px; font-weight: 600; transition: background 0.2s;">Record Payment</button>` : ''}
+                     </div>`
+                }
+              </div>
+            </td>
+            <td>
+              <span class="badge ${
+                l.status === 'disbursed' ? 'badge-success' :
+                l.status === 'approved' ? 'badge-primary' :
+                l.status === 'partial_approved' ? 'badge-primary' :
+                l.status === 'pending' ? 'badge-warning' :
+                'badge-danger'
+              }" style="${
+                l.status === 'approved' || l.status === 'partial_approved' ? 'background: #0d9488; color: white;' : ''
+              }">
+                ${l.status === 'disbursed' ? 'DISBURSED' :
+                  l.status === 'approved' ? 'APPROVED' :
+                  l.status === 'partial_approved' ? 'PARTIAL APPROVED' :
+                  l.status.toUpperCase()}
+              </span>
+            </td>
+            <td>
+              <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/loans/${l.loan_no}'">View</button>
+            </td>
+          </tr>`;
+        }).join('');
 
-      const paginatedLoans = result.items;
+        // Re-attach fee payment listeners
+        container.querySelectorAll('.btn-fee-pay').forEach(btn => {
+          btn.onclick = () => {
+            activeFeeRecordId = btn.dataset.id;
+            activeFeeLoan = btn.dataset.loan;
+            activeFeeAmount = parseFloat(btn.dataset.amount);
+            amountDisplay.textContent = `KES ${activeFeeAmount.toLocaleString()}`;
+            loanDisplay.textContent = `Loan Reference: ${activeFeeLoan}`;
+            modal.style.display = 'flex';
+          };
+        });
 
-      tableBody.innerHTML = paginatedLoans.length === 0 ? `
-        <tr><td colspan="8" class="text-center text-muted" style="padding: 40px;">No loans found.</td></tr>
-      ` : paginatedLoans.map(l => {
-        const clientName = l.expand?.member ? l.expand.member.full_name : (l.expand?.group ? l.expand.group.name : 'Unknown');
-        const badgeLabel = l.expand?.member ? 'INDIV' : 'GROUP';
-        const clientReg = l.expand?.member ? l.expand.member.reg_no : (l.expand?.group ? l.expand.group.group_id : 'Unknown');
-        
-        return `
-        <tr>
-          <td>
-            <div class="font-semibold">${l.loan_no}</div>
-            <div class="text-xs text-muted">${formatDate(l.application_date)}</div>
-          </td>
-          <td class="font-semibold">${clientName}</td>
-          <td class="text-sm">
-            ${l.expand?.member 
-              ? `<span class="badge badge-primary" style="font-size: 0.7rem;">INDIV</span> ${clientReg}` 
-              : `<span class="badge" style="background: var(--surface-dark); color: white; font-size: 0.7rem;">GROUP</span> ${clientReg}`}
-          </td>
-          <td>KES ${l.amount_applied.toLocaleString()}</td>
-          <td>KES ${l.total_liability.toLocaleString()}</td>
-          <td>
-            <div class="fee-status-cell" data-loan="${l.id}">
-              ${l.processing_fee_paid
-                ? `<div style="display: flex; align-items: center; gap: 6px;">
-                     <span class="badge badge-success" style="gap: 4px;">✓ PAID</span>
-                     <div class="text-xs text-muted">KES ${l.processing_fee.toLocaleString()}</div>
-                   </div>`
-                : `<div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start;">
-                     <span class="badge badge-warning">⚠ UNPAID</span>
-                     <span class="text-xs text-muted">KES ${l.processing_fee.toLocaleString()}</span>
-                     ${l.status === 'pending' ? `<button class="btn-fee-pay" data-id="${l.id}" data-loan="${l.loan_no}" data-amount="${l.processing_fee}" style="font-size: 0.7rem; padding: 4px 10px; background: var(--secondary); color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 2px; font-weight: 600; transition: background 0.2s;">Record Payment</button>` : ''}
-                   </div>`
-              }
-            </div>
-          </td>
-          <td>
-            <span class="badge ${
-              l.status === 'disbursed' ? 'badge-success' :
-              l.status === 'approved' ? 'badge-primary' :
-              l.status === 'partial_approved' ? 'badge-primary' :
-              l.status === 'pending' ? 'badge-warning' :
-              'badge-danger'
-            }" style="${
-              l.status === 'approved' || l.status === 'partial_approved' ? 'background: #0d9488; color: white;' : ''
-            }">
-              ${l.status === 'disbursed' ? 'DISBURSED' :
-                l.status === 'approved' ? 'APPROVED' :
-                l.status === 'partial_approved' ? 'PARTIAL APPROVED' :
-                l.status.toUpperCase()}
-            </span>
-          </td>
-          <td>
-            <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/loans/${l.loan_no}'">View</button>
-          </td>
-        </tr>`;
-      }).join('');
+        paginationWrapper.innerHTML = '';
+        const pagination = renderPagination(result.totalItems, pageSize, currentPage, (newPage) => {
+          currentPage = newPage;
+          updateUI();
+        });
+        if (pagination) paginationWrapper.appendChild(pagination);
+      };
 
-      // Re-attach fee payment listeners
-      container.querySelectorAll('.btn-fee-pay').forEach(btn => {
-        btn.onclick = () => {
-          activeFeeRecordId = btn.dataset.id;
-          activeFeeLoan = btn.dataset.loan;
-          activeFeeAmount = parseFloat(btn.dataset.amount);
-          amountDisplay.textContent = `KES ${activeFeeAmount.toLocaleString()}`;
-          loanDisplay.textContent = `Loan Reference: ${activeFeeLoan}`;
-          modal.style.display = 'flex';
-        };
-      });
-
-      paginationWrapper.innerHTML = '';
-      const pagination = renderPagination(result.totalItems, pageSize, currentPage, (newPage) => {
-        currentPage = newPage;
-        updateUI();
-      });
-      if (pagination) paginationWrapper.appendChild(pagination);
+      const query = { page: currentPage, perPage: pageSize, filter: pbFilter };
+      const result = await loanService.getAllCached(query, freshResult => renderLoanResult(freshResult));
+      renderLoanResult(result);
 
     } catch (e) {
       console.error(e);
@@ -286,7 +284,10 @@ export const renderLoanList = async () => {
   updateUI();
 
   // Real-time updates
-  container.__subscriptionPromise = loanService.subscribeToChanges(() => updateUI())
+  container.__subscriptionPromise = loanService.subscribeToChanges(async () => {
+    await dataCache.invalidatePrefix('loans:');
+    updateUI();
+  })
     .then(unsub => [unsub]);
 
   return container;

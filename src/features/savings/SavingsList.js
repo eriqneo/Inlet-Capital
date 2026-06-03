@@ -1,6 +1,7 @@
 import { savingsService } from '../../services/savingsService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
+import { dataCache } from '../../services/dataCache.js';
 
 export const renderSavingsList = async () => {
   const container = document.createElement('div');
@@ -88,28 +89,34 @@ export const renderSavingsList = async () => {
     const thisRequest = ++requestId;
     try {
       tableBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">Loading transactions...</td></tr>';
+
+      const renderResult = (result) => {
+        if (thisRequest !== requestId) return;
+        const paginatedItems = result.items;
+
+        tableBody.innerHTML = paginatedItems.length === 0 ? `
+          <tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">No transactions recorded.</td></tr>
+        ` : renderTransactions(paginatedItems);
+
+        paginationWrapper.innerHTML = '';
+        const pagination = renderPagination(result.totalItems, pageSize, currentPage, (newPage) => {
+          currentPage = newPage;
+          updateUI();
+        });
+        if (pagination) paginationWrapper.appendChild(pagination);
+      };
       
       let result;
       try {
-        result = await savingsService.getAll({ page: currentPage, perPage: pageSize });
+        const query = { page: currentPage, perPage: pageSize };
+        result = await savingsService.getAllCached(query, freshResult => renderResult(freshResult));
       } catch (err) {
         console.warn('[SavingsList] Expanded transaction load failed, retrying basic query:', err);
-        result = await savingsService.getAllBasic({ page: currentPage, perPage: pageSize });
+        const query = { page: currentPage, perPage: pageSize };
+        result = await savingsService.getAllBasicCached(query, freshResult => renderResult(freshResult));
       }
 
-      if (thisRequest !== requestId) return;
-      const paginatedItems = result.items;
-
-      tableBody.innerHTML = paginatedItems.length === 0 ? `
-        <tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">No transactions recorded.</td></tr>
-      ` : renderTransactions(paginatedItems);
-
-      paginationWrapper.innerHTML = '';
-      const pagination = renderPagination(result.totalItems, pageSize, currentPage, (newPage) => {
-        currentPage = newPage;
-        updateUI();
-      });
-      if (pagination) paginationWrapper.appendChild(pagination);
+      renderResult(result);
     } catch (e) {
       console.error('[SavingsList] Failed to load transactions:', e);
       tableBody.innerHTML = `<tr><td colspan="5" class="text-center text-danger" style="padding: 40px;">Failed to load transactions. ${e.message || ''}</td></tr>`;
@@ -119,7 +126,10 @@ export const renderSavingsList = async () => {
   updateUI();
 
   // Real-time updates
-  container.__subscriptionPromise = savingsService.subscribeToChanges(() => updateUI())
+  container.__subscriptionPromise = savingsService.subscribeToChanges(async () => {
+    await dataCache.invalidatePrefix('savings:');
+    updateUI();
+  })
     .then(unsub => [unsub]);
 
   return container;

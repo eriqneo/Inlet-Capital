@@ -1,7 +1,7 @@
 import { expenseService } from '../../services/expenseService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
-import { debounce } from '../../services/dataCache.js';
+import { dataCache, debounce } from '../../services/dataCache.js';
 import { pb } from '../../services/api.js';
 
 export const renderExpenseList = async () => {
@@ -50,34 +50,41 @@ export const renderExpenseList = async () => {
     paginationWrapper.innerHTML = '';
 
     try {
+      const renderResult = (expenseResult, voteheadsResult) => {
+        if (thisRequest !== requestId) return;
+        voteheads = voteheadsResult || [];
+        vMap = Object.fromEntries(voteheads.map(v => [v.id, v.name]));
+        const paginatedItems = expenseResult.items;
+
+        tableBody.innerHTML = paginatedItems.length === 0 ? `
+          <tr><td colspan="4" class="text-center text-muted" style="padding: 40px;">No expenses recorded yet.</td></tr>
+        ` : paginatedItems.map(e => `
+          <tr>
+            <td class="text-sm">${formatDate(e.date)}</td>
+            <td><span class="badge badge-primary">${e.expand?.votehead?.name || vMap[e.votehead] || 'Unknown'}</span></td>
+            <td class="text-sm">${e.description || '-'}</td>
+            <td style="text-align: right;" class="font-semibold text-danger">
+              ${(e.amount || 0).toLocaleString()}
+            </td>
+          </tr>
+        `).join('');
+
+        paginationWrapper.innerHTML = '';
+        const pagination = renderPagination(expenseResult.totalItems, pageSize, currentPage, (newPage) => {
+          currentPage = newPage;
+          updateUI();
+        });
+        if (pagination) paginationWrapper.appendChild(pagination);
+      };
+
       const [expenseResult, voteheadsResult] = await Promise.all([
-        expenseService.getAll({ page: currentPage, perPage: pageSize }),
+        expenseService.getAllCached({ page: currentPage, perPage: pageSize }, freshResult => {
+          renderResult(freshResult, voteheads);
+        }),
         voteheads.length > 0 ? Promise.resolve(voteheads) : expenseService.getVoteheads()
       ]);
 
-      if (thisRequest !== requestId) return;
-      voteheads = voteheadsResult || [];
-      vMap = Object.fromEntries(voteheads.map(v => [v.id, v.name]));
-      const paginatedItems = expenseResult.items;
-
-      tableBody.innerHTML = paginatedItems.length === 0 ? `
-        <tr><td colspan="4" class="text-center text-muted" style="padding: 40px;">No expenses recorded yet.</td></tr>
-      ` : paginatedItems.map(e => `
-        <tr>
-          <td class="text-sm">${formatDate(e.date)}</td>
-          <td><span class="badge badge-primary">${e.expand?.votehead?.name || vMap[e.votehead] || 'Unknown'}</span></td>
-          <td class="text-sm">${e.description || '-'}</td>
-          <td style="text-align: right;" class="font-semibold text-danger">
-            ${(e.amount || 0).toLocaleString()}
-          </td>
-        </tr>
-      `).join('');
-
-      const pagination = renderPagination(expenseResult.totalItems, pageSize, currentPage, (newPage) => {
-        currentPage = newPage;
-        updateUI();
-      });
-      if (pagination) paginationWrapper.appendChild(pagination);
+      renderResult(expenseResult, voteheadsResult);
     } catch (err) {
       console.error('Failed to load expenses', err);
       tableBody.innerHTML = `<tr><td colspan="4" class="text-center text-danger" style="padding: 40px;">Failed to load expenses: ${err.message || ''}</td></tr>`;
@@ -93,7 +100,12 @@ export const renderExpenseList = async () => {
 
   // Helper to safely invalidate cache and refresh
   const handleUpdate = (collection) => async () => {
-    if (collection === 'voteheads') voteheads = [];
+    if (collection === 'voteheads') {
+      voteheads = [];
+      await dataCache.invalidatePrefix('voteheads:');
+    } else {
+      await dataCache.invalidatePrefix('expenses:');
+    }
     debouncedRefresh();
   };
 

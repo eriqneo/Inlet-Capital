@@ -1,4 +1,5 @@
 import { pb } from './api.js';
+import { dataCache } from './dataCache.js';
 
 export const groupService = {
   async list({ page = 1, perPage = 50, filter = '', sort = '-created' } = {}) {
@@ -8,10 +9,16 @@ export const groupService = {
     });
   },
 
+  async listCached(options = {}, onUpdate = null) {
+    const { page = 1, perPage = 50, filter = '', sort = '-created' } = options;
+    const key = `groups:list:${page}:${perPage}:${sort}:${filter}`;
+    return await dataCache.get(key, () => this.list({ page, perPage, filter, sort }), onUpdate);
+  },
+
   async getAll() {
-    return await pb.collection('groups').getFullList({
+    return await dataCache.get('groups:all', () => pb.collection('groups').getFullList({
       sort: 'name',
-    });
+    }));
   },
 
   async getById(id) {
@@ -23,6 +30,7 @@ export const groupService = {
     try {
       const result = await pb.collection('groups').create(data);
       console.log('[groupService] Created successfully:', result);
+      await dataCache.invalidatePrefix('groups:');
       return result;
     } catch (err) {
       console.error('[groupService] Create failed. Status:', err.status);
@@ -32,7 +40,9 @@ export const groupService = {
   },
 
   async update(id, data) {
-    return await pb.collection('groups').update(id, data);
+    const record = await pb.collection('groups').update(id, data);
+    await dataCache.invalidatePrefix('groups:');
+    return record;
   },
 
   subscribeToChanges(callback) {
