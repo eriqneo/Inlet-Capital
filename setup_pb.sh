@@ -41,6 +41,18 @@ else
   echo "Users collection already has role field."
 fi
 
+echo "Updating users collection API rules..."
+curl -s -X PATCH "$PB_URL/api/collections/users" \
+  -H "Authorization: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "listRule": "@request.auth.role = \"super_admin\" || @request.auth.role = \"admin\"",
+    "viewRule": "@request.auth.role = \"super_admin\" || @request.auth.role = \"admin\"",
+    "createRule": "@request.auth.role = \"super_admin\"",
+    "updateRule": "@request.auth.role = \"super_admin\"",
+    "deleteRule": "@request.auth.role = \"super_admin\""
+  }'
+
 # Get Users Collection ID
 USERS_ID=$(curl -s -X GET "$PB_URL/api/collections/users" -H "Authorization: $TOKEN" | grep -o '"id":"[^"]*' | head -1 | cut -d'"' -f4)
 echo "Users Collection ID: $USERS_ID"

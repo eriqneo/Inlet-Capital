@@ -16,6 +16,7 @@ export const renderAdminSettings = async () => {
   let voteheads = [];
   let auditLogs = [];
   let showArchivedVoteheads = false;
+  let usersLoadError = '';
   let isSettingsLoading = true;
   let isUsersLoading = true;
   let isVoteheadsLoading = true;
@@ -27,6 +28,7 @@ export const renderAdminSettings = async () => {
   let auditFilter = 'all';
 
   const isSuperAdmin = authService.hasRole('super_admin');
+  const canManageUsers = isSuperAdmin;
 
   const loadSettingsData = async () => {
     isSettingsLoading = true;
@@ -49,10 +51,14 @@ export const renderAdminSettings = async () => {
     renderUI();
     try {
       users = await pb.collection('users').getFullList({ sort: '-created' });
+      usersLoadError = '';
     } catch (err) {
       console.error("Failed to load users", err);
       users = [];
-      if (window.notify) window.notify.error('Failed to load users: ' + err.message);
+      usersLoadError = err.status === 403
+        ? 'Your account can open Settings, but PocketBase does not currently allow this role to list system users.'
+        : `Failed to load users: ${err.message || 'Unknown error'}`;
+      if (window.notify) window.notify.error(usersLoadError);
     } finally {
       isUsersLoading = false;
       renderUI();
@@ -197,7 +203,7 @@ export const renderAdminSettings = async () => {
           <div id="users-tab" class="tab-section" style="display: ${activeTab === 'users' ? 'block' : 'none'};">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
               <h3>System User Management</h3>
-              <button class="btn btn-primary btn-sm" id="add-user-btn">+ Create User</button>
+              ${canManageUsers ? `<button class="btn btn-primary btn-sm" id="add-user-btn">+ Create User</button>` : ''}
             </div>
             
             <div class="table-responsive">
@@ -217,6 +223,13 @@ export const renderAdminSettings = async () => {
                       <td colspan="5" class="text-center text-muted" style="padding: 32px;">
                         <div class="spinner" style="margin: 0 auto 12px;"></div>
                         Loading users...
+                      </td>
+                    </tr>
+                  ` : usersLoadError ? `
+                    <tr>
+                      <td colspan="5" class="text-center" style="padding: 28px;">
+                        <div class="text-danger font-semibold" style="margin-bottom: 8px;">Unable to display system users</div>
+                        <div class="text-muted text-sm">${usersLoadError}</div>
                       </td>
                     </tr>
                   ` : users.length === 0 ? `
@@ -242,12 +255,14 @@ export const renderAdminSettings = async () => {
                       <td class="text-xs text-muted">${u.last_login ? new Date(u.last_login).toLocaleString() : 'Never'}</td>
                       <td>
                         <div style="display: flex; gap: 8px;">
-                          <button class="btn btn-outline btn-xs edit-user-btn" data-id="${u.id}">Edit</button>
-                          ${u.status === 'suspended' 
-                            ? `<button class="btn btn-outline btn-xs activate-user-btn" data-id="${u.id}" style="color: var(--success); border-color: var(--success);">Activate</button>`
-                            : `<button class="btn btn-outline btn-xs suspend-user-btn" data-id="${u.id}" style="color: var(--warning); border-color: var(--warning);">Suspend</button>`
-                          }
-                          ${isSuperAdmin && u.id !== pb.authStore.model?.id ? `<button class="btn btn-danger btn-xs delete-user-btn" data-id="${u.id}">Delete</button>` : ''}
+                          ${canManageUsers ? `
+                            <button class="btn btn-outline btn-xs edit-user-btn" data-id="${u.id}">Edit</button>
+                            ${u.status === 'suspended' 
+                              ? `<button class="btn btn-outline btn-xs activate-user-btn" data-id="${u.id}" style="color: var(--success); border-color: var(--success);">Activate</button>`
+                              : `<button class="btn btn-outline btn-xs suspend-user-btn" data-id="${u.id}" style="color: var(--warning); border-color: var(--warning);">Suspend</button>`
+                            }
+                            ${u.id !== pb.authStore.model?.id ? `<button class="btn btn-danger btn-xs delete-user-btn" data-id="${u.id}">Delete</button>` : ''}
+                          ` : `<span class="text-xs text-muted">View only</span>`}
                         </div>
                       </td>
                     </tr>
@@ -549,16 +564,19 @@ export const renderAdminSettings = async () => {
     const userModal = container.querySelector('#user-modal');
     const userForm = container.querySelector('#user-form');
     
-    container.querySelector('#add-user-btn').onclick = () => {
-      userForm.reset();
-      container.querySelector('#user-edit-id').value = '';
-      container.querySelector('#user-modal-title').textContent = 'Create New User';
-      container.querySelector('[name="email"]').readOnly = false;
-      container.querySelector('#pwd-input').required = true;
-      container.querySelector('#pwd-confirm').required = true;
-      container.querySelector('#pwd-label').textContent = 'Password';
-      userModal.style.display = 'flex';
-    };
+    const addUserBtn = container.querySelector('#add-user-btn');
+    if (addUserBtn) {
+      addUserBtn.onclick = () => {
+        userForm.reset();
+        container.querySelector('#user-edit-id').value = '';
+        container.querySelector('#user-modal-title').textContent = 'Create New User';
+        container.querySelector('[name="email"]').readOnly = false;
+        container.querySelector('#pwd-input').required = true;
+        container.querySelector('#pwd-confirm').required = true;
+        container.querySelector('#pwd-label').textContent = 'Password';
+        userModal.style.display = 'flex';
+      };
+    }
 
     container.querySelector('#close-user-modal').onclick = () => userModal.style.display = 'none';
 
@@ -653,16 +671,37 @@ export const renderAdminSettings = async () => {
 
     container.querySelectorAll('.delete-user-btn').forEach(btn => {
       btn.onclick = async () => {
-        if (!confirm("WARNING: This permanently deletes the user. Proceed?")) return;
+        const targetUser = users.find(u => u.id === btn.dataset.id);
+        const userLabel = targetUser?.email || targetUser?.name || 'this user';
+        if (!confirm(`WARNING: This permanently deletes ${userLabel}. Proceed?`)) return;
         const restoreButton = setButtonLoading(btn, 'Deleting...');
         try {
           await authService.deleteUser(btn.dataset.id);
-          await logAudit('user_deleted', `User ID ${btn.dataset.id} permanently deleted`);
+          await logAudit('user_deleted', `User ${userLabel} permanently deleted`);
           if (window.notify) window.notify.success('User deleted');
           await loadData();
           renderUI();
         } catch (e) {
-          if (window.notify) window.notify.error(e.message);
+          console.error('[AdminSettings] User delete failed:', e);
+          const message = e?.status === 403
+            ? 'PocketBase blocked permanent deletion. Confirm the users collection delete rule allows @request.auth.role = "super_admin".'
+            : e?.status === 400
+              ? 'PocketBase could not delete this user, usually because other records still reference the account.'
+              : (e.message || 'User deletion failed.');
+          if (window.notify) window.notify.error(message);
+          const suspendInstead = confirm(`${message}\n\nSuspend this user instead so they cannot log in?`);
+          if (suspendInstead) {
+            try {
+              await authService.suspendUser(btn.dataset.id);
+              await logAudit('user_suspended', `User ${userLabel} suspended after delete failed`);
+              if (window.notify) window.notify.success('User suspended instead.');
+              await loadData();
+              renderUI();
+              return;
+            } catch (suspendErr) {
+              if (window.notify) window.notify.error('Suspend also failed: ' + (suspendErr.message || 'Unknown error'));
+            }
+          }
           restoreButton();
         }
       };

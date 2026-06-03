@@ -33,6 +33,11 @@ async function run() {
     console.log('Updating users collection...');
     try {
       const usersColl = await fetchPb('collections/users', 'GET', null, token);
+      usersColl.listRule = '@request.auth.role = "super_admin" || @request.auth.role = "admin"';
+      usersColl.viewRule = '@request.auth.role = "super_admin" || @request.auth.role = "admin"';
+      usersColl.createRule = '@request.auth.role = "super_admin"';
+      usersColl.updateRule = '@request.auth.role = "super_admin"';
+      usersColl.deleteRule = '@request.auth.role = "super_admin"';
       if (!usersColl.fields.some(f => f.name === 'role')) {
         usersColl.fields.push({
           name: 'role',
@@ -41,11 +46,12 @@ async function run() {
           values: ['super_admin', 'admin', 'manager', 'loan_officer', 'cashier', 'group_officer', 'auditor'],
           maxSelect: 1
         });
-        await fetchPb('collections/users', 'PATCH', usersColl, token);
         console.log('Users collection updated with role field.');
       } else {
         console.log('Users collection already has role field.');
       }
+      await fetchPb('collections/users', 'PATCH', usersColl, token);
+      console.log('Users collection access rules updated.');
     } catch (e) {
       console.log('Error updating users:', e.message);
     }
