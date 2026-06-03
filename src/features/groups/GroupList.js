@@ -39,6 +39,10 @@ export const renderGroupList = async () => {
   const pageSize = 12; // Good for a 3-column or 4-column grid
 
   const relationFilter = (field, ids) => ids.map(id => `${field}="${id}"`).join(' || ');
+  const moneyTotal = (records) => records.reduce((sum, record) => {
+    const amount = Number(record.amount) || 0;
+    return record.type === 'deposit' ? sum + amount : sum - amount;
+  }, 0);
   const escapeFilterValue = (value) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const buildSearchFilter = (term) => {
     const q = escapeFilterValue(term.trim());
@@ -140,26 +144,30 @@ export const renderGroupList = async () => {
       let membersList = [];
       let savingsList = [];
       if (groupIds.length > 0) {
-        [membersList, savingsList] = await Promise.all([
-          pb.collection('members').getFullList({
-            filter: relationFilter('group', groupIds)
-          }),
-          pb.collection('savings').getFullList({
-            filter: `${relationFilter('group', groupIds)} && is_reversed=false`
-          })
-        ]);
+        membersList = await pb.collection('members').getFullList({
+          filter: relationFilter('group', groupIds)
+        });
+
+        const memberIds = membersList.map(m => m.id);
+        const savingsFilters = [`(${relationFilter('group', groupIds)})`];
+        if (memberIds.length > 0) {
+          savingsFilters.push(`(${relationFilter('member', memberIds)})`);
+        }
+
+        savingsList = await pb.collection('savings').getFullList({
+          filter: `(${savingsFilters.join(' || ')}) && is_reversed=false`
+        });
       }
       
       if (thisRequest !== requestId) return;
       groups = pageGroups.map(g => {
-        const count = membersList.filter(m => m.group === g.id).length;
+        const groupMembers = membersList.filter(m => m.group === g.id);
+        const memberIds = new Set(groupMembers.map(m => m.id));
         
-        const groupSavingsTransactions = savingsList.filter(s => s.group === g.id);
-        const realtime_savings = groupSavingsTransactions.reduce((sum, s) => {
-          return s.type === 'deposit' ? sum + s.amount : sum - s.amount;
-        }, 0);
+        const groupSavingsTransactions = savingsList.filter(s => s.group === g.id || memberIds.has(s.member));
+        const realtime_savings = moneyTotal(groupSavingsTransactions);
 
-        return { ...g, dynamic_member_count: count, realtime_savings };
+        return { ...g, dynamic_member_count: groupMembers.length, realtime_savings };
       });
       
       renderCards();

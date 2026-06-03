@@ -128,6 +128,7 @@ export const renderReportsDashboard = async () => {
                 <th>OL Balance</th>
                 <th style="color: var(--success);">Active 🟢</th>
                 <th style="color: var(--danger);">Inactive 🔴</th>
+                <th style="color: var(--danger);">Arrears</th>
                 <th style="color: var(--warning);">In Arrears ⚠</th>
               </tr>
             </thead>
@@ -345,12 +346,26 @@ export const renderReportsDashboard = async () => {
   };
 
   const updateGroups = () => {
+    const isOutstandingLoan = (loan) => ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status);
+    const calculateOutstandingLoanBalance = (groupLoans) => groupLoans
+      .filter(isOutstandingLoan)
+      .reduce((sum, loan) => {
+        const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
+        const liability = Number(loan.total_liability) || (principal + (Number(loan.interest_amount) || 0));
+        const paid = repayments
+          .filter(r => r.loan === loan.id)
+          .reduce((repaymentSum, r) => repaymentSum + (Number(r.amount) || 0), 0);
+        return sum + Math.max(0, liability - paid);
+      }, 0);
+
     const groupData = groups.map(g => {
       const gMembers = members.filter(m => m.group === g.id);
+      const groupMemberIds = new Set(gMembers.map(m => m.id));
       
       let activeCount = 0;
       let inactiveCount = 0;
       let arrearsCount = 0;
+      let arrearsAmount = 0;
       let gTotalSavings = savings.filter(s => s.group === g.id && !s.member && !s.is_reversed).reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
 
       gMembers.forEach(m => {
@@ -361,17 +376,21 @@ export const renderReportsDashboard = async () => {
         
         if (isInactive) inactiveCount++; else activeCount++;
 
-        const mLoans = loans.filter(l => l.member === m.id && (['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date));
-        const hasArrears = schedules.some(s => mLoans.some(ml => ml.id === s.loan) && s.status !== 'paid' && new Date(s.due_date) < new Date());
+        const mLoans = loans.filter(l => l.member === m.id && isOutstandingLoan(l));
+        const overdueSchedules = schedules.filter(s => mLoans.some(ml => ml.id === s.loan) && s.status !== 'paid' && new Date(s.due_date) < new Date());
+        const hasArrears = overdueSchedules.length > 0;
         if (hasArrears) arrearsCount++;
+        arrearsAmount += overdueSchedules.reduce((sum, s) => sum + (s.amount || 0), 0);
       });
       
-      const gl = loans.filter(l => l.group === g.id && !l.member && ['disbursed','approved','completed','closed'].includes(l.status));
-      let gOutstanding = gl.reduce((sum, l) => sum + (l.total_liability || 0), 0);
-      // minus repaid for group loans
-      gOutstanding -= repayments.filter(r => r.expand?.loan?.group === g.id && !r.expand?.loan?.member).reduce((sum, r) => sum + r.amount, 0);
+      const gl = loans.filter(l => l.group === g.id && !l.member && isOutstandingLoan(l));
+      const allGroupRelatedLoans = loans.filter(l => (l.group === g.id && !l.member) || groupMemberIds.has(l.member));
+      const gOutstanding = calculateOutstandingLoanBalance(allGroupRelatedLoans);
+      arrearsAmount += schedules
+        .filter(s => gl.some(loan => loan.id === s.loan) && s.status !== 'paid' && new Date(s.due_date) < new Date())
+        .reduce((sum, s) => sum + (s.amount || 0), 0);
 
-      return { ...g, activeCount, inactiveCount, arrearsCount, totalSavings: gTotalSavings, outstandingLoan: Math.max(0, gOutstanding) };
+      return { ...g, activeCount, inactiveCount, arrearsCount, arrearsAmount, totalSavings: gTotalSavings, outstandingLoan: Math.max(0, gOutstanding) };
     });
 
     const filtered = groupData.filter(g => {
@@ -400,6 +419,7 @@ export const renderReportsDashboard = async () => {
         <td>KES ${(g.outstandingLoan || 0).toLocaleString()}</td>
         <td class="font-bold text-success">${g.activeCount}</td>
         <td class="font-bold text-danger">${g.inactiveCount}</td>
+        <td class="font-bold text-danger">KES ${(g.arrearsAmount || 0).toLocaleString()}</td>
         <td class="font-bold text-warning">${g.arrearsCount}</td>
       </tr>`).join('');
     
