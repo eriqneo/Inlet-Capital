@@ -3,6 +3,7 @@ import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 import { dataCache, debounce } from '../../services/dataCache.js';
 import { pb } from '../../services/api.js';
+import { showDelayedLoading } from '../../core/uiState.js';
 
 export const renderExpenseList = async () => {
   const container = document.createElement('div');
@@ -46,12 +47,16 @@ export const renderExpenseList = async () => {
 
   const updateUI = async () => {
     const thisRequest = ++requestId;
-    tableBody.innerHTML = `<tr><td colspan="4" class="text-center text-muted" style="padding: 40px;">Loading expenses...</td></tr>`;
-    paginationWrapper.innerHTML = '';
+    const cancelLoading = showDelayedLoading(() => {
+      if (thisRequest !== requestId) return;
+      tableBody.innerHTML = `<tr><td colspan="4" class="text-center text-muted" style="padding: 40px;">Loading expenses...</td></tr>`;
+      paginationWrapper.innerHTML = '';
+    });
 
     try {
       const renderResult = (expenseResult, voteheadsResult) => {
         if (thisRequest !== requestId) return;
+        cancelLoading();
         voteheads = voteheadsResult || [];
         vMap = Object.fromEntries(voteheads.map(v => [v.id, v.name]));
         const paginatedItems = expenseResult.items;
@@ -86,6 +91,7 @@ export const renderExpenseList = async () => {
 
       renderResult(expenseResult, voteheadsResult);
     } catch (err) {
+      cancelLoading();
       console.error('Failed to load expenses', err);
       tableBody.innerHTML = `<tr><td colspan="4" class="text-center text-danger" style="padding: 40px;">Failed to load expenses: ${err.message || ''}</td></tr>`;
     }

@@ -2,6 +2,7 @@ import { groupService } from '../../services/groupService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { debounce } from '../../services/dataCache.js';
 import { pb } from '../../services/api.js';
+import { showDelayedLoading } from '../../core/uiState.js';
 
 export const renderGroupList = async () => {
   const container = document.createElement('div');
@@ -113,15 +114,19 @@ export const renderGroupList = async () => {
 
   const loadGroups = async () => {
     const thisRequest = ++requestId;
-    grid.innerHTML = `
-      <div class="card text-center" style="grid-column: 1/-1; padding: 60px;">
-        <div class="spinner" style="margin: 0 auto 16px;"></div>
-        <p class="text-muted">Loading groups...</p>
-      </div>
-    `;
+    const cancelLoading = showDelayedLoading(() => {
+      if (thisRequest !== requestId) return;
+      grid.innerHTML = `
+        <div class="card text-center" style="grid-column: 1/-1; padding: 60px;">
+          <div class="spinner" style="margin: 0 auto 16px;"></div>
+          <p class="text-muted">Loading groups...</p>
+        </div>
+      `;
+    });
 
     const hydrateGroupPage = async (groupResult) => {
       if (thisRequest !== requestId) return;
+      cancelLoading();
       totalItems = groupResult.totalItems;
       const pageGroups = groupResult.items;
       groups = pageGroups.map(g => ({
@@ -172,6 +177,7 @@ export const renderGroupList = async () => {
       });
       await hydrateGroupPage(groupResult);
     } catch (err) {
+      cancelLoading();
       console.error('[GroupList] Failed to load groups:', err);
       grid.innerHTML = `
         <div class="card text-center" style="grid-column: 1/-1; padding: 60px; border-top: 3px solid var(--danger);">

@@ -32,6 +32,7 @@ export const renderDashboard = async () => {
   };
   
   const refresh = async () => {
+    try {
     let activeMembers, activeGroups, pendingLoans, savings, overdueSchedules, alertSchedules, alertLoans, recentMembers, recentLoans, recentDisbursements, recentSavings;
     const todayIso = new Date().toISOString();
     const upcomingThreshold = new Date();
@@ -205,9 +206,25 @@ export const renderDashboard = async () => {
       </div>
     </div>
   `;
+    } catch (err) {
+      console.error('[Dashboard] Refresh failed:', err);
+      container.innerHTML = `
+        <div style="margin-bottom: 24px;">
+          <h1 class="text-xl">Dashboard Overview</h1>
+          <p class="text-muted">Welcome to the Inlet Capital management system.</p>
+        </div>
+        <div class="card" style="border-top: 4px solid var(--warning);">
+          <h3 style="margin-bottom: 8px;">Dashboard data did not load</h3>
+          <p class="text-muted" style="margin-bottom: 16px;">Your session is still active. This is usually a temporary data or network issue.</p>
+          <button class="btn btn-primary" id="dashboard-retry-btn">Retry Dashboard</button>
+        </div>
+      `;
+      const retryBtn = container.querySelector('#dashboard-retry-btn');
+      if (retryBtn) retryBtn.onclick = () => refresh();
+    }
   };
 
-  refresh();
+  refresh().catch(err => console.error('[Dashboard] Initial refresh failed:', err));
 
   // Debounced refresh for real-time events
   const debouncedRefresh = debounce(async () => {

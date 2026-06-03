@@ -1,6 +1,7 @@
 import { memberService } from '../../services/memberService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { debounce } from '../../services/dataCache.js';
+import { showDelayedLoading } from '../../core/uiState.js';
 
 export const renderMemberList = async () => {
   const container = document.createElement('div');
@@ -92,8 +93,11 @@ export const renderMemberList = async () => {
 
   const loadMembers = async () => {
     const thisRequest = ++requestId;
-    tableBody.innerHTML = `<tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">Loading members...</td></tr>`;
-    paginationWrapper.innerHTML = '';
+    const cancelLoading = showDelayedLoading(() => {
+      if (thisRequest !== requestId) return;
+      tableBody.innerHTML = `<tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">Loading members...</td></tr>`;
+      paginationWrapper.innerHTML = '';
+    });
 
     try {
       const query = {
@@ -104,14 +108,17 @@ export const renderMemberList = async () => {
       };
       const result = await memberService.listCached(query, freshResult => {
         if (thisRequest !== requestId) return;
+        cancelLoading();
         totalItems = freshResult.totalItems;
         renderRows(freshResult.items);
       });
 
       if (thisRequest !== requestId) return;
+      cancelLoading();
       totalItems = result.totalItems;
       renderRows(result.items);
     } catch (err) {
+      cancelLoading();
       console.error('[MemberList] Failed to load members:', err);
       tableBody.innerHTML = `
         <tr>

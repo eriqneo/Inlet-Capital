@@ -2,7 +2,7 @@ import { loanService } from '../../services/loanService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 import { dataCache, debounce } from '../../services/dataCache.js';
-import { setButtonLoading } from '../../core/uiState.js';
+import { setButtonLoading, showDelayedLoading } from '../../core/uiState.js';
 
 export const renderLoanList = async () => {
   const container = document.createElement('div');
@@ -100,9 +100,12 @@ export const renderLoanList = async () => {
 
   const updateUI = async () => {
     const thisRequest = ++requestId;
-    try {
+    const cancelLoading = showDelayedLoading(() => {
+      if (thisRequest !== requestId) return;
       tableBody.innerHTML = `<tr><td colspan="8" class="text-center text-muted" style="padding: 40px;">Loading loans...</td></tr>`;
-
+      paginationWrapper.innerHTML = '';
+    });
+    try {
       // Build filter
       let pbFilter = '';
       if (searchTerm) {
@@ -111,6 +114,7 @@ export const renderLoanList = async () => {
 
       const renderLoanResult = (result) => {
         if (thisRequest !== requestId) return;
+        cancelLoading();
         const paginatedLoans = result.items;
 
         tableBody.innerHTML = paginatedLoans.length === 0 ? `
@@ -195,6 +199,7 @@ export const renderLoanList = async () => {
       renderLoanResult(result);
 
     } catch (e) {
+      cancelLoading();
       console.error(e);
       tableBody.innerHTML = `<tr><td colspan="8" class="text-center text-danger" style="padding: 40px;">Failed to load loans.</td></tr>`;
     }

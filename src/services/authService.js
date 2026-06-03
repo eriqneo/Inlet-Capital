@@ -48,9 +48,15 @@ export const authService = {
     try {
       await pb.collection('users').authRefresh();
       return true;
-    } catch {
-      this.logout();
-      return false;
+    } catch (err) {
+      const status = err?.status;
+      if (status === 401 || status === 403) {
+        this.logout();
+        return false;
+      }
+
+      console.warn('[authService] Session refresh skipped; keeping current session:', err);
+      return true;
     }
   },
 

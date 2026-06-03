@@ -12,3 +12,15 @@ export const setButtonLoading = (button, label = 'Saving...') => {
     button.innerHTML = originalHtml;
   };
 };
+
+export const showDelayedLoading = (renderLoading, delay = 180) => {
+  let active = true;
+  const timer = setTimeout(() => {
+    if (active) renderLoading();
+  }, delay);
+
+  return () => {
+    active = false;
+    clearTimeout(timer);
+  };
+};

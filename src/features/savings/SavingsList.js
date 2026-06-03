@@ -2,6 +2,7 @@ import { savingsService } from '../../services/savingsService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 import { dataCache } from '../../services/dataCache.js';
+import { showDelayedLoading } from '../../core/uiState.js';
 
 export const renderSavingsList = async () => {
   const container = document.createElement('div');
@@ -87,11 +88,15 @@ export const renderSavingsList = async () => {
 
   const updateUI = async () => {
     const thisRequest = ++requestId;
-    try {
+    const cancelLoading = showDelayedLoading(() => {
+      if (thisRequest !== requestId) return;
       tableBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">Loading transactions...</td></tr>';
-
+      paginationWrapper.innerHTML = '';
+    });
+    try {
       const renderResult = (result) => {
         if (thisRequest !== requestId) return;
+        cancelLoading();
         const paginatedItems = result.items;
 
         tableBody.innerHTML = paginatedItems.length === 0 ? `
@@ -118,6 +123,7 @@ export const renderSavingsList = async () => {
 
       renderResult(result);
     } catch (e) {
+      cancelLoading();
       console.error('[SavingsList] Failed to load transactions:', e);
       tableBody.innerHTML = `<tr><td colspan="5" class="text-center text-danger" style="padding: 40px;">Failed to load transactions. ${e.message || ''}</td></tr>`;
     }
