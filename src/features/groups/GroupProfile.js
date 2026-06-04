@@ -142,8 +142,8 @@ export const renderGroupProfile = async (params) => {
     unassignedMembers = await pb.collection('members').getFullList({ filter: `group=""||group=null` });
   } catch(e) { console.warn('[GroupProfile] Unassigned members fetch:', e.message); }
 
-  const allGroupLoansSorted = groupLoans.filter(l => !l.member).sort((a, b) => new Date(b.application_date) - new Date(a.application_date));
-  const groupOnlySavings = groupSavings.filter(s => !s.member).sort((a, b) => new Date(b.date) - new Date(a.date));
+  const allFinancialLoansSorted = groupLoans.sort((a, b) => new Date(b.application_date) - new Date(a.application_date));
+  const allFinancialSavingsSorted = groupSavings.sort((a, b) => new Date(b.date) - new Date(a.date));
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -182,20 +182,38 @@ export const renderGroupProfile = async (params) => {
           </div>
         </div>
 
-        <div class="card" style="margin-bottom: 24px; display: flex; align-items: center; gap: 16px; padding: 16px;">
-          <h3 class="text-sm" style="margin: 0; min-width: max-content;">Date Filter:</h3>
-          <input type="date" id="global-date-start" class="form-control" style="max-width: 200px;" />
-          <span class="text-muted">to</span>
-          <input type="date" id="global-date-end" class="form-control" style="max-width: 200px;" />
-          <button class="btn btn-outline btn-sm" id="apply-date-filter-btn">Apply</button>
-          <button class="btn btn-outline btn-sm" id="clear-date-filter-btn" style="border-color: transparent;">Clear</button>
+        <div class="card group-filter-card" style="margin-bottom: 24px; padding: 16px;">
+          <div style="display: grid; grid-template-columns: minmax(180px, 1.2fr) minmax(180px, 1fr) minmax(160px, 0.8fr) auto auto; gap: 12px; align-items: end;">
+            <div class="form-group" style="margin: 0;">
+              <label class="form-label">Search Member</label>
+              <input type="search" id="group-member-search" class="form-control" placeholder="Name, reg no, phone" />
+            </div>
+            <div class="form-group" style="margin: 0;">
+              <label class="form-label">Account Scope</label>
+              <select id="group-account-scope" class="form-control">
+                <option value="all">All Members + Group Accounts</option>
+                <option value="members">All Members</option>
+                <option value="groups">All Groups</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin: 0;">
+              <label class="form-label">From</label>
+              <input type="date" id="global-date-start" class="form-control" />
+            </div>
+            <div class="form-group" style="margin: 0;">
+              <label class="form-label">To</label>
+              <input type="date" id="global-date-end" class="form-control" />
+            </div>
+            <button class="btn btn-outline btn-sm" id="clear-date-filter-btn" style="height: 38px;">Clear</button>
+          </div>
+          <div id="group-filter-summary" class="text-xs text-muted" style="margin-top: 10px;"></div>
         </div>
 
         <div class="card" style="padding: 0;">
           <div style="display: flex; border-bottom: 1px solid var(--border-color);">
             <button class="tab-btn active" data-tab="members">Members (${allGroupMembers.length})</button>
-            <button class="tab-btn" data-tab="loans">Group Loans</button>
-            <button class="tab-btn" data-tab="savings">Group Savings</button>
+            <button class="tab-btn" data-tab="loans">Loans</button>
+            <button class="tab-btn" data-tab="savings">Savings</button>
           </div>
           <div id="tab-content" style="padding: 24px;">
             <div id="members-tab">
@@ -219,7 +237,7 @@ export const renderGroupProfile = async (params) => {
             <div id="loans-tab" style="display: none;">
               <div class="table-responsive">
                 <table class="table">
-                  <thead><tr><th>Loan No</th><th>Amount</th><th>Status</th><th>Date</th><th>Action</th></tr></thead>
+                  <thead><tr><th>Loan No</th><th>Owner</th><th>Amount</th><th>Status</th><th>Date</th><th>Action</th></tr></thead>
                   <tbody id="group-loans-body"></tbody>
                 </table>
               </div>
@@ -228,7 +246,7 @@ export const renderGroupProfile = async (params) => {
             <div id="savings-tab" style="display: none;">
               <div class="table-responsive">
                 <table class="table">
-                  <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Ref</th></tr></thead>
+                  <thead><tr><th>Date</th><th>Owner</th><th>Type</th><th>Amount</th><th>Ref</th></tr></thead>
                   <tbody id="group-savings-body"></tbody>
                 </table>
               </div>
@@ -271,6 +289,9 @@ export const renderGroupProfile = async (params) => {
     <style>
       .tab-btn { flex: 1; padding: 16px; background: transparent; border: none; font-family: 'Inter', sans-serif; font-weight: 600; cursor: pointer; color: var(--text-muted); border-bottom: 2px solid transparent; }
       .tab-btn.active { color: var(--primary); border-bottom-color: var(--secondary); background: rgba(27, 61, 114, 0.02); }
+      @media (max-width: 900px) {
+        .group-filter-card > div { grid-template-columns: 1fr !important; }
+      }
     </style>
   `;
 
@@ -309,13 +330,101 @@ export const renderGroupProfile = async (params) => {
     }
   };
 
+  const memberSearchInput = container.querySelector('#group-member-search');
+  const accountScopeSelect = container.querySelector('#group-account-scope');
+  const dateStartInput = container.querySelector('#global-date-start');
+  const dateEndInput = container.querySelector('#global-date-end');
+  const filterSummary = container.querySelector('#group-filter-summary');
+  let currentMemberStatusFilter = 'all';
+  let currentStartDate = null, currentEndDate = null;
+  let loanPage = 1, savingsPage = 1;
+  const pageSize = 10;
+
+  const getOwnerName = (record) => {
+    if (record.member) return record.expand?.member?.full_name || 'Member';
+    return group.name;
+  };
+
+  const getFilteredMembers = () => {
+    const query = (memberSearchInput?.value || '').trim().toLowerCase();
+    const scope = accountScopeSelect?.value || 'all';
+    return enrichedMembers.filter(m => {
+      if (scope === 'groups') return false;
+      if (currentMemberStatusFilter === 'arrears' && m.totalArrears <= 0) return false;
+      if (currentMemberStatusFilter === 'inactive' && m.isActive) return false;
+      if (!query) return true;
+      return [m.full_name, m.reg_no, m.phone_number, m.phone]
+        .filter(Boolean)
+        .some(value => String(value).toLowerCase().includes(query));
+    });
+  };
+
+  const scopeIncludesGroupAccount = () => {
+    const scope = accountScopeSelect?.value || 'all';
+    const query = (memberSearchInput?.value || '').trim();
+    if (scope === 'groups') return true;
+    return currentMemberStatusFilter === 'all' && !query && scope === 'all';
+  };
+
+  const applyDateFilters = (records, dateField) => records.filter(r => {
+    if (!currentStartDate && !currentEndDate) return true;
+    const d = new Date(r[dateField]);
+    if (Number.isNaN(d.getTime())) return false;
+    if (currentStartDate && d < currentStartDate) return false;
+    if (currentEndDate && d > currentEndDate) return false;
+    return true;
+  });
+
+  const recordMatchesScope = (record) => {
+    const scope = accountScopeSelect?.value || 'all';
+    if (scope === 'groups') return !record.member;
+    if (!record.member) return scopeIncludesGroupAccount();
+    const allowedMemberIds = new Set(getFilteredMembers().map(m => m.id));
+    return allowedMemberIds.has(record.member);
+  };
+
+  const getFilteredLoans = () => applyDateFilters(allFinancialLoansSorted.filter(recordMatchesScope), 'application_date');
+  const getFilteredSavings = () => applyDateFilters(allFinancialSavingsSorted.filter(recordMatchesScope), 'date');
+
+  const updateFilteredKpis = () => {
+    const filteredMembers = getFilteredMembers();
+    const filteredLoans = getFilteredLoans();
+    const filteredSavings = getFilteredSavings();
+    const includeGroupAccount = scopeIncludesGroupAccount();
+    const arrearsAmount = filteredMembers.reduce((sum, m) => sum + (Number(m.totalArrears) || 0), 0) + (includeGroupAccount ? groupLevelArrears : 0);
+    const arrearsCount = filteredMembers.filter(m => m.totalArrears > 0).length;
+    const inactiveCount = filteredMembers.filter(m => !m.isActive).length;
+    const savingsTotal = calculateSavingsTotal(filteredSavings);
+    const outstandingLoan = calculateOutstandingLoanBalance(filteredLoans, allRepayments);
+
+    container.querySelector('#group-total-savings-kpi').textContent = `KES ${savingsTotal.toLocaleString()}`;
+    container.querySelector('#group-outstanding-loan-kpi').textContent = `KES ${outstandingLoan.toLocaleString()}`;
+    container.querySelector('#group-total-members-kpi').textContent = filteredMembers.length;
+    container.querySelector('#group-arrears-kpi').innerHTML = `${arrearsCount} <span class="text-xs text-muted" style="font-weight:normal;">(KES ${arrearsAmount.toLocaleString()})</span>`;
+    container.querySelector('#group-inactive-members-kpi').innerHTML = `${inactiveCount} <span class="text-xs text-muted" style="font-weight:normal;">(>90 days)</span>`;
+
+    const scope = accountScopeSelect?.value || 'all';
+    const scopeLabel = scope === 'all' ? 'all members and group accounts' : (scope === 'members' ? 'all members' : 'all groups');
+    const dateLabel = currentStartDate || currentEndDate
+      ? `, ${dateStartInput.value || 'start'} to ${dateEndInput.value || 'today'}`
+      : '';
+    if (filterSummary) filterSummary.textContent = `Showing ${scopeLabel}${dateLabel}. KPIs reflect this filter.`;
+  };
+
+  const refreshFilteredViews = () => {
+    loanPage = 1;
+    savingsPage = 1;
+    renderMembersTable();
+    updateGroupLoansUI();
+    updateGroupSavingsUI();
+    updateFilteredKpis();
+  };
+
   // Members table
-  const renderMembersTable = (filter = 'all') => {
+  const renderMembersTable = () => {
     const tbody = container.querySelector('#members-table-body');
     if (!tbody) return;
-    let filtered = enrichedMembers;
-    if (filter === 'arrears') filtered = enrichedMembers.filter(m => m.totalArrears > 0);
-    else if (filter === 'inactive') filtered = enrichedMembers.filter(m => !m.isActive);
+    const filtered = getFilteredMembers();
 
     tbody.innerHTML = filtered.length === 0 ? `<tr><td colspan="9" class="text-center text-muted" style="padding: 32px;">No members found matching this filter.</td></tr>` : filtered.map(m => `
       <tr>
@@ -340,10 +449,9 @@ export const renderGroupProfile = async (params) => {
     });
   };
   if (filterBtns.all) {
-    filterBtns.all.onclick = () => { updateActiveFilterBtn('all'); renderMembersTable('all'); };
-    filterBtns.arrears.onclick = () => { updateActiveFilterBtn('arrears'); renderMembersTable('arrears'); };
-    filterBtns.inactive.onclick = () => { updateActiveFilterBtn('inactive'); renderMembersTable('inactive'); };
-    renderMembersTable('all');
+    filterBtns.all.onclick = () => { currentMemberStatusFilter = 'all'; updateActiveFilterBtn('all'); refreshFilteredViews(); };
+    filterBtns.arrears.onclick = () => { currentMemberStatusFilter = 'arrears'; updateActiveFilterBtn('arrears'); refreshFilteredViews(); };
+    filterBtns.inactive.onclick = () => { currentMemberStatusFilter = 'inactive'; updateActiveFilterBtn('inactive'); refreshFilteredViews(); };
   }
 
   // Rating logic
@@ -395,29 +503,15 @@ export const renderGroupProfile = async (params) => {
   }
   updateRatingUI();
 
-  // Date filtering for loans & savings tabs
-  const dateStartInput = container.querySelector('#global-date-start');
-  const dateEndInput = container.querySelector('#global-date-end');
-  let currentStartDate = null, currentEndDate = null;
-  let loanPage = 1, savingsPage = 1;
-  const pageSize = 10;
-
-  const applyDateFilters = (records, dateField) => records.filter(r => {
-    if (!currentStartDate && !currentEndDate) return true;
-    const d = new Date(r[dateField]);
-    if (currentStartDate && d < currentStartDate) return false;
-    if (currentEndDate && d > currentEndDate) return false;
-    return true;
-  });
-
   const updateGroupLoansUI = () => {
-    const filtered = applyDateFilters(allGroupLoansSorted, 'application_date');
+    const filtered = getFilteredLoans();
     const start = (loanPage - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
     const tbody = container.querySelector('#group-loans-body');
-    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="5" class="text-center text-muted">No group loans found.</td></tr>' : paginated.map(l => `
+    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="6" class="text-center text-muted">No loans found for this filter.</td></tr>' : paginated.map(l => `
       <tr>
         <td><strong>${l.loan_no}</strong></td>
+        <td><div class="font-semibold">${getOwnerName(l)}</div><div class="text-xs text-muted">${l.member ? 'Member' : 'Group account'}</div></td>
         <td>KES ${(l.amount_applied || 0).toLocaleString()}</td>
         <td><span class="badge ${l.status === 'disbursed' ? 'badge-success' : (l.status === 'approved' || l.status === 'partial_approved') ? 'badge-primary' : l.status === 'pending' ? 'badge-warning' : 'badge-danger'}">${l.status.toUpperCase()}</span></td>
         <td>${formatDate(l.application_date)}</td>
@@ -430,13 +524,14 @@ export const renderGroupProfile = async (params) => {
   };
 
   const updateGroupSavingsUI = () => {
-    const filtered = applyDateFilters(groupOnlySavings, 'date');
+    const filtered = getFilteredSavings();
     const start = (savingsPage - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
     const tbody = container.querySelector('#group-savings-body');
-    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No group savings found.</td></tr>' : paginated.map(s => `
+    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="5" class="text-center text-muted">No savings found for this filter.</td></tr>' : paginated.map(s => `
       <tr>
         <td>${formatDate(s.date)}</td>
+        <td><div class="font-semibold">${getOwnerName(s)}</div><div class="text-xs text-muted">${s.member ? 'Member' : 'Group account'}</div></td>
         <td><span class="badge" style="background: ${s.type === 'deposit' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'}; color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type.toUpperCase()}</span></td>
         <td class="font-semibold" style="color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type === 'deposit' ? '+' : '-'}${s.amount.toLocaleString()}</td>
         <td class="text-xs text-muted">${s.reference || '-'}</td>
@@ -447,23 +542,28 @@ export const renderGroupProfile = async (params) => {
     if (ctrl) pag.appendChild(ctrl);
   };
 
-  container.querySelector('#apply-date-filter-btn').onclick = () => {
+  const syncDateFilter = () => {
     currentStartDate = dateStartInput.value ? new Date(dateStartInput.value) : null;
     currentEndDate = dateEndInput.value ? new Date(dateEndInput.value) : null;
     if (currentEndDate) currentEndDate.setHours(23, 59, 59, 999);
-    loanPage = 1; savingsPage = 1;
-    updateGroupLoansUI(); updateGroupSavingsUI();
+    refreshFilteredViews();
   };
 
+  memberSearchInput.oninput = refreshFilteredViews;
+  accountScopeSelect.onchange = refreshFilteredViews;
+  dateStartInput.onchange = syncDateFilter;
+  dateEndInput.onchange = syncDateFilter;
   container.querySelector('#clear-date-filter-btn').onclick = () => {
+    memberSearchInput.value = '';
+    accountScopeSelect.value = 'all';
     dateStartInput.value = ''; dateEndInput.value = '';
     currentStartDate = null; currentEndDate = null;
-    loanPage = 1; savingsPage = 1;
-    updateGroupLoansUI(); updateGroupSavingsUI();
+    currentMemberStatusFilter = 'all';
+    updateActiveFilterBtn('all');
+    refreshFilteredViews();
   };
 
-  updateGroupLoansUI();
-  updateGroupSavingsUI();
+  refreshFilteredViews();
 
   // Real-time updates
   const fetchAndRenderMembers = async () => {
@@ -498,11 +598,9 @@ export const renderGroupProfile = async (params) => {
           })
         : [];
       totalOutstandingLoan = calculateOutstandingLoanBalance(groupLoans, allRepayments);
-      const outstandingKpi = container.querySelector('#group-outstanding-loan-kpi');
-      if (outstandingKpi) outstandingKpi.textContent = `KES ${totalOutstandingLoan.toLocaleString()}`;
-      allGroupLoansSorted.length = 0;
-      allGroupLoansSorted.push(...groupLoans.filter(l => !l.member).sort((a, b) => new Date(b.application_date) - new Date(a.application_date)));
-      updateGroupLoansUI();
+      allFinancialLoansSorted.length = 0;
+      allFinancialLoansSorted.push(...groupLoans.sort((a, b) => new Date(b.application_date) - new Date(a.application_date)));
+      refreshFilteredViews();
     } catch(e) {}
   };
 
@@ -515,12 +613,10 @@ export const renderGroupProfile = async (params) => {
         sort: '-date',
         expand: 'member,group,recorded_by'
       });
-      groupOnlySavings.length = 0;
-      groupOnlySavings.push(...groupSavings.filter(s => !s.member).sort((a, b) => new Date(b.date) - new Date(a.date)));
+      allFinancialSavingsSorted.length = 0;
+      allFinancialSavingsSorted.push(...groupSavings.sort((a, b) => new Date(b.date) - new Date(a.date)));
       totalGroupSavings = calculateSavingsTotal(groupSavings);
-      const savingsKpi = container.querySelector('#group-total-savings-kpi');
-      if (savingsKpi) savingsKpi.textContent = `KES ${totalGroupSavings.toLocaleString()}`;
-      updateGroupSavingsUI();
+      refreshFilteredViews();
     } catch(e) {}
   };
 
