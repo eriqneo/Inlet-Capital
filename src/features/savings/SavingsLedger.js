@@ -63,14 +63,14 @@ export const renderSavingsLedger = async () => {
             <input type="date" name="date" class="form-control" value="${new Date().toISOString().split('T')[0]}" required />
           </div>
 
-          <!-- Payment Options for Deposits -->
+          <!-- Payment Options -->
           <div id="payment-panel">
             <div class="form-group" style="margin-bottom: 16px;">
-              <label class="form-label" style="font-size: 0.75rem;">Payment Received Via</label>
+              <label class="form-label" id="payment-panel-label" style="font-size: 0.75rem;">Payment Received Via</label>
               <div style="display: flex; gap: 8px; margin-top: 6px;">
                 <button type="button" class="btn pay-pill active" data-method="mpesa" style="flex: 1; padding: 6px 12px; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; gap: 4px;">📱 M-Pesa</button>
                 <button type="button" class="btn pay-pill" data-method="cash" style="flex: 1; padding: 6px 12px; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; gap: 4px;">💵 Cash</button>
-                <button type="button" class="btn pay-pill" data-method="card" style="flex: 1; padding: 6px 12px; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; gap: 4px;">💳 Card</button>
+                <button type="button" class="btn pay-pill" data-method="bank" style="flex: 1; padding: 6px 12px; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; gap: 4px;">🏦 Bank</button>
               </div>
               <input type="hidden" name="paymentMethod" id="pay-method-val" value="mpesa" />
             </div>
@@ -108,6 +108,7 @@ export const renderSavingsLedger = async () => {
   const gWrap = container.querySelector('#group-select-wrap');
   const txType = container.querySelector('#tx-type');
   const payPanel = container.querySelector('#payment-panel');
+  const paymentPanelLabel = container.querySelector('#payment-panel-label');
   const pills = container.querySelectorAll('.pay-pill');
   const payMethodInput = container.querySelector('#pay-method-val');
   const payRefGroup = container.querySelector('#pay-ref-group');
@@ -142,19 +143,23 @@ export const renderSavingsLedger = async () => {
     }
   };
 
-  txType.onchange = () => {
-    if (txType.value === 'deposit') {
-      payPanel.style.display = 'block';
-      if (payMethodInput.value === 'cash') {
-        payRefInput.removeAttribute('required');
-      } else {
-        payRefInput.setAttribute('required', 'true');
-      }
-    } else {
-      payPanel.style.display = 'none';
+  const updatePaymentPanel = () => {
+    const method = payMethodInput.value || 'mpesa';
+    paymentPanelLabel.textContent = txType.value === 'withdrawal' ? 'Payment Sent Via' : 'Payment Received Via';
+    payPanel.style.display = 'block';
+
+    if (method === 'cash') {
+      payRefGroup.style.display = 'none';
       payRefInput.removeAttribute('required');
+      payRefInput.value = '';
+    } else {
+      payRefGroup.style.display = 'block';
+      payRefInput.setAttribute('required', 'true');
+      payRefInput.placeholder = method === 'mpesa' ? 'e.g. QWE123RTY4' : 'e.g. Bank transfer / cheque reference';
     }
   };
+
+  txType.onchange = updatePaymentPanel;
 
   pills.forEach(pill => {
     pill.onclick = () => {
@@ -162,18 +167,11 @@ export const renderSavingsLedger = async () => {
       pill.classList.add('active');
       const val = pill.dataset.method;
       payMethodInput.value = val;
-
-      if (val === 'cash') {
-        payRefGroup.style.display = 'none';
-        payRefInput.removeAttribute('required');
-        payRefInput.value = '';
-      } else {
-        payRefGroup.style.display = 'block';
-        payRefInput.setAttribute('required', 'true');
-        payRefInput.placeholder = val === 'mpesa' ? 'e.g. QWE123RTY4' : 'e.g. Card Slip / Receipt No.';
-      }
+      updatePaymentPanel();
     };
   });
+
+  updatePaymentPanel();
 
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -181,15 +179,15 @@ export const renderSavingsLedger = async () => {
     const data = Object.fromEntries(formData.entries());
     
     const amount = parseFloat(data.amount);
+    const paymentMethod = data.paymentMethod || 'mpesa';
+    const paymentReference = paymentMethod === 'cash' ? 'CASH' : (data.paymentReference || '');
 
     const transaction = {
       type: data.type,
       amount: amount,
       date: new Date(data.date).toISOString(),
-      payment_method: data.type === 'deposit' ? data.paymentMethod : 'cash',
-      reference: data.type === 'deposit' 
-        ? (data.paymentMethod === 'cash' ? `CASH` : (data.paymentReference || '')) 
-        : '',
+      payment_method: paymentMethod,
+      reference: paymentReference,
       remarks: data.remarks || '',
       is_reversed: false
     };
@@ -214,6 +212,9 @@ export const renderSavingsLedger = async () => {
       
       if (window.notify) window.notify.success('Savings recorded successfully!');
       form.reset();
+      pills.forEach(p => p.classList.toggle('active', p.dataset.method === 'mpesa'));
+      payMethodInput.value = 'mpesa';
+      updatePaymentPanel();
       updateRecent();
       setTimeout(() => navigate('#/savings'), 1200);
     } catch (err) {
@@ -233,11 +234,9 @@ export const renderSavingsLedger = async () => {
 
     listWrap.innerHTML = recent.map(t => {
       let methodIcon = '';
-      if (t.type === 'deposit') {
-        if (t.payment_method === 'mpesa') methodIcon = ' 📱';
-        else if (t.payment_method === 'card') methodIcon = ' 💳';
-        else methodIcon = ' 💵';
-      }
+      if (t.payment_method === 'mpesa') methodIcon = ' 📱';
+      else if (t.payment_method === 'bank') methodIcon = ' 🏦';
+      else if (t.payment_method) methodIcon = ' 💵';
       const targetName = t.expand?.member ? t.expand.member.full_name : (t.expand?.group ? t.expand.group.name : 'Unknown');
       
       return `

@@ -53,18 +53,17 @@ export const renderSavingsList = async () => {
       const amount = Number(t.amount) || 0;
       const reference = String(t.reference || '');
       let paymentLabel = '-';
-      if (type === 'deposit') {
-        const method = t.payment_method || 'mpesa';
-        const icon = method === 'mpesa' ? '📱 M-Pesa' : (method === 'card' ? '💳 Card' : '💵 Cash');
-        const refPart = reference && reference !== 'N/A' && reference !== 'CASH' && !reference.startsWith('SAVE-D-') ? `: ${reference}` : '';
-        paymentLabel = `${icon}${refPart}`;
-      } else {
-        paymentLabel = reference || 'Withdrawal';
-      }
+      const method = t.payment_method || (type === 'withdrawal' ? 'cash' : 'mpesa');
+      const methodLabel = method === 'mpesa' ? '📱 M-Pesa' : (method === 'bank' ? '🏦 Bank' : (method === 'card' ? '💳 Card' : '💵 Cash'));
+      const refPart = reference && reference !== 'N/A' && reference !== 'CASH' && !reference.startsWith('SAVE-D-') ? `: ${reference}` : '';
+      paymentLabel = `${type === 'withdrawal' ? 'Sent via ' : 'Received via '}${methodLabel}${refPart}`;
 
+      const memberGroup = t.expand?.member?.expand?.group;
       const targetName = t.expand?.member ? t.expand.member.full_name : (t.expand?.group ? t.expand.group.name : 'Unknown');
       const targetId = t.expand?.member ? t.expand.member.reg_no : (t.expand?.group ? t.expand.group.group_id : (t.member || t.group || 'Unknown'));
-      const targetType = t.expand?.member || t.member ? 'INDIVIDUAL' : 'GROUP';
+      const targetType = t.expand?.member
+        ? (memberGroup ? `GROUP: ${memberGroup.name}` : 'INDIVIDUAL')
+        : 'GROUP';
 
       return `
       <tr>

@@ -25,13 +25,13 @@ export const savingsService = {
     return await pb.collection('savings').getList(page, perPage, {
       filter,
       sort,
-      expand: 'member,group,recorded_by'
+      expand: 'member,member.group,group,recorded_by'
     });
   },
 
   async getAllCached(options = {}, onUpdate = null) {
     const { page = 1, perPage = 50, filter = '', sort = '-date' } = options;
-    const key = `savings:list:${page}:${perPage}:${sort}:${filter}:expanded`;
+    const key = `savings:list:${page}:${perPage}:${sort}:${filter}:expanded:v2`;
     return await dataCache.get(key, () => this.getAll({ page, perPage, filter, sort }), onUpdate);
   },
 
@@ -84,6 +84,18 @@ export const savingsService = {
       sort: '-date',
       expand: 'recorded_by'
     });
+  },
+
+  async update(id, data) {
+    const record = await pb.collection('savings').update(id, data);
+    await dataCache.invalidatePrefix('savings:');
+    return record;
+  },
+
+  async delete(id) {
+    await pb.collection('savings').delete(id);
+    await dataCache.invalidatePrefix('savings:');
+    return true;
   },
   
   /**

@@ -35,7 +35,24 @@ export const renderMemberProfile = async (params) => {
 
   // Calculate totals from PB data
   const totalBorrowed = memberLoans.reduce((sum, l) => sum + (l.amount_applied || 0), 0);
-  const totalSavings = memberSavings.filter(s => !s.is_reversed).reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
+  const calculateSavingsBalance = () => memberSavings.filter(s => !s.is_reversed).reduce((sum, s) => {
+    const amount = Number(s.amount) || 0;
+    return s.type === 'deposit' ? sum + amount : sum - amount;
+  }, 0);
+  const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  }[char]));
+  const toDateInputValue = (dateValue) => {
+    if (!dateValue) return '';
+    const date = new Date(dateValue);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toISOString().split('T')[0];
+  };
+  const totalSavings = calculateSavingsBalance();
 
   let loanPage = 1, savingsPage = 1;
   const pageSize = 10;
@@ -106,6 +123,19 @@ export const renderMemberProfile = async (params) => {
       </div>
     </div>
 
+    <div id="savings-transaction-modal" class="modal" style="display: none; position: fixed; z-index: 1002; left: 0; top: 0; width: 100%; height: 100%; background: rgba(15,37,69,0.48); backdrop-filter: blur(6px); align-items: center; justify-content: center; padding: 20px;">
+      <div class="card" style="width: 100%; max-width: 620px; max-height: 92vh; overflow-y: auto; position: relative; padding: 0;">
+        <div style="display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; border-bottom: 1px solid var(--border-color);">
+          <div>
+            <h2 class="text-lg" id="savings-modal-title">Savings Transaction</h2>
+            <p class="text-xs text-muted" id="savings-modal-subtitle" style="margin-top: 4px;">Member savings history record</p>
+          </div>
+          <button type="button" id="close-savings-modal-btn" aria-label="Close transaction modal" style="background: transparent; border: none; font-size: 24px; cursor: pointer; color: var(--text-muted);">&times;</button>
+        </div>
+        <div id="savings-modal-body" style="padding: 24px;"></div>
+      </div>
+    </div>
+
     <div style="display: grid; grid-template-columns: 300px 1fr; gap: 24px;">
       <!-- Sidebar -->
       <div>
@@ -121,7 +151,7 @@ export const renderMemberProfile = async (params) => {
           <h3 style="font-size: 1rem; margin-bottom: 12px;">Financial Summary</h3>
           <div style="margin-bottom: 8px; display: flex; justify-content: space-between;">
             <span class="text-muted">Total Savings:</span>
-            <span class="font-semibold text-success">KES ${totalSavings.toLocaleString()}</span>
+            <span class="font-semibold text-success" id="member-total-savings">KES ${totalSavings.toLocaleString()}</span>
           </div>
           <div style="margin-bottom: 8px; display: flex; justify-content: space-between;">
             <span class="text-muted">Total Loans:</span>
@@ -171,7 +201,7 @@ export const renderMemberProfile = async (params) => {
             <div id="savings-tab" style="display: none;">
               <div class="table-responsive">
                 <table class="table">
-                  <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Ref</th><th>Action</th></tr></thead>
+                  <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Ref</th><th>Remarks</th><th>Actions</th></tr></thead>
                   <tbody id="member-savings-body"></tbody>
                 </table>
               </div>
@@ -185,6 +215,14 @@ export const renderMemberProfile = async (params) => {
     <style>
       .tab-btn { flex: 1; padding: 16px; background: transparent; border: none; font-family: 'Inter', sans-serif; font-weight: 600; cursor: pointer; color: var(--text-muted); border-bottom: 2px solid transparent; }
       .tab-btn.active { color: var(--primary); border-bottom-color: var(--secondary); background: rgba(27, 61, 114, 0.02); }
+      .icon-action-btn { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; border: 1px solid var(--border-color); background: #fff; color: var(--primary); cursor: pointer; font-size: 0.9rem; margin-right: 4px; transition: all 0.18s ease; }
+      .icon-action-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 12px rgba(15, 37, 69, 0.08); border-color: var(--primary); }
+      .icon-action-btn.danger { color: var(--danger); }
+      .icon-action-btn.danger:hover { border-color: var(--danger); background: rgba(239, 68, 68, 0.06); }
+      .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+      .detail-tile { border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; background: var(--bg-light); }
+      .detail-label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; font-weight: 700; letter-spacing: 0; margin-bottom: 4px; }
+      .detail-value { font-size: 0.92rem; font-weight: 600; color: var(--text-main); overflow-wrap: anywhere; }
     </style>
   `;
 
@@ -208,26 +246,220 @@ export const renderMemberProfile = async (params) => {
   };
 
   // --- Savings table ---
+  const formatSavingsReference = (saving) => {
+    const type = saving.type || 'deposit';
+    const method = saving.payment_method || (type === 'withdrawal' ? 'cash' : 'mpesa');
+    const reference = String(saving.reference || '');
+    const methodLabel = method === 'mpesa' ? 'M-Pesa' : (method === 'bank' ? 'Bank' : (method === 'card' ? 'Card' : 'Cash'));
+    const direction = type === 'withdrawal' ? 'Sent via' : 'Received via';
+    const refPart = reference && reference !== 'N/A' && reference !== 'CASH' && !reference.startsWith('SAVE-D-') ? `: ${reference}` : '';
+    return `${direction} ${methodLabel}${refPart}`;
+  };
+
+  const formatSavingsMethod = (method) => method === 'mpesa' ? 'M-Pesa' : (method === 'bank' ? 'Bank' : (method === 'card' ? 'Card' : 'Cash'));
+
+  const updateSavingsSummary = () => {
+    const totalSavingsEl = container.querySelector('#member-total-savings');
+    if (totalSavingsEl) totalSavingsEl.textContent = `KES ${calculateSavingsBalance().toLocaleString()}`;
+  };
+
+  const savingsModal = container.querySelector('#savings-transaction-modal');
+  const savingsModalTitle = container.querySelector('#savings-modal-title');
+  const savingsModalSubtitle = container.querySelector('#savings-modal-subtitle');
+  const savingsModalBody = container.querySelector('#savings-modal-body');
+  const toggleSavingsModal = (show) => { savingsModal.style.display = show ? 'flex' : 'none'; };
+  const findSavingById = (recordId) => memberSavings.find(s => s.id === recordId);
+
+  const openSavingsView = (saving) => {
+    const amount = Number(saving.amount) || 0;
+    const method = saving.payment_method || (saving.type === 'withdrawal' ? 'cash' : 'mpesa');
+    savingsModalTitle.textContent = 'View Savings Transaction';
+    savingsModalSubtitle.textContent = `${saving.type === 'withdrawal' ? 'Withdrawal' : 'Deposit'} record for ${member.full_name}`;
+    savingsModalBody.innerHTML = `
+      <div class="detail-grid">
+        <div class="detail-tile"><div class="detail-label">Date</div><div class="detail-value">${formatDate(saving.date)}</div></div>
+        <div class="detail-tile"><div class="detail-label">Type</div><div class="detail-value">${escapeHtml((saving.type || '').toUpperCase())}</div></div>
+        <div class="detail-tile"><div class="detail-label">Amount</div><div class="detail-value">KES ${amount.toLocaleString()}</div></div>
+        <div class="detail-tile"><div class="detail-label">Payment Method</div><div class="detail-value">${formatSavingsMethod(method)}</div></div>
+        <div class="detail-tile"><div class="detail-label">Reference</div><div class="detail-value">${escapeHtml(formatSavingsReference(saving))}</div></div>
+        <div class="detail-tile"><div class="detail-label">Recorded By</div><div class="detail-value">${escapeHtml(saving.expand?.recorded_by?.name || saving.expand?.recorded_by?.email || 'System')}</div></div>
+      </div>
+      <div class="detail-tile" style="margin-top: 14px;">
+        <div class="detail-label">Remarks</div>
+        <div class="detail-value">${escapeHtml(saving.remarks || 'No remarks added.')}</div>
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px;">
+        <button type="button" class="btn btn-outline" id="view-edit-saving-btn" data-id="${saving.id}">Edit</button>
+        <button type="button" class="btn btn-primary" id="view-close-saving-btn">Done</button>
+      </div>
+    `;
+    savingsModalBody.querySelector('#view-close-saving-btn').onclick = () => toggleSavingsModal(false);
+    savingsModalBody.querySelector('#view-edit-saving-btn').onclick = () => openSavingsEdit(saving);
+    toggleSavingsModal(true);
+  };
+
+  const openSavingsEdit = (saving) => {
+    const method = saving.payment_method || (saving.type === 'withdrawal' ? 'cash' : 'mpesa');
+    const isCash = method === 'cash';
+    savingsModalTitle.textContent = 'Edit Savings Transaction';
+    savingsModalSubtitle.textContent = 'Changes here update the saved PocketBase record.';
+    savingsModalBody.innerHTML = `
+      <form id="savings-transaction-edit-form">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px;">
+          <div class="form-group">
+            <label class="form-label">Transaction Type</label>
+            <select name="type" id="edit-saving-type" class="form-control" required>
+              <option value="deposit" ${saving.type === 'deposit' ? 'selected' : ''}>Deposit</option>
+              <option value="withdrawal" ${saving.type === 'withdrawal' ? 'selected' : ''}>Withdrawal</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Amount (KES)</label>
+            <input type="number" name="amount" class="form-control" min="1" step="1" value="${Number(saving.amount) || 0}" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Transaction Date</label>
+            <input type="date" name="date" class="form-control" value="${toDateInputValue(saving.date)}" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label" id="edit-saving-method-label">${saving.type === 'withdrawal' ? 'Payment Sent Via' : 'Payment Received Via'}</label>
+            <select name="payment_method" id="edit-saving-method" class="form-control" required>
+              <option value="mpesa" ${method === 'mpesa' ? 'selected' : ''}>M-Pesa</option>
+              <option value="cash" ${method === 'cash' ? 'selected' : ''}>Cash</option>
+              <option value="bank" ${method === 'bank' ? 'selected' : ''}>Bank</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group" id="edit-saving-ref-group" style="${isCash ? 'display: none;' : ''}">
+          <label class="form-label">Transaction Reference</label>
+          <input type="text" name="reference" id="edit-saving-reference" class="form-control" value="${escapeHtml(saving.reference === 'CASH' ? '' : (saving.reference || ''))}" placeholder="e.g. QWE123RTY4" ${isCash ? '' : 'required'} />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Remarks</label>
+          <textarea name="remarks" class="form-control" rows="3" placeholder="Add notes about this transaction">${escapeHtml(saving.remarks || '')}</textarea>
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border-color);">
+          <button type="button" class="btn btn-outline" id="cancel-saving-edit-btn">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Transaction</button>
+        </div>
+      </form>
+    `;
+
+    const editSavingsForm = savingsModalBody.querySelector('#savings-transaction-edit-form');
+    const editType = savingsModalBody.querySelector('#edit-saving-type');
+    const editMethod = savingsModalBody.querySelector('#edit-saving-method');
+    const editMethodLabel = savingsModalBody.querySelector('#edit-saving-method-label');
+    const editRefGroup = savingsModalBody.querySelector('#edit-saving-ref-group');
+    const editRefInput = savingsModalBody.querySelector('#edit-saving-reference');
+    const updateEditPaymentFields = () => {
+      editMethodLabel.textContent = editType.value === 'withdrawal' ? 'Payment Sent Via' : 'Payment Received Via';
+      if (editMethod.value === 'cash') {
+        editRefGroup.style.display = 'none';
+        editRefInput.removeAttribute('required');
+        editRefInput.value = '';
+      } else {
+        editRefGroup.style.display = 'block';
+        editRefInput.setAttribute('required', 'true');
+        editRefInput.placeholder = editMethod.value === 'mpesa' ? 'e.g. QWE123RTY4' : 'e.g. Bank transfer / cheque reference';
+      }
+    };
+
+    editType.onchange = updateEditPaymentFields;
+    editMethod.onchange = updateEditPaymentFields;
+    savingsModalBody.querySelector('#cancel-saving-edit-btn').onclick = () => toggleSavingsModal(false);
+    editSavingsForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const formData = new FormData(editSavingsForm);
+      const data = Object.fromEntries(formData.entries());
+      const paymentMethod = data.payment_method || 'mpesa';
+      const payload = {
+        type: data.type,
+        amount: Number(data.amount) || 0,
+        date: new Date(data.date).toISOString(),
+        payment_method: paymentMethod,
+        reference: paymentMethod === 'cash' ? 'CASH' : (data.reference || ''),
+        remarks: data.remarks || ''
+      };
+      const restoreButton = setButtonLoading(editSavingsForm.querySelector('button[type="submit"]'), 'Saving...');
+      try {
+        await savingsService.update(saving.id, payload);
+        if (window.notify) window.notify.success('Savings transaction updated.');
+        toggleSavingsModal(false);
+        await fetchAndRenderSavings();
+      } catch (err) {
+        if (window.notify) window.notify.error('Failed to update transaction: ' + (err.message || 'Please try again.'));
+        restoreButton();
+      }
+    };
+    updateEditPaymentFields();
+    toggleSavingsModal(true);
+  };
+
+  const deleteSaving = async (saving) => {
+    const confirmed = window.confirmDialog ? await window.confirmDialog({
+      title: 'Delete Savings Transaction',
+      message: `This will permanently delete the ${saving.type} of KES ${(Number(saving.amount) || 0).toLocaleString()} from ${formatDate(saving.date)}. This affects the member balance and cannot be undone.`,
+      confirmText: 'Delete Transaction',
+      cancelText: 'Keep Record',
+      type: 'danger'
+    }) : confirm('Delete this savings transaction permanently?');
+    if (!confirmed) return;
+
+    try {
+      await savingsService.delete(saving.id);
+      if (window.notify) window.notify.success('Savings transaction deleted.');
+      await fetchAndRenderSavings();
+    } catch (err) {
+      if (window.notify) window.notify.error('Failed to delete transaction: ' + (err.message || 'Please try again.'));
+    }
+  };
+
   const updateSavingsUI = () => {
     const start = (savingsPage - 1) * pageSize;
     const paginated = memberSavings.slice(start, start + pageSize);
     const tbody = container.querySelector('#member-savings-body');
-    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="5" class="text-center text-muted">No savings history found.</td></tr>' : paginated.map(s => `
+    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="6" class="text-center text-muted">No savings history found.</td></tr>' : paginated.map(s => `
       <tr>
         <td>${formatDate(s.date)}</td>
         <td><span class="badge" style="background: ${s.type === 'deposit' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'}; color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type.toUpperCase()}</span></td>
         <td class="font-semibold" style="color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type === 'deposit' ? '+' : '-'}${s.amount.toLocaleString()}</td>
-        <td class="text-xs text-muted">${s.reference || '-'}</td>
-        <td></td>
+        <td class="text-xs text-muted">${escapeHtml(formatSavingsReference(s))}</td>
+        <td class="text-xs text-muted">${escapeHtml(s.remarks || '-')}</td>
+        <td style="white-space: nowrap;">
+          <button type="button" class="icon-action-btn savings-action" data-action="view" data-id="${s.id}" title="View transaction" aria-label="View transaction">⊙</button>
+          <button type="button" class="icon-action-btn savings-action" data-action="edit" data-id="${s.id}" title="Edit transaction" aria-label="Edit transaction">✎</button>
+          <button type="button" class="icon-action-btn danger savings-action" data-action="delete" data-id="${s.id}" title="Delete transaction" aria-label="Delete transaction">×</button>
+        </td>
       </tr>`).join('');
     const pag = container.querySelector('#member-savings-pagination');
     pag.innerHTML = '';
     const ctrl = renderPagination(memberSavings.length, pageSize, savingsPage, (p) => { savingsPage = p; updateSavingsUI(); });
     if (ctrl) pag.appendChild(ctrl);
+    updateSavingsSummary();
   };
 
   updateLoansUI();
   updateSavingsUI();
+
+  container.querySelector('#member-savings-body').onclick = async (e) => {
+    const actionButton = e.target.closest('.savings-action');
+    if (!actionButton) return;
+    const saving = findSavingById(actionButton.dataset.id);
+    if (!saving) {
+      if (window.notify) window.notify.error('Transaction record not found. Refreshing savings history...');
+      await fetchAndRenderSavings();
+      return;
+    }
+
+    if (actionButton.dataset.action === 'view') openSavingsView(saving);
+    if (actionButton.dataset.action === 'edit') openSavingsEdit(saving);
+    if (actionButton.dataset.action === 'delete') await deleteSaving(saving);
+  };
+
+  container.querySelector('#close-savings-modal-btn').onclick = () => toggleSavingsModal(false);
+  savingsModal.onclick = (e) => {
+    if (e.target === savingsModal) toggleSavingsModal(false);
+  };
 
   // Tab switching
   const tabs = container.querySelectorAll('.tab-btn');
@@ -289,6 +521,7 @@ export const renderMemberProfile = async (params) => {
       memberSavings = await savingsService.getByMember(member.id);
       const savingsTabBtn = container.querySelector('[data-tab="savings"]');
       if (savingsTabBtn) savingsTabBtn.textContent = `Savings History (${memberSavings.length})`;
+      updateSavingsSummary();
       updateSavingsUI();
     } catch(e) { console.warn('[MemberProfile] Savings refresh:', e.message); }
   };
