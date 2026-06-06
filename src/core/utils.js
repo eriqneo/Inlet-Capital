@@ -1,6 +1,7 @@
 export const formatDate = (dateInput) => {
   if (!dateInput) return '—';
-  const d = new Date(dateInput);
+  const normalizedInput = typeof dateInput === 'string' ? dateInput.replace(' ', 'T') : dateInput;
+  const d = new Date(normalizedInput);
   if (isNaN(d.getTime())) return '—';
   const day = String(d.getDate()).padStart(2, '0');
   const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -55,27 +56,29 @@ export const initDateMask = (inputElement) => {
 
 export const parseInputDate = (dateStr) => {
   if (!dateStr) return '';
-  const parts = dateStr.split('/');
+  const value = String(dateStr);
+  const parts = value.split('/');
   if (parts.length === 3) {
     const day = parts[0].padStart(2, '0');
     const month = parts[1].padStart(2, '0');
     const year = parts[2];
     return `${year}-${month}-${day}`;
   }
-  return dateStr;
+  return value;
 };
 
 export const formatToInputDate = (dateStr) => {
   if (!dateStr) return '';
-  if (dateStr.includes('/')) return dateStr;
-  const parts = dateStr.split('-');
+  const value = String(dateStr);
+  if (value.includes('/')) return value;
+  const parts = value.split('-');
   if (parts.length === 3) {
     const year = parts[0];
     const month = parts[1];
-    const day = parts[2].split('T')[0];
+    const day = parts[2].split(/[T\s]/)[0];
     return `${day}/${month}/${year}`;
   }
-  return dateStr;
+  return value;
 };
 
 export const showLoader = () => {

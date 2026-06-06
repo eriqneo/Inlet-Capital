@@ -12,13 +12,13 @@ export const groupService = {
   async listCached(options = {}, onUpdate = null) {
     const { page = 1, perPage = 50, filter = '', sort = '-created' } = options;
     const key = `groups:list:${page}:${perPage}:${sort}:${filter}`;
-    return await dataCache.get(key, () => this.list({ page, perPage, filter, sort }), onUpdate);
+    return await dataCache.getLocalFirst(key, () => this.list({ page, perPage, filter, sort }), onUpdate);
   },
 
-  async getAll() {
-    return await dataCache.get('groups:all', () => pb.collection('groups').getFullList({
+  async getAll(onUpdate = null) {
+    return await dataCache.getLocalFirst('groups:all', () => pb.collection('groups').getFullList({
       sort: 'name',
-    }));
+    }), onUpdate);
   },
 
   async getById(id) {

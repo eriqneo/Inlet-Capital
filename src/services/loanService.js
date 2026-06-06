@@ -26,7 +26,16 @@ export const loanService = {
   async getAllCached(options = {}, onUpdate = null) {
     const { page = 1, perPage = 50, filter = '', sort = '-application_date' } = options;
     const key = `loans:list:${page}:${perPage}:${sort}:${filter}`;
-    return await dataCache.get(key, () => this.getAll({ page, perPage, filter, sort }), onUpdate);
+    return await dataCache.getLocalFirst(key, () => this.getAll({ page, perPage, filter, sort }), onUpdate);
+  },
+
+  async getFullListCached({ filter = '', sort = '-application_date', expand = 'member,group,processed_by', cacheKey = 'loans:all:expanded:v1' } = {}, onUpdate = null) {
+    const key = `${cacheKey}:${sort}:${filter}:${expand}`;
+    return await dataCache.getLocalFirst(key, () => {
+      const options = { filter, sort };
+      if (expand) options.expand = expand;
+      return pb.collection('loans').getFullList(options);
+    }, onUpdate);
   },
 
   /**
@@ -65,7 +74,17 @@ export const loanService = {
   async update(id, data) {
     const record = await pb.collection('loans').update(id, data);
     await dataCache.invalidatePrefix('loans:');
+    await dataCache.invalidatePrefix('loans:all:');
+    await dataCache.invalidatePrefix('loans:analytics:');
     return record;
+  },
+
+  async delete(id) {
+    await pb.collection('loans').delete(id);
+    await dataCache.invalidatePrefix('loans:');
+    await dataCache.invalidatePrefix('loans:all:');
+    await dataCache.invalidatePrefix('loans:analytics:');
+    return true;
   },
 
   /**

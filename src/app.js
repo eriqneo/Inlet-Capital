@@ -95,9 +95,9 @@ const initApp = async () => {
     return await renderSavingsList();
   }, { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
 
-  addRoute('#/savings/new', async () => {
+  addRoute('#/savings/new', async (params) => {
     const { renderSavingsLedger } = await import('./features/savings/SavingsLedger.js');
-    return await renderSavingsLedger();
+    return await renderSavingsLedger(params);
   }, { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
 
   addRoute('#/expenses', async () => {

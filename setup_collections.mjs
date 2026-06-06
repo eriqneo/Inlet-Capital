@@ -1,4 +1,8 @@
 import fs from 'fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 const PB_URL = 'https://inletcapital.pockethost.io';
 const ADMIN_EMAIL = 'aturaerick@gmail.com';
@@ -11,7 +15,13 @@ async function fetchPb(path, method = 'GET', body = null, token = null) {
   const options = { method, headers };
   if (body) options.body = JSON.stringify(body);
   
-  const res = await fetch(`${PB_URL}/api/${path}`, options);
+  let res;
+  try {
+    res = await fetch(`${PB_URL}/api/${path}`, options);
+  } catch (err) {
+    console.warn(`Fetch failed for ${path}; retrying with curl...`);
+    return curlPb(path, method, body, token);
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(`API Error ${res.status} ${path}: ${JSON.stringify(data)}`);
@@ -19,10 +29,32 @@ async function fetchPb(path, method = 'GET', body = null, token = null) {
   return data;
 }
 
+async function curlPb(path, method = 'GET', body = null, token = null) {
+  const args = [
+    '-sS',
+    '-X', method,
+    `${PB_URL}/api/${path}`,
+    '-H', 'Content-Type: application/json'
+  ];
+  if (token) args.push('-H', `Authorization: ${token}`);
+  if (body) args.push('-d', JSON.stringify(body));
+  args.push('-w', '\n%{http_code}');
+
+  const { stdout } = await execFileAsync('curl', args, { maxBuffer: 10 * 1024 * 1024 });
+  const lines = stdout.trim().split('\n');
+  const status = Number(lines.pop());
+  const rawBody = lines.join('\n');
+  const data = rawBody ? JSON.parse(rawBody) : {};
+  if (status < 200 || status >= 300) {
+    throw new Error(`API Error ${status} ${path}: ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
 async function run() {
   try {
     console.log('Authenticating...');
-    const auth = await fetchPb('admins/auth-with-password', 'POST', {
+    const auth = await fetchPb('collections/_superusers/auth-with-password', 'POST', {
       identity: ADMIN_EMAIL,
       password: ADMIN_PASS
     });
@@ -103,6 +135,14 @@ async function run() {
         { name: 'full_name', type: 'text', required: true },
         { name: 'id_number', type: 'text', required: true, unique: true },
         { name: 'phone', type: 'text', required: true },
+        { name: 'phone_number', type: 'text' },
+        { name: 'dob', type: 'date' },
+        { name: 'date_of_birth', type: 'date' },
+        { name: 'maritalStatus', type: 'text' },
+        { name: 'marital_status', type: 'text' },
+        { name: 'childrenCount', type: 'number' },
+        { name: 'children_count', type: 'number' },
+        { name: 'kraPin', type: 'text' },
         { name: 'address', type: 'text' },
         { name: 'nok_name', type: 'text' },
         { name: 'nok_phone', type: 'text' },
@@ -128,6 +168,70 @@ async function run() {
       } else {
          console.error(e.message);
       }
+    }
+
+    console.log('Ensuring members profile fields...');
+    try {
+      const membersColl = await fetchPb('collections/members', 'GET', null, token);
+      const profileFields = [
+        { name: 'phone_number', type: 'text' },
+        { name: 'dob', type: 'date' },
+        { name: 'date_of_birth', type: 'date' },
+        { name: 'maritalStatus', type: 'text' },
+        { name: 'marital_status', type: 'text' },
+        { name: 'childrenCount', type: 'number' },
+        { name: 'children_count', type: 'number' },
+        { name: 'kraPin', type: 'text' }
+      ];
+      const existingFieldNames = new Set(membersColl.fields.map(field => field.name));
+      const missingFields = profileFields.filter(field => !existingFieldNames.has(field.name));
+      if (missingFields.length > 0) {
+        membersColl.fields.push(...missingFields);
+        await fetchPb('collections/members', 'PATCH', membersColl, token);
+        console.log(`Members collection updated with: ${missingFields.map(field => field.name).join(', ')}`);
+      } else {
+        console.log('Members collection already has profile fields.');
+      }
+    } catch (e) {
+      console.log('Error updating members profile fields:', e.message);
+    }
+
+    console.log('Ensuring settings file field...');
+    try {
+      const settingsColl = await fetchPb('collections/settings', 'GET', null, token);
+      if (!settingsColl.fields.some(field => field.name === 'file_value')) {
+        settingsColl.fields.push({
+          name: 'file_value',
+          type: 'file',
+          maxSelect: 1,
+          maxSize: 5242880,
+          mimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']
+        });
+        await fetchPb('collections/settings', 'PATCH', settingsColl, token);
+        console.log('Settings collection updated with file_value field.');
+      } else {
+        console.log('Settings collection already has file_value field.');
+      }
+    } catch (e) {
+      console.log('Error updating settings file field:', e.message);
+    }
+
+    console.log('Ensuring loan approval comment field...');
+    try {
+      const loansColl = await fetchPb('collections/loans', 'GET', null, token);
+      if (!loansColl.fields.some(field => field.name === 'approval_comment')) {
+        loansColl.fields.push({
+          name: 'approval_comment',
+          type: 'text',
+          required: false
+        });
+        await fetchPb('collections/loans', 'PATCH', loansColl, token);
+        console.log('Loans collection updated with approval_comment field.');
+      } else {
+        console.log('Loans collection already has approval_comment field.');
+      }
+    } catch (e) {
+      console.log('Error updating loans approval comment field:', e.message);
     }
     
     console.log('Done!');

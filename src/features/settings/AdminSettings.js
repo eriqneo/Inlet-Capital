@@ -403,10 +403,6 @@ export const renderAdminSettings = async () => {
                     <label class="form-label">Individual Fee</label>
                     <input type="number" name="individual_reg_fee" class="form-control" value="${settings.individual_reg_fee || 1000}" />
                   </div>
-                  <div class="form-group">
-                    <label class="form-label">Group Fee</label>
-                    <input type="number" name="group_reg_fee" class="form-control" value="${settings.group_reg_fee || 1000}" />
-                  </div>
                 </div>
                 <div class="card" style="background: var(--bg-light);">
                   <h4 style="margin-bottom: 12px;">Penalties</h4>
@@ -511,11 +507,41 @@ export const renderAdminSettings = async () => {
     // Org Logo
     const logoPreview = container.querySelector('#org-logo-preview');
     const logoInput = container.querySelector('#org-logo-data');
+    const optimizeLogoDataUrl = (dataUrl) => new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxSize = 512;
+        const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+        const width = Math.max(1, Math.round(img.width * scale));
+        const height = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const preferred = canvas.toDataURL('image/webp', 0.82);
+        const fallback = canvas.toDataURL('image/png');
+        resolve(preferred.length < fallback.length ? preferred : fallback);
+      };
+      img.onerror = () => reject(new Error('Could not process the selected logo image.'));
+      img.src = dataUrl;
+    });
+
+    const setOptimizedLogo = async (dataUrl) => {
+      try {
+        const optimizedLogo = await optimizeLogoDataUrl(dataUrl);
+        logoPreview.innerHTML = `<img src="${optimizedLogo}" style="width: 100%; height: 100%; object-fit: contain;" />`;
+        logoInput.value = optimizedLogo;
+      } catch (err) {
+        if (window.notify) window.notify.error(err.message || 'Could not process logo image.');
+      }
+    };
     
     container.querySelector('#camera-logo-btn').onclick = () => {
       openCamera((dataUrl) => {
-        logoPreview.innerHTML = `<img src="${dataUrl}" style="width: 100%; height: 100%; object-fit: contain;" />`;
-        logoInput.value = dataUrl;
+        setOptimizedLogo(dataUrl);
       });
     };
 
@@ -524,8 +550,7 @@ export const renderAdminSettings = async () => {
       if (file) {
         const reader = new FileReader();
         reader.onload = (ev) => {
-          logoPreview.innerHTML = `<img src="${ev.target.result}" style="width: 100%; height: 100%; object-fit: contain;" />`;
-          logoInput.value = ev.target.result;
+          setOptimizedLogo(ev.target.result);
         };
         reader.readAsDataURL(file);
       }

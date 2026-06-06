@@ -2,6 +2,8 @@ const DB_NAME = 'InletCacheDB';
 const DB_VERSION = 1;
 const STORE_NAME = 'collections';
 const TTL = 5 * 60 * 1000; // 5 minutes (data older than this triggers background refresh on access)
+const DEFAULT_LOCAL_FIRST_REFRESH_INTERVAL = 10 * 1000;
+const inFlightRefreshes = new Map();
 
 // Wrap IndexedDB in a Promise API
 const openDB = () => {
@@ -104,6 +106,47 @@ export const dataCache = {
       // Fallback to fetch
       return await fetchFn();
     }
+  },
+
+  /**
+   * Local-first read path.
+   * If IndexedDB has data, return it immediately and refresh from PocketBase in
+   * the background after a short cooldown. This is the fast path for shared
+   * master data such as members and groups.
+   */
+  async getLocalFirst(key, fetchFn, onUpdate = null, options = {}) {
+    const minRefreshInterval = options.minRefreshInterval ?? DEFAULT_LOCAL_FIRST_REFRESH_INTERVAL;
+
+    try {
+      const cached = await getFromDB(key);
+      const now = Date.now();
+
+      if (cached) {
+        const shouldRefresh = (now - cached.ts) > minRefreshInterval;
+        if (shouldRefresh) {
+          this.refreshDedupe(key, fetchFn)
+            .then(newData => {
+              if (onUpdate) onUpdate(newData);
+            })
+            .catch(err => console.warn(`[dataCache] Local-first refresh failed for ${key}`, err));
+        }
+        return cached.data;
+      }
+
+      return await this.refreshDedupe(key, fetchFn);
+    } catch (err) {
+      console.error(`[dataCache] Local-first access failed for ${key}`, err);
+      return await fetchFn();
+    }
+  },
+
+  async refreshDedupe(key, fetchFn) {
+    if (inFlightRefreshes.has(key)) return await inFlightRefreshes.get(key);
+
+    const refreshPromise = this.refresh(key, fetchFn)
+      .finally(() => inFlightRefreshes.delete(key));
+    inFlightRefreshes.set(key, refreshPromise);
+    return await refreshPromise;
   },
   
   /**

@@ -38,16 +38,25 @@ export const renderGroupProfile = async (params) => {
       return s.type === 'deposit' ? sum + amount : sum - amount;
     }, 0);
   const isOutstandingLoanStatus = (status) => ['disbursed', 'approved', 'partial_approved'].includes(status);
+  const calculateLoanBalance = (loan, repayments) => {
+    if (!isOutstandingLoanStatus(loan.status)) return 0;
+    const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
+    const liability = Number(loan.total_liability) || (principal + (Number(loan.interest_amount) || 0));
+    const paid = repayments
+      .filter(r => r.loan === loan.id)
+      .reduce((repaymentSum, r) => repaymentSum + (Number(r.amount) || 0), 0);
+    return Math.max(0, liability - paid);
+  };
   const calculateOutstandingLoanBalance = (loans, repayments) => loans
     .filter(l => isOutstandingLoanStatus(l.status))
-    .reduce((sum, loan) => {
-      const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
-      const liability = Number(loan.total_liability) || (principal + (Number(loan.interest_amount) || 0));
-      const paid = repayments
-        .filter(r => r.loan === loan.id)
-        .reduce((repaymentSum, r) => repaymentSum + (Number(r.amount) || 0), 0);
-      return sum + Math.max(0, liability - paid);
-    }, 0);
+    .reduce((sum, loan) => sum + calculateLoanBalance(loan, repayments), 0);
+  const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  }[char]));
 
   // Fetch live group data in batches. This avoids a per-member/per-loan network waterfall.
   let allGroupMembers = [], groupLoans = [], groupSavings = [], allRepayments = [], allSchedules = [];
@@ -212,7 +221,7 @@ export const renderGroupProfile = async (params) => {
         <div class="card" style="padding: 0;">
           <div style="display: flex; border-bottom: 1px solid var(--border-color);">
             <button class="tab-btn active" data-tab="members">Members (${allGroupMembers.length})</button>
-            <button class="tab-btn" data-tab="loans">Loans</button>
+            <button class="tab-btn" data-tab="loans">Table Banking</button>
             <button class="tab-btn" data-tab="savings">Savings</button>
           </div>
           <div id="tab-content" style="padding: 24px;">
@@ -237,7 +246,7 @@ export const renderGroupProfile = async (params) => {
             <div id="loans-tab" style="display: none;">
               <div class="table-responsive">
                 <table class="table">
-                  <thead><tr><th>Loan No</th><th>Owner</th><th>Amount</th><th>Status</th><th>Date</th><th>Action</th></tr></thead>
+                  <thead><tr><th>Loan No</th><th>Owner</th><th>OLB</th><th>Status</th><th>Date</th><th>Remarks</th><th>Action</th></tr></thead>
                   <tbody id="group-loans-body"></tbody>
                 </table>
               </div>
@@ -246,7 +255,7 @@ export const renderGroupProfile = async (params) => {
             <div id="savings-tab" style="display: none;">
               <div class="table-responsive">
                 <table class="table">
-                  <thead><tr><th>Date</th><th>Owner</th><th>Type</th><th>Amount</th><th>Ref</th></tr></thead>
+                  <thead><tr><th>Date</th><th>Owner</th><th>Type</th><th>Amount</th><th>Ref</th><th>Remarks</th></tr></thead>
                   <tbody id="group-savings-body"></tbody>
                 </table>
               </div>
@@ -271,17 +280,17 @@ export const renderGroupProfile = async (params) => {
     <div id="add-member-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; padding: 20px;">
       <div class="card" style="width: 100%; max-width: 500px;">
         <h3 style="margin-bottom: 16px;">Add Member to Group</h3>
-        <p class="text-sm text-muted" style="margin-bottom: 24px;">Select a registered individual to join ${group.name}.</p>
+        <p class="text-sm text-muted" style="margin-bottom: 24px;">Search for a registered individual to join ${group.name}.</p>
         <div class="form-group">
           <label class="form-label">Search Member</label>
-          <select id="member-select" class="form-control">
-            <option value="">Select a member...</option>
-            ${unassignedMembers.map(m => `<option value="${m.id}">${m.full_name} (${m.reg_no})</option>`).join('')}
-          </select>
+          <input type="search" id="add-member-search" class="form-control" placeholder="Type name, reg no, phone, or ID" autocomplete="off" />
+          <input type="hidden" id="member-select" value="" />
+          <div id="member-search-results" class="member-picker-results" style="margin-top: 10px;"></div>
+          <div id="selected-member-summary" class="text-xs text-muted" style="margin-top: 10px;"></div>
         </div>
         <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 32px;">
           <button class="btn btn-outline" id="close-modal-btn">Cancel</button>
-          <button class="btn btn-primary" id="confirm-add-btn">Add to Group</button>
+          <button class="btn btn-primary" id="confirm-add-btn" disabled>Add to Group</button>
         </div>
       </div>
     </div>
@@ -289,6 +298,11 @@ export const renderGroupProfile = async (params) => {
     <style>
       .tab-btn { flex: 1; padding: 16px; background: transparent; border: none; font-family: 'Inter', sans-serif; font-weight: 600; cursor: pointer; color: var(--text-muted); border-bottom: 2px solid transparent; }
       .tab-btn.active { color: var(--primary); border-bottom-color: var(--secondary); background: rgba(27, 61, 114, 0.02); }
+      .member-picker-results { max-height: 280px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px; background: white; }
+      .member-picker-option { width: 100%; display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px; background: white; border: none; border-bottom: 1px solid var(--border-color); text-align: left; cursor: pointer; }
+      .member-picker-option:last-child { border-bottom: none; }
+      .member-picker-option:hover, .member-picker-option.selected { background: rgba(27, 61, 114, 0.06); }
+      .member-picker-empty { padding: 18px; text-align: center; color: var(--text-muted); font-size: 0.875rem; }
       @media (max-width: 900px) {
         .group-filter-card > div { grid-template-columns: 1fr !important; }
       }
@@ -309,13 +323,117 @@ export const renderGroupProfile = async (params) => {
 
   // Modal logic
   const modal = container.querySelector('#add-member-modal');
-  container.querySelector('#add-member-btn').onclick = () => modal.style.display = 'flex';
+  const addMemberSearch = container.querySelector('#add-member-search');
+  const memberSelectInput = container.querySelector('#member-select');
+  const memberSearchResults = container.querySelector('#member-search-results');
+  const selectedMemberSummary = container.querySelector('#selected-member-summary');
+  const confirmAddBtn = container.querySelector('#confirm-add-btn');
+
+  const normalizeSearch = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const memberSearchText = (member) => normalizeSearch([
+    member.full_name,
+    member.reg_no,
+    member.phone_number,
+    member.phone,
+    member.id_number
+  ].filter(Boolean).join(' '));
+  const fuzzyMatches = (needle, haystack) => {
+    if (!needle) return true;
+    let haystackIndex = 0;
+    for (const char of needle) {
+      haystackIndex = haystack.indexOf(char, haystackIndex);
+      if (haystackIndex === -1) return false;
+      haystackIndex += 1;
+    }
+    return true;
+  };
+  const rankMemberSearchResult = (member, query) => {
+    if (!query) return 1;
+    const name = normalizeSearch(member.full_name);
+    const regNo = normalizeSearch(member.reg_no);
+    const phone = normalizeSearch(member.phone_number || member.phone);
+    const idNumber = normalizeSearch(member.id_number);
+    const haystack = memberSearchText(member);
+    const queryParts = query.split(' ').filter(Boolean);
+    if (regNo === query || phone === query || idNumber === query) return 100;
+    if (name === query) return 95;
+    if (regNo.startsWith(query) || phone.startsWith(query) || idNumber.startsWith(query)) return 85;
+    if (name.startsWith(query)) return 80;
+    if (queryParts.every(part => haystack.includes(part))) return 65;
+    if (fuzzyMatches(query.replace(/\s/g, ''), haystack.replace(/\s/g, ''))) return 35;
+    return 0;
+  };
+  const renderMemberSearchResults = () => {
+    const query = normalizeSearch(addMemberSearch.value);
+    const selectedId = memberSelectInput.value;
+    const matches = unassignedMembers
+      .map(member => ({ member, score: rankMemberSearchResult(member, query) }))
+      .filter(result => result.score > 0)
+      .sort((a, b) => b.score - a.score || String(a.member.full_name || '').localeCompare(String(b.member.full_name || '')))
+      .slice(0, 8)
+      .map(result => result.member);
+
+    if (unassignedMembers.length === 0) {
+      memberSearchResults.innerHTML = `<div class="member-picker-empty">No unassigned members are available.</div>`;
+      return;
+    }
+    if (matches.length === 0) {
+      memberSearchResults.innerHTML = `<div class="member-picker-empty">No matching unassigned members found.</div>`;
+      return;
+    }
+
+    memberSearchResults.innerHTML = matches.map(member => `
+      <button type="button" class="member-picker-option ${member.id === selectedId ? 'selected' : ''}" data-member-id="${member.id}">
+        <span>
+          <span class="font-semibold">${escapeHtml(member.full_name || 'Unnamed member')}</span>
+          <span class="text-xs text-muted" style="display:block; margin-top: 2px;">${escapeHtml(member.reg_no || '-')} · ${escapeHtml(member.phone_number || member.phone || 'No phone')}</span>
+        </span>
+        <span class="badge badge-primary" style="font-size: 0.65rem;">Select</span>
+      </button>
+    `).join('');
+  };
+  const selectMemberForGroup = (memberId) => {
+    const member = unassignedMembers.find(m => m.id === memberId);
+    memberSelectInput.value = member?.id || '';
+    confirmAddBtn.disabled = !member;
+    selectedMemberSummary.textContent = member
+      ? `Selected: ${member.full_name || 'Unnamed member'} (${member.reg_no || 'No reg no'})`
+      : '';
+    renderMemberSearchResults();
+  };
+  const resetAddMemberPicker = () => {
+    addMemberSearch.value = '';
+    selectMemberForGroup('');
+    renderMemberSearchResults();
+  };
+
+  container.querySelector('#add-member-btn').onclick = () => {
+    resetAddMemberPicker();
+    modal.style.display = 'flex';
+    setTimeout(() => addMemberSearch.focus(), 0);
+  };
   container.querySelector('#close-modal-btn').onclick = () => modal.style.display = 'none';
+  modal.onclick = (e) => {
+    if (e.target === modal) modal.style.display = 'none';
+  };
+  addMemberSearch.oninput = () => {
+    selectMemberForGroup('');
+    renderMemberSearchResults();
+  };
+  memberSearchResults.onclick = (e) => {
+    const option = e.target.closest('.member-picker-option');
+    if (!option) return;
+    selectMemberForGroup(option.dataset.memberId);
+  };
+  renderMemberSearchResults();
 
   container.querySelector('#confirm-add-btn').onclick = async () => {
-    const btn = container.querySelector('#confirm-add-btn');
+    const btn = confirmAddBtn;
     const memberId = container.querySelector('#member-select').value;
-    if (!memberId) return;
+    if (!memberId) {
+      if (window.notify) window.notify.error('Select a member before adding to the group.');
+      return;
+    }
     const restoreButton = setButtonLoading(btn, 'Adding...');
     try {
       await memberService.update(memberId, { group: id });
@@ -323,7 +441,7 @@ export const renderGroupProfile = async (params) => {
       await groupService.update(group.id, { member_count: group.member_count });
       modal.style.display = 'none';
       if (window.notify) window.notify.success('Member added successfully!');
-      navigate(`#/groups/${id}`);
+      navigate(`#/groups/${id}?refresh=${Date.now()}`);
     } catch (err) {
       if (window.notify) window.notify.error('Error adding member: ' + err.message);
       restoreButton();
@@ -343,6 +461,18 @@ export const renderGroupProfile = async (params) => {
   const getOwnerName = (record) => {
     if (record.member) return record.expand?.member?.full_name || 'Member';
     return group.name;
+  };
+
+  const getLoanRemarks = (loan) => loan.remarks || loan.purpose || '';
+
+  const formatSavingsReference = (saving) => {
+    const type = saving.type || 'deposit';
+    const method = saving.payment_method || (type === 'withdrawal' ? 'cash' : 'mpesa');
+    const reference = String(saving.reference || '');
+    const methodLabel = method === 'mpesa' ? 'M-Pesa' : (method === 'bank' ? 'Bank' : (method === 'card' ? 'Card' : 'Cash'));
+    const direction = type === 'withdrawal' ? 'Sent via' : 'Received via';
+    const refPart = reference && reference !== 'N/A' && reference !== 'CASH' && !reference.startsWith('SAVE-D-') ? `: ${reference}` : '';
+    return `${direction} ${methodLabel}${refPart}`;
   };
 
   const getFilteredMembers = () => {
@@ -508,13 +638,14 @@ export const renderGroupProfile = async (params) => {
     const start = (loanPage - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
     const tbody = container.querySelector('#group-loans-body');
-    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="6" class="text-center text-muted">No loans found for this filter.</td></tr>' : paginated.map(l => `
+    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="7" class="text-center text-muted">No table banking records found for this filter.</td></tr>' : paginated.map(l => `
       <tr>
         <td><strong>${l.loan_no}</strong></td>
         <td><div class="font-semibold">${getOwnerName(l)}</div><div class="text-xs text-muted">${l.member ? 'Member' : 'Group account'}</div></td>
-        <td>KES ${(l.amount_applied || 0).toLocaleString()}</td>
+        <td class="font-semibold text-danger">KES ${calculateLoanBalance(l, allRepayments).toLocaleString()}</td>
         <td><span class="badge ${l.status === 'disbursed' ? 'badge-success' : (l.status === 'approved' || l.status === 'partial_approved') ? 'badge-primary' : l.status === 'pending' ? 'badge-warning' : 'badge-danger'}">${l.status.toUpperCase()}</span></td>
         <td>${formatDate(l.application_date)}</td>
+        <td class="text-xs text-muted">${getLoanRemarks(l) || '-'}</td>
         <td><button class="btn btn-outline btn-xs" onclick="window.location.hash = '#/loans/${l.loan_no}'">View</button></td>
       </tr>`).join('');
     const pag = container.querySelector('#group-loans-pagination');
@@ -528,13 +659,14 @@ export const renderGroupProfile = async (params) => {
     const start = (savingsPage - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
     const tbody = container.querySelector('#group-savings-body');
-    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="5" class="text-center text-muted">No savings found for this filter.</td></tr>' : paginated.map(s => `
+    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="6" class="text-center text-muted">No savings found for this filter.</td></tr>' : paginated.map(s => `
       <tr>
         <td>${formatDate(s.date)}</td>
         <td><div class="font-semibold">${getOwnerName(s)}</div><div class="text-xs text-muted">${s.member ? 'Member' : 'Group account'}</div></td>
         <td><span class="badge" style="background: ${s.type === 'deposit' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'}; color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type.toUpperCase()}</span></td>
         <td class="font-semibold" style="color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type === 'deposit' ? '+' : '-'}${s.amount.toLocaleString()}</td>
-        <td class="text-xs text-muted">${s.reference || '-'}</td>
+        <td class="text-xs text-muted">${formatSavingsReference(s)}</td>
+        <td class="text-xs text-muted">${s.remarks || '-'}</td>
       </tr>`).join('');
     const pag = container.querySelector('#group-savings-pagination');
     pag.innerHTML = '';

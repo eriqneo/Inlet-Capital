@@ -4,6 +4,17 @@ import { renderHeader } from './Header.js';
 let shellElement = null;
 let pageContentElement = null;
 
+const renderAppCredit = () => {
+  const footer = document.createElement('footer');
+  footer.className = 'app-credit-footer';
+  footer.innerHTML = `
+    <a href="https://www.rafikicode.com" target="_blank" rel="noopener noreferrer">
+      Crafted by RafikiCode Technologies
+    </a>
+  `;
+  return footer;
+};
+
 export const withLayout = async (contentElement) => {
   const container = document.createElement('div');
   container.className = 'app-container';
@@ -21,6 +32,7 @@ export const withLayout = async (contentElement) => {
   
   mainContent.appendChild(header);
   mainContent.appendChild(pageContent);
+  mainContent.appendChild(renderAppCredit());
   
   container.appendChild(sidebar);
   container.appendChild(mainContent);
@@ -49,6 +61,7 @@ export const ensureAppShell = async (rootElement) => {
 
   mainContent.appendChild(header);
   mainContent.appendChild(pageContent);
+  mainContent.appendChild(renderAppCredit());
 
   container.appendChild(sidebar);
   container.appendChild(mainContent);

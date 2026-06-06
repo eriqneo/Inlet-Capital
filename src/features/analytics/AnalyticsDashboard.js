@@ -1,23 +1,34 @@
 import { pb } from '../../services/api.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { dataCache, debounce } from '../../services/dataCache.js';
+import { memberService } from '../../services/memberService.js';
+import { groupService } from '../../services/groupService.js';
+import { loanService } from '../../services/loanService.js';
+import { savingsService } from '../../services/savingsService.js';
 
 export const renderAnalyticsDashboard = async () => {
   const container = document.createElement('div');
   container.innerHTML = `<div class="card text-center text-muted" style="padding:40px;">Loading analytics...</div>`;
   
   // Data variables
-  let members = [], loans = [], repayments = [], groups = [], savings = [], schedules = [];
+  let members = [], loans = [], repayments = [], groups = [], savings = [], schedules = [], users = [];
 
   const refresh = async () => {
     try {
-      [members, loans, repayments, groups, savings, schedules] = await Promise.all([
-        dataCache.get('members', () => pb.collection('members').getFullList()),
-        dataCache.get('loans', () => pb.collection('loans').getFullList()),
+      [members, loans, repayments, groups, savings, schedules, users] = await Promise.all([
+        memberService.getAll(),
+        loanService.getFullListCached({ cacheKey: 'loans:analytics:expanded:v1' }),
         dataCache.get('loan_repayments', () => pb.collection('loan_repayments').getFullList()),
-        dataCache.get('groups', () => pb.collection('groups').getFullList()),
-        dataCache.get('savings', () => pb.collection('savings').getFullList()),
-        dataCache.get('loan_schedule', () => pb.collection('loan_schedule').getFullList())
+        groupService.getAll(),
+        savingsService.getFullListCached({ expand: '', cacheKey: 'savings:analytics:basic:v1' }),
+        dataCache.get('loan_schedule', () => pb.collection('loan_schedule').getFullList()),
+        dataCache.get('users:analytics:loan-users:v1', () => pb.collection('users').getFullList({
+          filter: 'role="loan_officer" || role="group_officer" || role="manager" || role="admin" || role="super_admin"',
+          sort: 'email'
+        })).catch(err => {
+          console.warn('[Analytics] Loan user list unavailable, using loan records fallback:', err.message);
+          return [];
+        })
       ]);
     } catch (err) {
       console.error('Failed to load analytics data:', err);
@@ -32,6 +43,7 @@ export const renderAnalyticsDashboard = async () => {
   };
 
   let currentFilter = 'all'; // '30days', 'quarter', 'ytd', 'all'
+  let currentOfficerFilter = 'all';
   let chartInstances = [];
 
   const destroyCharts = () => {
@@ -60,17 +72,93 @@ export const renderAnalyticsDashboard = async () => {
     const fSavings = savings.filter(s => new Date(s.date || s.created) >= filterDate);
 
     // Calculations based on filtered data
+    const getLoanLiability = (loan) => {
+      const storedLiability = Number(loan.total_liability) || 0;
+      if (storedLiability > 0) return storedLiability;
+
+      const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
+      const interest = Number(loan.interest_amount) || 0;
+      return principal + interest;
+    };
+    const getLoanPrincipal = (loan) => {
+      const approved = Number(loan.approved_amount) || 0;
+      if (approved > 0) return approved;
+
+      const liability = Number(loan.total_liability) || 0;
+      const interest = Number(loan.interest_amount) || 0;
+      if (liability > 0) return Math.max(0, liability - interest);
+
+      return Number(loan.amount_applied) || 0;
+    };
+    const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#039;'
+    }[char]));
+    const isActiveDisbursedLoan = (loan) => loan.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan.status) && loan.disbursement_date);
+    const isGivenLoan = (loan) => ['disbursed', 'completed', 'closed'].includes(loan.status) || (['approved', 'partial_approved'].includes(loan.status) && loan.disbursement_date);
+    const getOfficerName = (loan) => {
+      const officer = loan.expand?.processed_by;
+      if (officer) return officer.name || officer.email || officer.username || 'Loan Officer';
+      const user = users.find(u => u.id === loan.processed_by);
+      if (user) return user.name || user.email || user.username || 'Loan Officer';
+      return loan.processed_by ? `User ${String(loan.processed_by).slice(0, 6)}` : 'Unassigned';
+    };
+    const officerOptionMap = {};
+    users.forEach(user => {
+      officerOptionMap[user.id] = user.name || user.email || user.username || 'Loan Officer';
+    });
+    loans.forEach(loan => {
+      if (loan.processed_by && !officerOptionMap[loan.processed_by]) {
+        officerOptionMap[loan.processed_by] = getOfficerName(loan);
+      }
+    });
+    const officerOptions = Object.entries(officerOptionMap)
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const filterByOfficer = (loan) => currentOfficerFilter === 'all' || loan.processed_by === currentOfficerFilter;
+
     const totalMembers = fMembers.length;
-    const activeLoans = fLoans.filter(l => l.status === 'disbursed' || (l.status === 'approved' && l.disbursement_date));
-    const loanPortfolio = activeLoans.reduce((sum, l) => sum + (l.total_liability || 0), 0);
+    const activeLoans = loans.filter(l => isActiveDisbursedLoan(l) && filterByOfficer(l));
+    const scopedLoans = fLoans.filter(filterByOfficer);
+    const scopedRepayments = currentOfficerFilter === 'all'
+      ? fRepayments
+      : fRepayments.filter(r => loans.some(l => l.id === r.loan && filterByOfficer(l)));
+    const scopedSchedules = currentOfficerFilter === 'all'
+      ? schedules
+      : schedules.filter(s => loans.some(l => l.id === s.loan && filterByOfficer(l)));
+    const loanPortfolio = activeLoans.reduce((sum, l) => sum + getLoanLiability(l), 0);
+    const totalDisbursedLoans = activeLoans.reduce((sum, l) => sum + getLoanPrincipal(l), 0);
+    const officerTargetsMap = {};
+    activeLoans.forEach(loan => {
+      const officerKey = loan.processed_by || 'unassigned';
+      if (!officerTargetsMap[officerKey]) {
+        officerTargetsMap[officerKey] = {
+          id: officerKey,
+          name: getOfficerName(loan),
+          expected: 0,
+          principal: 0,
+          loans: 0
+        };
+      }
+      officerTargetsMap[officerKey].expected += getLoanLiability(loan);
+      officerTargetsMap[officerKey].principal += getLoanPrincipal(loan);
+      officerTargetsMap[officerKey].loans += 1;
+    });
+    const officerTargets = Object.values(officerTargetsMap).sort((a, b) => b.expected - a.expected);
+    const officerAssignedExpected = officerTargets
+      .filter(o => o.id !== 'unassigned')
+      .reduce((sum, o) => sum + o.expected, 0);
     
     // Correct savings calculation
     const totalSavings = fSavings
       .filter(s => !s.is_reversed)
       .reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
     
-    const totalRepaid = fRepayments.reduce((sum, r) => sum + r.amount, 0);
-    const totalLiabilityOverall = fLoans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date).reduce((sum, l) => sum + (l.total_liability || 0), 0);
+    const totalRepaid = scopedRepayments.reduce((sum, r) => sum + r.amount, 0);
+    const totalLiabilityOverall = scopedLoans.filter(isGivenLoan).reduce((sum, l) => sum + getLoanLiability(l), 0);
     const repaymentRate = totalLiabilityOverall > 0 ? ((totalRepaid / totalLiabilityOverall) * 100).toFixed(1) : 0;
 
     // Real Trend logic (Members registered in current month vs total)
@@ -82,7 +170,7 @@ export const renderAnalyticsDashboard = async () => {
     activeLoans.forEach(l => {
        const id = l.member || l.group;
        if (!borrowerMap[id]) borrowerMap[id] = 0;
-       borrowerMap[id] += (l.total_liability || 0);
+       borrowerMap[id] += getLoanLiability(l);
        const reps = repayments.filter(r => r.loan === l.id).reduce((sum, r) => sum + r.amount, 0);
        borrowerMap[id] -= reps;
     });
@@ -102,7 +190,7 @@ export const renderAnalyticsDashboard = async () => {
     const arrearsMap = {};
     let totalArrearsGlobal = 0;
     
-    schedules.filter(s => s.status !== 'paid' && new Date(s.due_date) < today).forEach(s => {
+    scopedSchedules.filter(s => s.status !== 'paid' && new Date(s.due_date) < today).forEach(s => {
        const loan = loans.find(l => l.id === s.loan);
        if (loan) {
           totalArrearsGlobal += s.amount;
@@ -130,7 +218,11 @@ export const renderAnalyticsDashboard = async () => {
           <h1 class="text-xl">Analytics & Insights</h1>
           <p class="text-muted">Real-time performance and portfolio metrics.</p>
         </div>
-        <div style="display: flex; gap: 12px;">
+        <div style="display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end;">
+          <select id="loan-user-filter" class="form-control" style="width: auto; min-width: 220px;">
+            <option value="all" ${currentOfficerFilter === 'all' ? 'selected' : ''}>All Loan Users</option>
+            ${officerOptions.map(o => `<option value="${escapeHtml(o.id)}" ${currentOfficerFilter === o.id ? 'selected' : ''}>${escapeHtml(o.name)}</option>`).join('')}
+          </select>
           <select id="date-filter" class="form-control" style="width: auto;">
             <option value="30days" ${currentFilter === '30days' ? 'selected' : ''}>Last 30 Days</option>
             <option value="quarter" ${currentFilter === 'quarter' ? 'selected' : ''}>Last Quarter</option>
@@ -153,7 +245,19 @@ export const renderAnalyticsDashboard = async () => {
           <div class="kpi-icon" style="background: rgba(232, 105, 42, 0.1); color: var(--secondary);">💰</div>
           <div class="kpi-label">Active Loan Portfolio</div>
           <div class="kpi-value">KES ${loanPortfolio.toLocaleString()}</div>
-          <div class="kpi-trend trend-up">Total outstanding expected</div>
+          <div class="kpi-trend trend-up">Disbursed principal + interest</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background: rgba(42, 90, 158, 0.1); color: var(--primary-light);">💵</div>
+          <div class="kpi-label">Total Disbursed Loans</div>
+          <div class="kpi-value">KES ${totalDisbursedLoans.toLocaleString()}</div>
+          <div class="kpi-trend trend-up">Principal disbursed only</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background: rgba(13, 148, 136, 0.1); color: #0d9488;">🧾</div>
+          <div class="kpi-label">Officer Collection Targets</div>
+          <div class="kpi-value">KES ${officerAssignedExpected.toLocaleString()}</div>
+          <div class="kpi-trend trend-up">${currentOfficerFilter === 'all' ? `${officerTargets.filter(o => o.id !== 'unassigned').length} officers assigned` : 'Selected officer view'}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(16, 185, 129, 0.1); color: var(--success);">🏦</div>
@@ -172,6 +276,40 @@ export const renderAnalyticsDashboard = async () => {
           <div class="kpi-label">Total Arrears</div>
           <div class="kpi-value">KES ${totalArrearsGlobal.toLocaleString()}</div>
           <div class="kpi-trend trend-down">Amount Overdue</div>
+        </div>
+      </div>
+
+      <div class="chart-card" style="min-height: auto; margin-top: 24px;">
+        <div class="chart-header">
+          <div>
+            <div class="chart-title">Loan Officer Collection Targets</div>
+            <div class="text-xs text-muted" style="margin-top: 4px;">Expected collection is disbursed principal plus interest for loans handled by each officer.</div>
+          </div>
+        </div>
+        <div class="table-responsive">
+          <table class="table" style="font-size: 0.875rem;">
+            <thead>
+              <tr>
+                <th>Loan Officer</th>
+                <th>Active Loans</th>
+                <th class="text-right">Principal</th>
+                <th class="text-right">Expected Collection</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${officerTargets.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No active officer targets.</td></tr>' : officerTargets.map(o => `
+                <tr>
+                  <td>
+                    <div class="font-semibold">${escapeHtml(o.name)}</div>
+                    <div class="text-xs text-muted">${o.id === 'unassigned' ? 'No officer recorded' : escapeHtml(o.id)}</div>
+                  </td>
+                  <td>${o.loans.toLocaleString()}</td>
+                  <td class="text-right">KES ${o.principal.toLocaleString()}</td>
+                  <td class="text-right font-semibold text-danger">KES ${o.expected.toLocaleString()}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -268,6 +406,11 @@ export const renderAnalyticsDashboard = async () => {
     `;
 
     // Reattach Event Listeners
+    container.querySelector('#loan-user-filter').onchange = (e) => {
+      currentOfficerFilter = e.target.value;
+      renderData();
+    };
+
     container.querySelector('#date-filter').onchange = (e) => {
       currentFilter = e.target.value;
       renderData();
@@ -299,7 +442,7 @@ export const renderAnalyticsDashboard = async () => {
     updateArrearsUI();
 
     setTimeout(() => {
-      initCharts(fLoans, fRepayments, members, fSavings); // members passed as un-filtered for cumulative count logic
+      initCharts(scopedLoans, scopedRepayments, members, fSavings); // members passed as un-filtered for cumulative count logic
     }, 100);
   };
 
@@ -477,26 +620,20 @@ export const renderAnalyticsDashboard = async () => {
     if (ok) renderData();
   });
 
-  // Debounced refresh for real-time events
+  // Keep analytics fresh without holding multiple PocketBase realtime SSE streams open.
+  // Realtime over Cloudflare/PocketHost can surface Chrome QUIC errors on long-lived streams.
   const debouncedRefresh = debounce(async () => {
     const ok = await refresh();
     if (ok) renderData();
   }, 500);
 
-  // Helper to safely invalidate cache and refresh
-  const handleUpdate = (collection) => async () => {
-    await dataCache.invalidate(collection);
+  const pollInterval = setInterval(() => {
     debouncedRefresh();
-  };
+  }, 30000);
 
-  container.__subscriptionPromise = Promise.all([
-    pb.collection('members').subscribe('*', handleUpdate('members')),
-    pb.collection('groups').subscribe('*', handleUpdate('groups')),
-    pb.collection('loans').subscribe('*', handleUpdate('loans')),
-    pb.collection('loan_repayments').subscribe('*', handleUpdate('loan_repayments')),
-    pb.collection('savings').subscribe('*', handleUpdate('savings')),
-    pb.collection('loan_schedule').subscribe('*', handleUpdate('loan_schedule'))
-  ]);
+  container.__subscriptions = [
+    () => clearInterval(pollInterval)
+  ];
 
   return container;
 };

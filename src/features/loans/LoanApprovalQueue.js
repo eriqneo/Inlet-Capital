@@ -74,6 +74,13 @@ export const renderLoanApprovalQueue = async () => {
     const timeDiff = deadline - now;
     return Math.ceil(timeDiff / (1000 * 60 * 60 * 24));
   };
+  const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  }[char]));
 
   container.innerHTML = `
     <div style="margin-bottom: 24px;">
@@ -240,6 +247,12 @@ export const renderLoanApprovalQueue = async () => {
                 <div class="text-sm"><span class="badge badge-success" style="font-size: 0.75rem;">${l.status === 'partial_approved' ? 'PARTIALLY APPROVED' : 'APPROVED'}</span></div>
               </div>
             </div>
+            ${l.approval_comment ? `
+              <div style="margin-bottom: 20px; padding: 14px 16px; border-radius: 8px; background: rgba(13, 148, 136, 0.07); border-left: 3px solid #0d9488;">
+                <div class="text-xs text-muted" style="margin-bottom: 4px;">Approval Comment</div>
+                <div class="text-sm">${escapeHtml(l.approval_comment)}</div>
+              </div>
+            ` : ''}
 
             <!-- Action buttons -->
             <div style="display: flex; justify-content: flex-end; gap: 12px; border-top: 1px solid var(--border-color); padding-top: 16px;">
@@ -288,6 +301,22 @@ export const renderLoanApprovalQueue = async () => {
             </div>
           </div>
         `).join('')}
+      </div>
+    </div>
+
+    <!-- Full Approval Modal -->
+    <div id="full-approval-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; padding: 20px;">
+      <div class="card" style="width: 100%; max-width: 440px; border-radius: 12px;">
+        <h3>Approve Full Loan</h3>
+        <p class="text-sm text-muted" id="full-approval-context" style="margin-bottom: 20px;">Confirm the full approved amount and add a decision comment.</p>
+        <div class="form-group">
+          <label class="form-label">Approval Comment</label>
+          <textarea id="full-approval-comment" class="form-control" rows="3" placeholder="e.g. Client meets all approval requirements and fee is cleared."></textarea>
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px;">
+          <button class="btn btn-outline" id="cancel-full-approval-btn">Cancel</button>
+          <button class="btn btn-primary" id="confirm-full-approval-btn">Confirm Full Approval</button>
+        </div>
       </div>
     </div>
 
@@ -471,6 +500,46 @@ export const renderLoanApprovalQueue = async () => {
 
   // --- Action Handlers ---
 
+  const fullApprovalModal = container.querySelector('#full-approval-modal');
+  const fullApprovalContext = container.querySelector('#full-approval-context');
+  const fullApprovalComment = container.querySelector('#full-approval-comment');
+  const confirmFullApprovalBtn = container.querySelector('#confirm-full-approval-btn');
+  let activeFullApprovalLoanId = null;
+
+  const closeFullApprovalModal = () => {
+    fullApprovalModal.style.display = 'none';
+    activeFullApprovalLoanId = null;
+    fullApprovalComment.value = '';
+  };
+  container.querySelector('#cancel-full-approval-btn').onclick = closeFullApprovalModal;
+
+  confirmFullApprovalBtn.onclick = async () => {
+    if (!activeFullApprovalLoanId) return;
+    const restoreButton = setButtonLoading(confirmFullApprovalBtn, 'Approving...');
+    try {
+      const loan = await loanService.getById(activeFullApprovalLoanId);
+      if (!loan.processing_fee_paid) {
+        if (window.notify) window.notify.error('Please collect the processing fee before approving this loan.');
+        restoreButton();
+        return;
+      }
+
+      await loanService.update(activeFullApprovalLoanId, {
+        status: 'approved',
+        approved_amount: loan.amount_applied,
+        approved_date: new Date().toISOString(),
+        approval_comment: fullApprovalComment.value.trim()
+      });
+
+      closeFullApprovalModal();
+      if (window.notify) window.notify.success('Loan approved! Moved to Awaiting Disbursement.');
+      await refreshQueue('awaiting');
+    } catch (err) {
+      if (window.notify) window.notify.error('Loan approval failed: ' + err.message);
+      restoreButton();
+    }
+  };
+
   const partialModal = container.querySelector('#partial-modal');
   let activePartialLoanId = null;
 
@@ -492,9 +561,7 @@ export const renderLoanApprovalQueue = async () => {
         approved_date: new Date().toISOString(),
         interest_amount: interestAmount,
         total_liability: amount + interestAmount,
-        // Since PocketBase JSON fields are restrictive, we might just store this in notes or there is no field for partial_reason in schema.
-        // Wait, there is no `partial_reason` field. Let's append to purpose if there is no notes field.
-        // Actually, we'll just omit it, or update it locally if we add a 'reason' field later. For now, it will be skipped by PB if not in schema.
+        approval_comment: reason.trim()
       });
 
       partialModal.style.display = 'none';
@@ -522,24 +589,10 @@ export const renderLoanApprovalQueue = async () => {
           if (window.notify) window.notify.error('Please collect the processing fee before approving this loan.');
           return;
         }
-
-        const confirmed = window.confirmDialog ? await window.confirmDialog({
-          title: 'Approve Loan Application',
-          message: `Are you sure you want to approve this loan (${loan.loan_no}) for the full amount of KES ${loan.amount_applied.toLocaleString()}?`,
-          confirmText: 'Approve Loan',
-          type: 'success'
-        }) : confirm(`Approve loan ${loan.loan_no}?`);
-        
-        if (!confirmed) return;
-        
-        await loanService.update(id, {
-          status: 'approved',
-          approved_amount: loan.amount_applied,
-          approved_date: new Date().toISOString()
-        });
-        
-        if (window.notify) window.notify.success('Loan approved! Moved to Awaiting Disbursement.');
-        await refreshQueue('awaiting');
+        activeFullApprovalLoanId = id;
+        fullApprovalContext.textContent = `Approve ${loan.loan_no} for the full amount of KES ${loan.amount_applied.toLocaleString()}.`;
+        fullApprovalComment.value = loan.approval_comment || '';
+        fullApprovalModal.style.display = 'flex';
       } 
       else if (action === 'reject') {
         const loan = await loanService.getById(id);

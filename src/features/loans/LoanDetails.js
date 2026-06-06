@@ -46,6 +46,13 @@ export const renderLoanDetails = async (params) => {
   };
 
   const clientName = loan.expand?.member?.full_name || loan.expand?.group?.name || 'Unknown Client';
+  const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  }[char]));
 
   // Calculate Financials
   const totalPaid = repayments.reduce((sum, r) => sum + r.amount, 0);
@@ -131,9 +138,22 @@ export const renderLoanDetails = async (params) => {
               KES ${(loan.amount_applied - (loan.approved_amount || 0)).toLocaleString()} reduced (${Math.round(((loan.amount_applied - (loan.approved_amount || 0)) / loan.amount_applied) * 100)}% cut)
             </div>
           </div>
+          ${loan.approval_comment ? `
+            <div style="background: white; border-left: 3px solid #f59e0b; border-radius: 0 8px 8px 0; padding: 12px 14px; font-size: 0.9rem; color: var(--text-main); line-height: 1.5; box-shadow: 0 2px 8px rgba(245,158,11,0.08);">
+              <div style="font-size: 0.72rem; font-weight: 700; color: #d97706; text-transform: uppercase; margin-bottom: 4px;">Approval Comment</div>
+              ${escapeHtml(loan.approval_comment)}
+            </div>
+          ` : ''}
         </div>
       </div>
     </div>` : ''}
+
+    ${loan.approval_comment && loan.approved_amount >= loan.amount_applied && loan.status !== 'rejected' ? `
+    <div style="margin-bottom: 24px; border-radius: 12px; background: rgba(13, 148, 136, 0.07); border: 1px solid rgba(13, 148, 136, 0.24); padding: 18px 20px;">
+      <div style="font-size: 0.72rem; font-weight: 700; color: #0d9488; text-transform: uppercase; margin-bottom: 6px;">Approval Comment</div>
+      <div style="font-size: 0.95rem; line-height: 1.6;">${escapeHtml(loan.approval_comment)}</div>
+    </div>
+    ` : ''}
 
 
     <!-- Main Content Tabs -->

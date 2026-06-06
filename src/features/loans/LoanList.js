@@ -133,7 +133,7 @@ export const renderLoanList = async () => {
             <td class="text-sm">
               ${l.expand?.member 
                 ? `<span class="badge badge-primary" style="font-size: 0.7rem;">INDIV</span> ${clientReg}` 
-                : `<span class="badge" style="background: var(--surface-dark); color: white; font-size: 0.7rem;">GROUP</span> ${clientReg}`}
+                : `<span class="badge" style="background: var(--surface-dark); color: white; font-size: 0.7rem;">TB</span> ${clientReg}`}
             </td>
             <td>KES ${l.amount_applied.toLocaleString()}</td>
             <td>KES ${l.total_liability.toLocaleString()}</td>

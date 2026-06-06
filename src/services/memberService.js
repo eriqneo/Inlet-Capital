@@ -13,14 +13,14 @@ export const memberService = {
   async listCached(options = {}, onUpdate = null) {
     const { page = 1, perPage = 20, filter = '', sort = '-created' } = options;
     const key = `members:list:${page}:${perPage}:${sort}:${filter}`;
-    return await dataCache.get(key, () => this.list({ page, perPage, filter, sort }), onUpdate);
+    return await dataCache.getLocalFirst(key, () => this.list({ page, perPage, filter, sort }), onUpdate);
   },
 
-  async getAll() {
-    return await dataCache.get('members:all', () => pb.collection('members').getFullList({
+  async getAll(onUpdate = null) {
+    return await dataCache.getLocalFirst('members:all', () => pb.collection('members').getFullList({
       expand: 'group',
       sort: '-created'
-    }));
+    }), onUpdate);
   },
 
   async getById(id) {

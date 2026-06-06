@@ -32,7 +32,7 @@ export const savingsService = {
   async getAllCached(options = {}, onUpdate = null) {
     const { page = 1, perPage = 50, filter = '', sort = '-date' } = options;
     const key = `savings:list:${page}:${perPage}:${sort}:${filter}:expanded:v2`;
-    return await dataCache.get(key, () => this.getAll({ page, perPage, filter, sort }), onUpdate);
+    return await dataCache.getLocalFirst(key, () => this.getAll({ page, perPage, filter, sort }), onUpdate);
   },
 
   async getAllBasic({ page = 1, perPage = 50, filter = '', sort = '-date' } = {}) {
@@ -45,7 +45,16 @@ export const savingsService = {
   async getAllBasicCached(options = {}, onUpdate = null) {
     const { page = 1, perPage = 50, filter = '', sort = '-date' } = options;
     const key = `savings:list:${page}:${perPage}:${sort}:${filter}:basic`;
-    return await dataCache.get(key, () => this.getAllBasic({ page, perPage, filter, sort }), onUpdate);
+    return await dataCache.getLocalFirst(key, () => this.getAllBasic({ page, perPage, filter, sort }), onUpdate);
+  },
+
+  async getFullListCached({ filter = '', sort = '-date', expand = 'member,member.group,group,recorded_by', cacheKey = 'savings:all:expanded:v2' } = {}, onUpdate = null) {
+    const key = `${cacheKey}:${sort}:${filter}:${expand}`;
+    return await dataCache.getLocalFirst(key, () => {
+      const options = { filter, sort };
+      if (expand) options.expand = expand;
+      return pb.collection('savings').getFullList(options);
+    }, onUpdate);
   },
 
   /**

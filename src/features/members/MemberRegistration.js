@@ -193,10 +193,21 @@ export const renderMemberRegistration = async () => {
     e.preventDefault();
     const formData = new FormData(form);
     const memberData = Object.fromEntries(formData.entries());
+    const parsedDob = parseInputDate(memberData.dob);
+    const phoneNumber = memberData.phone_number || memberData.phone || '';
+    const maritalStatus = memberData.maritalStatus || memberData.marital_status || 'Single';
+    const childrenCount = Number(memberData.childrenCount || memberData.children_count || 0);
     
     const member = {
       ...memberData,
-      dob: parseInputDate(memberData.dob),
+      phone: phoneNumber,
+      phone_number: phoneNumber,
+      dob: parsedDob,
+      date_of_birth: parsedDob,
+      maritalStatus,
+      marital_status: maritalStatus,
+      childrenCount,
+      children_count: childrenCount,
       reg_no: regNo,
       registration_date: new Date().toISOString(),
       registration_fee: regFee,

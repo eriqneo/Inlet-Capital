@@ -107,6 +107,24 @@ h1, h2, h3, h4, h5, h6 {
   width: 100%;
 }
 
+.app-credit-footer {
+  padding: 8px 24px 18px;
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.app-credit-footer a {
+  color: inherit;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.app-credit-footer a:hover {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
 .spinner {
   width: 40px;
   height: 40px;
@@ -280,20 +298,100 @@ h1, h2, h3, h4, h5, h6 {
 
 /* Sidebar Utilities */
 .sidebar-logo {
-  padding: 24px;
-  font-size: 1.25rem;
-  font-family: 'Outfit', sans-serif;
-  font-weight: 700;
+  padding: 18px 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   white-space: nowrap;
+}
+
+.sidebar-brand {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sidebar-logo-frame {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border-radius: 14px;
+  padding: 5px;
+  background: linear-gradient(145deg, rgba(255,255,255,0.98), rgba(255,255,255,0.86));
+  border: 1px solid rgba(255,255,255,0.38);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.sidebar-logo-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.sidebar-logo-fallback {
+  color: var(--primary);
+  font-family: 'Outfit', sans-serif;
+  font-size: 0.92rem;
+  font-weight: 800;
+}
+
+.logo-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
+.brand-name {
+  max-width: 145px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #fff;
+  font-family: 'Outfit', sans-serif;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.brand-subtitle {
+  margin-top: 3px;
+  color: rgba(255,255,255,0.58);
+  font-size: 0.68rem;
+  font-weight: 600;
 }
 
 .sidebar.collapsed .logo-text {
   display: none;
+}
+
+.sidebar.collapsed .sidebar-logo {
+  padding: 18px 12px;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar.collapsed .sidebar-brand {
+  display: flex;
+  position: relative;
+}
+
+.sidebar.collapsed .sidebar-logo-frame {
+  width: 42px;
+  height: 42px;
+  flex-basis: 42px;
+}
+
+.sidebar.collapsed .sidebar-toggle {
+  width: 28px;
+  height: 28px;
 }
 
 .sidebar-toggle {

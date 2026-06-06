@@ -1,6 +1,7 @@
 import { authService } from '../services/authService.js';
 import { navigate } from '../core/router.js';
 import { pb } from '../services/api.js';
+import { settingsService } from '../services/settingsService.js';
 
 const PENDING_LOANS_CACHE_KEY = 'inlet_pending_loans_count';
 const PENDING_LOANS_TTL = 2 * 60 * 1000;
@@ -86,13 +87,32 @@ const updatePendingLoanBadge = (sidebar, count) => {
 export const renderSidebar = async () => {
   const session = authService.getUser();
   const pendingCount = getCachedPendingLoanCount();
+  let orgSettings = {};
+  try {
+    orgSettings = await settingsService.getAll();
+  } catch (err) {
+    console.warn('[Sidebar] Failed to load organisation branding:', err.message);
+  }
+  const orgName = orgSettings.org_name || 'Inlet Capital';
+  const orgLogo = orgSettings.org_logo || '';
 
   const sidebar = document.createElement('aside');
   sidebar.className = 'sidebar';
   
   sidebar.innerHTML = `
     <div class="sidebar-logo">
-      <span class="logo-text"><span style="color: var(--secondary);">IN</span>LET</span>
+      <div class="sidebar-brand" data-tooltip="${orgName}">
+        <div class="sidebar-logo-frame">
+          ${orgLogo
+            ? `<img src="${orgLogo}" alt="${orgName} logo" class="sidebar-logo-img" />`
+            : `<span class="sidebar-logo-fallback">IC</span>`
+          }
+        </div>
+        <div class="logo-text">
+          <span class="brand-name">${orgName}</span>
+          <span class="brand-subtitle">Management System</span>
+        </div>
+      </div>
       <button id="toggle-sidebar" class="sidebar-toggle">
         <span id="toggle-icon">◀</span>
       </button>

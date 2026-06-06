@@ -1,5 +1,9 @@
 import { pb } from '../../services/api.js';
-import { debounce } from '../../services/dataCache.js';
+import { dataCache, debounce } from '../../services/dataCache.js';
+import { memberService } from '../../services/memberService.js';
+import { groupService } from '../../services/groupService.js';
+import { loanService } from '../../services/loanService.js';
+import { savingsService } from '../../services/savingsService.js';
 
 export const renderDashboard = async () => {
   const container = document.createElement('div');
@@ -14,14 +18,6 @@ export const renderDashboard = async () => {
     </div>
   `;
 
-  const getTotalItems = async (collection, filter = '') => {
-    const options = filter ? { filter } : {};
-    const result = await pb.collection(collection).getList(1, 1, options);
-    return result.totalItems;
-  };
-
-  const getFullList = (collection, options = {}) => pb.collection(collection).getFullList(options);
-
   const safe = async (label, fn, fallback) => {
     try {
       return await fn();
@@ -33,44 +29,34 @@ export const renderDashboard = async () => {
   
   const refresh = async () => {
     try {
-    let activeMembers, activeGroups, pendingLoans, savings, overdueSchedules, alertSchedules, alertLoans, recentMembers, recentLoans, recentDisbursements, recentSavings;
+    let members, groups, loans, savings, schedules;
     const todayIso = new Date().toISOString();
     const upcomingThreshold = new Date();
     upcomingThreshold.setDate(upcomingThreshold.getDate() + 7);
 
     [
-      activeMembers,
-      activeGroups,
-      pendingLoans,
+      members,
+      groups,
+      loans,
       savings,
-      overdueSchedules,
-      alertSchedules,
-      recentMembers,
-      recentLoans,
-      recentDisbursements,
-      recentSavings
+      schedules
     ] = await Promise.all([
-      safe('active member count', () => getTotalItems('members', 'status!="inactive"'), 0),
-      safe('group count', () => getTotalItems('groups'), 0),
-      safe('pending loan count', () => getTotalItems('loans', 'status="pending"'), 0),
-      safe('savings ledger', () => getFullList('savings', { filter: 'is_reversed=false' }), []),
-      safe('overdue schedules', () => getFullList('loan_schedule', { filter: `status!="paid" && due_date<"${todayIso}"` }), []),
-      safe('alert schedules', () => getFullList('loan_schedule', { filter: `status!="paid" && due_date<="${upcomingThreshold.toISOString()}"` }), []),
-      safe('recent members', () => pb.collection('members').getList(1, 5, { sort: '-created' }), { items: [] }),
-      safe('recent loans', () => pb.collection('loans').getList(1, 5, { sort: '-application_date' }), { items: [] }),
-      safe('recent disbursements', () => pb.collection('loans').getList(1, 5, {
-        sort: '-disbursement_date',
-        filter: '(status="disbursed" || status="approved" || status="completed" || status="closed") && disbursement_date!=""'
-      }), { items: [] }),
-      safe('recent savings', () => pb.collection('savings').getList(1, 5, { sort: '-date', filter: 'type="deposit" && is_reversed=false' }), { items: [] })
+      safe('members', () => memberService.getAll(), []),
+      safe('groups', () => groupService.getAll(), []),
+      safe('loans', () => loanService.getFullListCached({ cacheKey: 'loans:dashboard:expanded:v1' }), []),
+      safe('savings ledger', () => savingsService.getFullListCached({
+        filter: 'is_reversed=false',
+        expand: 'member,group',
+        cacheKey: 'savings:dashboard:active:v1'
+      }), []),
+      safe('loan schedules', () => dataCache.getLocalFirst('loan_schedule:dashboard:all', () => pb.collection('loan_schedule').getFullList()), [])
     ]);
 
-    const alertLoanIds = [...new Set(alertSchedules.map(s => s.loan).filter(Boolean))];
-    alertLoans = alertLoanIds.length > 0
-      ? await safe('alert loans', () => getFullList('loans', {
-          filter: alertLoanIds.map(loanId => `id="${loanId}"`).join(' || ')
-        }), [])
-      : [];
+    const activeMembers = members.filter(m => m.status !== 'inactive').length;
+    const activeGroups = groups.length;
+    const pendingLoans = loans.filter(l => l.status === 'pending').length;
+    const overdueSchedules = schedules.filter(s => s.status !== 'paid' && new Date(s.due_date) < new Date(todayIso));
+    const alertSchedules = schedules.filter(s => s.status !== 'paid' && new Date(s.due_date) <= upcomingThreshold);
 
   // calculate savings correctly
   const totalSavings = savings
@@ -79,7 +65,7 @@ export const renderDashboard = async () => {
   const totalArrears = overdueSchedules.reduce((sum, s) => sum + s.amount, 0);
 
   const totalAlerts = alertSchedules.map(s => {
-    const loan = alertLoans.find(l => l.id === s.loan);
+    const loan = loans.find(l => l.id === s.loan);
     if (!loan || !['disbursed', 'approved', 'completed', 'closed'].includes(loan.status) || !loan.disbursement_date) return null;
     return true;
   }).filter(Boolean).length;
@@ -88,7 +74,11 @@ export const renderDashboard = async () => {
   let activities = [];
   
   // Add member registrations to activity
-  recentMembers.items.forEach(m => {
+  members
+    .slice()
+    .sort((a, b) => new Date(b.created || b.registration_date) - new Date(a.created || a.registration_date))
+    .slice(0, 5)
+    .forEach(m => {
     activities.push({
       date: new Date(m.registration_date || m.created),
       type: 'member',
@@ -98,7 +88,11 @@ export const renderDashboard = async () => {
   });
 
   // Add loans to activity
-  recentLoans.items.forEach(l => {
+  loans
+    .slice()
+    .sort((a, b) => new Date(b.application_date || b.created) - new Date(a.application_date || a.created))
+    .slice(0, 5)
+    .forEach(l => {
     activities.push({
       date: new Date(l.application_date || l.created),
       type: 'loan',
@@ -107,7 +101,12 @@ export const renderDashboard = async () => {
     });
   });
 
-  recentDisbursements.items.forEach(l => {
+  loans
+    .filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date)
+    .slice()
+    .sort((a, b) => new Date(b.disbursement_date) - new Date(a.disbursement_date))
+    .slice(0, 5)
+    .forEach(l => {
     activities.push({
       date: new Date(l.disbursement_date),
       type: 'disbursement',
@@ -117,7 +116,12 @@ export const renderDashboard = async () => {
   });
 
   // Add savings deposits to activity
-  recentSavings.items.forEach(s => {
+  savings
+    .filter(s => s.type === 'deposit' && !s.is_reversed)
+    .slice()
+    .sort((a, b) => new Date(b.date || b.created) - new Date(a.date || a.created))
+    .slice(0, 5)
+    .forEach(s => {
     activities.push({
       date: new Date(s.date || s.created),
       type: 'savings',
@@ -226,23 +230,19 @@ export const renderDashboard = async () => {
 
   refresh().catch(err => console.error('[Dashboard] Initial refresh failed:', err));
 
-  // Debounced refresh for real-time events
+  // Keep the overview fresh without holding PocketBase realtime SSE streams open.
+  // Realtime over Cloudflare/PocketHost can surface Chrome QUIC errors on long-lived streams.
   const debouncedRefresh = debounce(async () => {
     await refresh();
   }, 500);
 
-  // Helper to safely invalidate cache and refresh
-  const handleUpdate = () => async () => {
+  const pollInterval = setInterval(() => {
     debouncedRefresh();
-  };
+  }, 30000);
 
-  container.__subscriptionPromise = Promise.all([
-    pb.collection('members').subscribe('*', handleUpdate()),
-    pb.collection('groups').subscribe('*', handleUpdate()),
-    pb.collection('loans').subscribe('*', handleUpdate()),
-    pb.collection('savings').subscribe('*', handleUpdate()),
-    pb.collection('loan_schedule').subscribe('*', handleUpdate())
-  ]);
+  container.__subscriptions = [
+    () => clearInterval(pollInterval)
+  ];
 
   return container;
 };
