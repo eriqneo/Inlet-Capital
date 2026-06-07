@@ -29,6 +29,11 @@ const initApp = async () => {
     const { renderLoginPage } = await import('./features/auth/LoginPage.js');
     return await renderLoginPage();
   }, { protect: false });
+
+  addRoute('#/change-password', async () => {
+    const { renderChangePasswordPage } = await import('./features/auth/ChangePasswordPage.js');
+    return await renderChangePasswordPage();
+  }, { protect: true });
   
   addRoute('#/', async () => {
     const { renderDashboard } = await import('./features/dashboard/Dashboard.js');
@@ -38,90 +43,91 @@ const initApp = async () => {
   addRoute('#/analytics', async () => {
     const { renderAnalyticsDashboard } = await import('./features/analytics/AnalyticsDashboard.js');
     return await renderAnalyticsDashboard();
-  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'auditor'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'auditor'], module: 'analytics' });
 
   addRoute('#/members', async () => {
     const { renderMemberList } = await import('./features/members/MemberList.js');
     return await renderMemberList();
-  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'cashier', 'group_officer', 'auditor'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'cashier', 'group_officer', 'auditor'], module: 'members' });
 
   addRoute('#/members/new', async () => {
     const { renderMemberRegistration } = await import('./features/members/MemberRegistration.js');
     return await renderMemberRegistration();
-  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'], module: 'members' });
 
   addRoute('#/members/:id', async (params) => {
     const { renderMemberProfile } = await import('./features/members/MemberProfile.js');
     return await renderMemberProfile(params);
-  }, { protect: true });
+  }, { protect: true, module: 'members' });
 
   addRoute('#/groups', async () => {
     const { renderGroupList } = await import('./features/groups/GroupList.js');
     return await renderGroupList();
-  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'group_officer', 'auditor'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'group_officer', 'auditor'], module: 'groups' });
 
   addRoute('#/groups/new', async () => {
     const { renderGroupRegistration } = await import('./features/groups/GroupRegistration.js');
     return await renderGroupRegistration();
-  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'group_officer'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'group_officer'], module: 'groups' });
 
   addRoute('#/groups/:id', async (params) => {
     const { renderGroupProfile } = await import('./features/groups/GroupProfile.js');
     return await renderGroupProfile(params);
-  }, { protect: true });
+  }, { protect: true, module: 'groups' });
 
   addRoute('#/loans', async () => {
     const { renderLoanList } = await import('./features/loans/LoanList.js');
     return await renderLoanList();
-  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'], module: 'loans' });
 
   addRoute('#/loans/new', async (params) => {
     const { renderLoanApplicationForm } = await import('./features/loans/LoanApplicationForm.js');
     return await renderLoanApplicationForm(params || {});
-  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'], module: 'loans' });
 
   addRoute('#/loans/approve', async () => {
     const { renderLoanApprovalQueue } = await import('./features/loans/LoanApprovalQueue.js');
     return await renderLoanApprovalQueue();
-  }, { protect: true, roles: ['super_admin', 'admin', 'manager'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'manager'], module: 'loans' });
 
   addRoute('#/loans/:id', async (params) => {
     const { renderLoanDetails } = await import('./features/loans/LoanDetails.js');
     return await renderLoanDetails(params || {});
-  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'], module: 'loans' });
 
   addRoute('#/savings', async () => {
     const { renderSavingsList } = await import('./features/savings/SavingsList.js');
     return await renderSavingsList();
-  }, { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'cashier'], module: 'savings' });
 
   addRoute('#/savings/new', async (params) => {
     const { renderSavingsLedger } = await import('./features/savings/SavingsLedger.js');
     return await renderSavingsLedger(params);
-  }, { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'cashier'], module: 'savings' });
 
   addRoute('#/expenses', async () => {
     const { renderExpenseList } = await import('./features/expenses/ExpenseList.js');
     return await renderExpenseList();
-  }, { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'cashier'], module: 'expenses' });
 
   addRoute('#/expenses/new', async () => {
     const { renderExpenseEntry } = await import('./features/expenses/ExpenseEntry.js');
     return await renderExpenseEntry();
-  }, { protect: true, roles: ['super_admin', 'admin', 'cashier'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'cashier'], module: 'expenses' });
 
   addRoute('#/reports', async () => {
     const { renderReportsDashboard } = await import('./features/reports/ReportsDashboard.js');
     return await renderReportsDashboard();
-  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'auditor'] });
+  }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'auditor'], module: 'reports' });
 
   addRoute('#/settings', async () => {
     const { renderAdminSettings } = await import('./features/settings/AdminSettings.js');
     return await renderAdminSettings();
-  }, { protect: true, roles: ['super_admin', 'admin'] });
+  }, { protect: true, roles: ['super_admin', 'admin'], module: 'settings' });
   
   // Refresh session to get latest user role
   if (authService.isAuthenticated()) {
+    authService.startInactivityWatch();
     await authService.refreshSession();
   }
 

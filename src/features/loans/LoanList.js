@@ -3,6 +3,7 @@ import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 import { dataCache, debounce } from '../../services/dataCache.js';
 import { setButtonLoading, showDelayedLoading } from '../../core/uiState.js';
+import { withReturnTo } from '../../core/navigation.js';
 
 export const renderLoanList = async () => {
   const container = document.createElement('div');
@@ -11,6 +12,7 @@ export const renderLoanList = async () => {
   let currentPage = 1;
   const pageSize = 10;
   let searchTerm = '';
+  let statusFilter = 'active';
   let requestId = 0;
 
   container.innerHTML = `
@@ -27,13 +29,19 @@ export const renderLoanList = async () => {
           <span class="badge" style="background: white; color: #0d9488; margin-right: 8px;">!</span>
           Disburse Approved
         </button>` : ''}
-        <button class="btn btn-primary" onclick="window.location.hash = '#/loans/new'">+ New Loan Application</button>
+        <button class="btn btn-primary" onclick="window.location.hash = '${withReturnTo('#/loans/new', '#/loans')}'">+ New Loan Application</button>
       </div>
     </div>
 
     <div class="card" style="padding: 0; overflow: hidden;">
-      <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; gap: 16px;">
+      <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; gap: 16px; flex-wrap: wrap;">
         <input type="text" id="loan-search" class="form-control" placeholder="Search by Loan No..." style="max-width: 400px;" />
+        <select id="loan-status-filter" class="form-control" style="max-width: 240px;">
+          <option value="active" selected>Active Loans</option>
+          <option value="disbursed">Disbursed</option>
+          <option value="completed">Completed</option>
+          <option value="all">All Loans</option>
+        </select>
       </div>
       <div class="table-responsive">
         <table class="table">
@@ -107,10 +115,18 @@ export const renderLoanList = async () => {
     });
     try {
       // Build filter
-      let pbFilter = '';
-      if (searchTerm) {
-        pbFilter = `loan_no ~ "${searchTerm}" || status ~ "${searchTerm}"`;
+      const filters = [];
+      if (statusFilter === 'active') {
+        filters.push('(status="approved" || status="partial_approved" || status="disbursed")');
+      } else if (statusFilter === 'disbursed') {
+        filters.push('status="disbursed"');
+      } else if (statusFilter === 'completed') {
+        filters.push('status="completed"');
       }
+      if (searchTerm) {
+        filters.push(`(loan_no ~ "${searchTerm}" || status ~ "${searchTerm}")`);
+      }
+      const pbFilter = filters.join(' && ');
 
       const renderLoanResult = (result) => {
         if (thisRequest !== requestId) return;
@@ -120,8 +136,16 @@ export const renderLoanList = async () => {
         tableBody.innerHTML = paginatedLoans.length === 0 ? `
           <tr><td colspan="8" class="text-center text-muted" style="padding: 40px;">No loans found.</td></tr>
         ` : paginatedLoans.map(l => {
-          const clientName = l.expand?.member ? l.expand.member.full_name : (l.expand?.group ? l.expand.group.name : 'Unknown');
-          const clientReg = l.expand?.member ? l.expand.member.reg_no : (l.expand?.group ? l.expand.group.group_id : 'Unknown');
+          const member = l.expand?.member;
+          const loanGroup = l.expand?.group;
+          const memberGroup = member?.expand?.group;
+          const tableBankingGroup = loanGroup || memberGroup;
+          const isTableBankingApplicant = Boolean(tableBankingGroup);
+          const clientName = member ? member.full_name : (loanGroup ? loanGroup.name : 'Unknown');
+          const clientReg = member ? member.reg_no : (loanGroup ? loanGroup.group_id : 'Unknown');
+          const applicantBadge = isTableBankingApplicant
+            ? `<span class="badge" style="background: var(--surface-dark); color: white; font-size: 0.7rem;">TB</span>`
+            : `<span class="badge badge-primary" style="font-size: 0.7rem;">INDIV</span>`;
           
           return `
           <tr>
@@ -131,22 +155,21 @@ export const renderLoanList = async () => {
             </td>
             <td class="font-semibold">${clientName}</td>
             <td class="text-sm">
-              ${l.expand?.member 
-                ? `<span class="badge badge-primary" style="font-size: 0.7rem;">INDIV</span> ${clientReg}` 
-                : `<span class="badge" style="background: var(--surface-dark); color: white; font-size: 0.7rem;">TB</span> ${clientReg}`}
+              ${applicantBadge} ${clientReg}
+              ${member && tableBankingGroup ? `<div class="text-xs text-muted" style="margin-top: 4px;">${tableBankingGroup.name || tableBankingGroup.group_id || 'Table Banking'}</div>` : ''}
             </td>
-            <td>KES ${l.amount_applied.toLocaleString()}</td>
-            <td>KES ${l.total_liability.toLocaleString()}</td>
+            <td>${l.amount_applied.toLocaleString()}</td>
+            <td>${l.total_liability.toLocaleString()}</td>
             <td>
               <div class="fee-status-cell" data-loan="${l.id}">
                 ${l.processing_fee_paid
                   ? `<div style="display: flex; align-items: center; gap: 6px;">
                        <span class="badge badge-success" style="gap: 4px;">✓ PAID</span>
-                       <div class="text-xs text-muted">KES ${l.processing_fee.toLocaleString()}</div>
+                       <div class="text-xs text-muted">${l.processing_fee.toLocaleString()}</div>
                      </div>`
                   : `<div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start;">
                        <span class="badge badge-warning">⚠ UNPAID</span>
-                       <span class="text-xs text-muted">KES ${l.processing_fee.toLocaleString()}</span>
+                       <span class="text-xs text-muted">${l.processing_fee.toLocaleString()}</span>
                        ${l.status === 'pending' ? `<button class="btn-fee-pay" data-id="${l.id}" data-loan="${l.loan_no}" data-amount="${l.processing_fee}" style="font-size: 0.7rem; padding: 4px 10px; background: var(--secondary); color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 2px; font-weight: 600; transition: background 0.2s;">Record Payment</button>` : ''}
                      </div>`
                 }
@@ -279,12 +302,18 @@ export const renderLoanList = async () => {
   };
 
   const searchInput = container.querySelector('#loan-search');
+  const statusSelect = container.querySelector('#loan-status-filter');
   const debouncedSearch = debounce(() => {
     searchTerm = searchInput.value.trim();
     currentPage = 1;
     updateUI();
   }, 300);
   searchInput.addEventListener('input', debouncedSearch);
+  statusSelect.onchange = () => {
+    statusFilter = statusSelect.value;
+    currentPage = 1;
+    updateUI();
+  };
 
   updateUI();
 

@@ -68,7 +68,7 @@ async function run() {
       usersColl.listRule = '@request.auth.role = "super_admin" || @request.auth.role = "admin"';
       usersColl.viewRule = '@request.auth.role = "super_admin" || @request.auth.role = "admin"';
       usersColl.createRule = '@request.auth.role = "super_admin"';
-      usersColl.updateRule = '@request.auth.role = "super_admin"';
+      usersColl.updateRule = '@request.auth.role = "super_admin" || (@request.auth.id = id && @request.body.role:isset = false && @request.body.status:isset = false && @request.body.email:isset = false && @request.body.emailVisibility:isset = false && @request.body.verified:isset = false && @request.body.name:isset = false && @request.body.module_permissions:isset = false)';
       usersColl.deleteRule = '@request.auth.role = "super_admin"';
       if (!usersColl.fields.some(f => f.name === 'role')) {
         usersColl.fields.push({
@@ -81,6 +81,36 @@ async function run() {
         console.log('Users collection updated with role field.');
       } else {
         console.log('Users collection already has role field.');
+      }
+      if (!usersColl.fields.some(f => f.name === 'force_password_change')) {
+        usersColl.fields.push({
+          name: 'force_password_change',
+          type: 'bool',
+          required: false
+        });
+        console.log('Users collection updated with force_password_change field.');
+      } else {
+        console.log('Users collection already has force_password_change field.');
+      }
+      if (!usersColl.fields.some(f => f.name === 'password_changed_at')) {
+        usersColl.fields.push({
+          name: 'password_changed_at',
+          type: 'date',
+          required: false
+        });
+        console.log('Users collection updated with password_changed_at field.');
+      } else {
+        console.log('Users collection already has password_changed_at field.');
+      }
+      if (!usersColl.fields.some(f => f.name === 'module_permissions')) {
+        usersColl.fields.push({
+          name: 'module_permissions',
+          type: 'json',
+          required: false
+        });
+        console.log('Users collection updated with module_permissions field.');
+      } else {
+        console.log('Users collection already has module_permissions field.');
       }
       await fetchPb('collections/users', 'PATCH', usersColl, token);
       console.log('Users collection access rules updated.');
@@ -134,8 +164,8 @@ async function run() {
         { name: 'reg_no', type: 'text', required: true, unique: true },
         { name: 'full_name', type: 'text', required: true },
         { name: 'id_number', type: 'text', required: true, unique: true },
-        { name: 'phone', type: 'text', required: true },
-        { name: 'phone_number', type: 'text' },
+        { name: 'phone', type: 'text', required: true, unique: true },
+        { name: 'phone_number', type: 'text', unique: true },
         { name: 'dob', type: 'date' },
         { name: 'date_of_birth', type: 'date' },
         { name: 'maritalStatus', type: 'text' },
@@ -143,6 +173,8 @@ async function run() {
         { name: 'childrenCount', type: 'number' },
         { name: 'children_count', type: 'number' },
         { name: 'kraPin', type: 'text' },
+        { name: 'passportPhoto', type: 'text' },
+        { name: 'passport_photo', type: 'file', maxSelect: 1, maxSize: 524288, mimeTypes: ['image/jpeg', 'image/png', 'image/webp'] },
         { name: 'address', type: 'text' },
         { name: 'nok_name', type: 'text' },
         { name: 'nok_phone', type: 'text' },
@@ -181,7 +213,9 @@ async function run() {
         { name: 'marital_status', type: 'text' },
         { name: 'childrenCount', type: 'number' },
         { name: 'children_count', type: 'number' },
-        { name: 'kraPin', type: 'text' }
+        { name: 'kraPin', type: 'text' },
+        { name: 'passportPhoto', type: 'text' },
+        { name: 'passport_photo', type: 'file', maxSelect: 1, maxSize: 524288, mimeTypes: ['image/jpeg', 'image/png', 'image/webp'] }
       ];
       const existingFieldNames = new Set(membersColl.fields.map(field => field.name));
       const missingFields = profileFields.filter(field => !existingFieldNames.has(field.name));
@@ -194,6 +228,27 @@ async function run() {
       }
     } catch (e) {
       console.log('Error updating members profile fields:', e.message);
+    }
+
+    console.log('Ensuring member unique identity fields...');
+    try {
+      const membersColl = await fetchPb('collections/members', 'GET', null, token);
+      let changed = false;
+      for (const fieldName of ['id_number', 'phone', 'phone_number']) {
+        const field = membersColl.fields.find(item => item.name === fieldName);
+        if (field && !field.unique) {
+          field.unique = true;
+          changed = true;
+        }
+      }
+      if (changed) {
+        await fetchPb('collections/members', 'PATCH', membersColl, token);
+        console.log('Members collection unique constraints updated for ID and phone fields.');
+      } else {
+        console.log('Members collection already has unique ID/phone fields.');
+      }
+    } catch (e) {
+      console.log('Error updating members unique fields:', e.message);
     }
 
     console.log('Ensuring settings file field...');
@@ -232,6 +287,56 @@ async function run() {
       }
     } catch (e) {
       console.log('Error updating loans approval comment field:', e.message);
+    }
+
+    console.log('Ensuring user login activity collection...');
+    try {
+      const usersColl = await fetchPb('collections/users', 'GET', null, token);
+      const loginActivityDef = {
+        name: 'user_login_activity',
+        type: 'base',
+        fields: [
+          { name: 'user', type: 'relation', required: true, collectionId: usersColl.id, cascadeDelete: true, maxSelect: 1 },
+          { name: 'login_at', type: 'date', required: true },
+          { name: 'user_email', type: 'text' },
+          { name: 'user_name', type: 'text' }
+        ],
+        listRule: '@request.auth.role = "super_admin" || @request.auth.role = "admin"',
+        viewRule: '@request.auth.role = "super_admin" || @request.auth.role = "admin"',
+        createRule: '@request.auth.id != ""',
+        updateRule: '@request.auth.role = "super_admin"',
+        deleteRule: '@request.auth.role = "super_admin"'
+      };
+
+      try {
+        await fetchPb('collections', 'POST', loginActivityDef, token);
+        console.log('User login activity collection created.');
+      } catch (createErr) {
+        if (!createErr.message.includes('validation_collection_name_exists')) throw createErr;
+        const activityColl = await fetchPb('collections/user_login_activity', 'GET', null, token);
+        let changed = false;
+        const existingFieldNames = new Set(activityColl.fields.map(field => field.name));
+        loginActivityDef.fields.forEach(field => {
+          if (!existingFieldNames.has(field.name)) {
+            activityColl.fields.push(field);
+            changed = true;
+          }
+        });
+        ['listRule', 'viewRule', 'createRule', 'updateRule', 'deleteRule'].forEach(ruleName => {
+          if (activityColl[ruleName] !== loginActivityDef[ruleName]) {
+            activityColl[ruleName] = loginActivityDef[ruleName];
+            changed = true;
+          }
+        });
+        if (changed) {
+          await fetchPb('collections/user_login_activity', 'PATCH', activityColl, token);
+          console.log('User login activity collection updated.');
+        } else {
+          console.log('User login activity collection already configured.');
+        }
+      }
+    } catch (e) {
+      console.log('Error ensuring user login activity collection:', e.message);
     }
     
     console.log('Done!');

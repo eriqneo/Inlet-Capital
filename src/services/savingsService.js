@@ -1,6 +1,13 @@
 import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
 
+const requireAdminRecordManager = () => {
+  const role = pb.authStore.model?.role;
+  if (!['super_admin', 'admin'].includes(role)) {
+    throw new Error('Only admins can edit or delete records.');
+  }
+};
+
 export const savingsService = {
   /**
    * Record a new deposit or withdrawal
@@ -96,12 +103,14 @@ export const savingsService = {
   },
 
   async update(id, data) {
+    requireAdminRecordManager();
     const record = await pb.collection('savings').update(id, data);
     await dataCache.invalidatePrefix('savings:');
     return record;
   },
 
   async delete(id) {
+    requireAdminRecordManager();
     await pb.collection('savings').delete(id);
     await dataCache.invalidatePrefix('savings:');
     return true;

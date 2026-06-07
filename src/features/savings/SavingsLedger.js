@@ -5,6 +5,7 @@ import { authService } from '../../services/authService.js';
 import { navigate } from '../../core/router.js';
 import { formatDate } from '../../core/utils.js';
 import { setButtonLoading } from '../../core/uiState.js';
+import { getReturnTo, navigateToReturn } from '../../core/navigation.js';
 import Fuse from 'fuse.js';
 
 export const renderSavingsLedger = async (params = {}) => {
@@ -13,11 +14,15 @@ export const renderSavingsLedger = async (params = {}) => {
   let groups = [];
   const preselectedMemberId = params.memberId || params.member || '';
   const preselectedGroupId = params.groupId || params.group || '';
+  const returnTo = getReturnTo(params, '#/savings');
 
   container.innerHTML = `
-    <div style="margin-bottom: 24px;">
-      <h1 class="text-xl">Savings Ledger</h1>
-      <p class="text-muted">Record deposits and withdrawals for individuals and groups.</p>
+    <div style="margin-bottom: 24px; display: flex; align-items: center; gap: 16px;">
+      <button class="btn btn-outline btn-sm" id="savings-return-btn">← Back</button>
+      <div>
+        <h1 class="text-xl">Savings Ledger</h1>
+        <p class="text-muted">Record deposits and withdrawals for individuals and groups.</p>
+      </div>
     </div>
 
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 24px;">
@@ -126,6 +131,7 @@ export const renderSavingsLedger = async (params = {}) => {
   `;
 
   const form = container.querySelector('#savings-form');
+  container.querySelector('#savings-return-btn').onclick = () => { window.location.hash = returnTo; };
   const accountType = container.querySelector('#account-type');
   const mWrap = container.querySelector('#member-select-wrap');
   const gWrap = container.querySelector('#group-select-wrap');
@@ -393,7 +399,7 @@ export const renderSavingsLedger = async (params = {}) => {
       payMethodInput.value = 'mpesa';
       updatePaymentPanel();
       updateRecent();
-      setTimeout(() => navigate('#/savings'), 1200);
+      setTimeout(() => navigateToReturn(params, '#/savings'), 1200);
     } catch (err) {
       if (window.notify) window.notify.error('Error: ' + (err.message || 'Validation failed. Ensure member is not required if saving for a group.'));
       console.error(err);

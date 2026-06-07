@@ -1,6 +1,13 @@
 import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
 
+const requireAdminRecordManager = () => {
+  const role = pb.authStore.model?.role;
+  if (!['super_admin', 'admin'].includes(role)) {
+    throw new Error('Only admins can delete records.');
+  }
+};
+
 export const loanService = {
   /**
    * Apply for a new loan
@@ -19,17 +26,17 @@ export const loanService = {
     return await pb.collection('loans').getList(page, perPage, {
       filter,
       sort,
-      expand: 'member,group,processed_by'
+      expand: 'member,member.group,group,processed_by'
     });
   },
 
   async getAllCached(options = {}, onUpdate = null) {
     const { page = 1, perPage = 50, filter = '', sort = '-application_date' } = options;
-    const key = `loans:list:${page}:${perPage}:${sort}:${filter}`;
+    const key = `loans:list:v2:${page}:${perPage}:${sort}:${filter}`;
     return await dataCache.getLocalFirst(key, () => this.getAll({ page, perPage, filter, sort }), onUpdate);
   },
 
-  async getFullListCached({ filter = '', sort = '-application_date', expand = 'member,group,processed_by', cacheKey = 'loans:all:expanded:v1' } = {}, onUpdate = null) {
+  async getFullListCached({ filter = '', sort = '-application_date', expand = 'member,member.group,group,processed_by', cacheKey = 'loans:all:expanded:v1' } = {}, onUpdate = null) {
     const key = `${cacheKey}:${sort}:${filter}:${expand}`;
     return await dataCache.getLocalFirst(key, () => {
       const options = { filter, sort };
@@ -43,7 +50,7 @@ export const loanService = {
    */
   async getById(id) {
     return await pb.collection('loans').getOne(id, {
-      expand: 'member,group,processed_by'
+      expand: 'member,member.group,group,processed_by'
     });
   },
 
@@ -52,7 +59,7 @@ export const loanService = {
    */
   async getByLoanNo(loanNo) {
     const result = await pb.collection('loans').getFirstListItem(`loan_no="${loanNo}"`, {
-      expand: 'member,group,processed_by'
+      expand: 'member,member.group,group,processed_by'
     });
     return result;
   },
@@ -64,7 +71,7 @@ export const loanService = {
     return await pb.collection('loans').getFullList({
       filter: 'status="pending" || status="partial_approved"',
       sort: '-application_date',
-      expand: 'member,group'
+      expand: 'member,member.group,group'
     });
   },
 
@@ -80,6 +87,7 @@ export const loanService = {
   },
 
   async delete(id) {
+    requireAdminRecordManager();
     await pb.collection('loans').delete(id);
     await dataCache.invalidatePrefix('loans:');
     await dataCache.invalidatePrefix('loans:all:');
@@ -94,7 +102,7 @@ export const loanService = {
     return await pb.collection('loans').getFullList({
       filter: `member="${memberId}"`,
       sort: '-application_date',
-      expand: 'member,group,processed_by'
+      expand: 'member,member.group,group,processed_by'
     });
   },
 
@@ -105,7 +113,7 @@ export const loanService = {
     return await pb.collection('loans').getFullList({
       filter: `group="${groupId}"`,
       sort: '-application_date',
-      expand: 'member,group,processed_by'
+      expand: 'member,member.group,group,processed_by'
     });
   },
 

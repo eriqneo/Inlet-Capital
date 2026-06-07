@@ -3,6 +3,7 @@ import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 import { dataCache } from '../../services/dataCache.js';
 import { showDelayedLoading } from '../../core/uiState.js';
+import { withReturnTo } from '../../core/navigation.js';
 
 export const renderSavingsList = async () => {
   const container = document.createElement('div');
@@ -20,7 +21,7 @@ export const renderSavingsList = async () => {
         <h1 class="text-xl">Savings History</h1>
         <p class="text-muted">Consolidated view of all deposits and withdrawals.</p>
       </div>
-      <button class="btn btn-primary" onclick="window.location.hash = '#/savings/new'">+ Record Transaction</button>
+      <button class="btn btn-primary" onclick="window.location.hash = '${withReturnTo('#/savings/new', '#/savings')}'">+ Record Transaction</button>
     </div>
 
     <div class="card" style="padding: 0; overflow: hidden;">

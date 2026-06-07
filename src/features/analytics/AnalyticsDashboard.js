@@ -44,6 +44,7 @@ export const renderAnalyticsDashboard = async () => {
 
   let currentFilter = 'all'; // '30days', 'quarter', 'ytd', 'all'
   let currentOfficerFilter = 'all';
+  let currentCollectionWindow = 'this_month';
   let chartInstances = [];
 
   const destroyCharts = () => {
@@ -53,6 +54,8 @@ export const renderAnalyticsDashboard = async () => {
 
   const renderData = () => {
     const today = new Date();
+    const todayStart = new Date(today);
+    todayStart.setHours(0, 0, 0, 0);
     let filterDate = new Date(0); // all time
 
     if (currentFilter === '30days') {
@@ -119,6 +122,50 @@ export const renderAnalyticsDashboard = async () => {
       .map(([id, name]) => ({ id, name }))
       .sort((a, b) => a.name.localeCompare(b.name));
     const filterByOfficer = (loan) => currentOfficerFilter === 'all' || loan.processed_by === currentOfficerFilter;
+    const loansById = new Map(loans.map(loan => [loan.id, loan]));
+    const formatShortDate = (date) => date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    const getCollectionWindow = () => {
+      const startOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1);
+      const endOfMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
+      const addDays = (date, days) => {
+        const next = new Date(date);
+        next.setDate(next.getDate() + days);
+        return next;
+      };
+
+      if (currentCollectionWindow === 'next_7_days') {
+        const end = addDays(todayStart, 7);
+        end.setHours(23, 59, 59, 999);
+        return { label: 'Next 7 Days', start: todayStart, end, includeOverdue: false };
+      }
+      if (currentCollectionWindow === 'next_month') {
+        const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+        return { label: 'Next Month', start: startOfMonth(nextMonth), end: endOfMonth(nextMonth), includeOverdue: false };
+      }
+      if (currentCollectionWindow === 'overdue') {
+        const end = new Date(todayStart);
+        end.setMilliseconds(-1);
+        return { label: 'Overdue', start: null, end, includeOverdue: true };
+      }
+      if (currentCollectionWindow === 'all_upcoming') {
+        return { label: 'All Upcoming', start: todayStart, end: null, includeOverdue: false };
+      }
+      return { label: 'This Month', start: startOfMonth(today), end: endOfMonth(today), includeOverdue: false };
+    };
+    const collectionWindow = getCollectionWindow();
+    const collectionWindowRange = collectionWindow.start && collectionWindow.end
+      ? `${formatShortDate(collectionWindow.start)} - ${formatShortDate(collectionWindow.end)}`
+      : collectionWindow.end
+        ? `Before ${formatShortDate(todayStart)}`
+        : `From ${formatShortDate(todayStart)}`;
+    const scheduleRemaining = (schedule) => Math.max(0, (Number(schedule.amount) || 0) - (Number(schedule.paid) || 0));
+    const scheduleMatchesCollectionWindow = (schedule) => {
+      const dueDate = new Date(schedule.due_date);
+      if (Number.isNaN(dueDate.getTime())) return false;
+      if (collectionWindow.start && dueDate < collectionWindow.start) return false;
+      if (collectionWindow.end && dueDate > collectionWindow.end) return false;
+      return true;
+    };
 
     const totalMembers = fMembers.length;
     const activeLoans = loans.filter(l => isActiveDisbursedLoan(l) && filterByOfficer(l));
@@ -151,6 +198,45 @@ export const renderAnalyticsDashboard = async () => {
     const officerAssignedExpected = officerTargets
       .filter(o => o.id !== 'unassigned')
       .reduce((sum, o) => sum + o.expected, 0);
+    const collectionSchedules = scopedSchedules
+      .filter(schedule => {
+        const loan = loansById.get(schedule.loan);
+        if (!loan || !filterByOfficer(loan)) return false;
+        if (schedule.status === 'paid' || scheduleRemaining(schedule) <= 0) return false;
+        return scheduleMatchesCollectionWindow(schedule);
+      });
+    const expectedCollection = collectionSchedules.reduce((sum, schedule) => sum + scheduleRemaining(schedule), 0);
+    const scheduledGrossCollection = collectionSchedules.reduce((sum, schedule) => sum + (Number(schedule.amount) || 0), 0);
+    const scheduledPaidCollection = collectionSchedules.reduce((sum, schedule) => sum + (Number(schedule.paid) || 0), 0);
+    const expectedCollectionLoans = new Set(collectionSchedules.map(schedule => schedule.loan)).size;
+    const expectedCollectionClients = new Set(collectionSchedules.map(schedule => {
+      const loan = loansById.get(schedule.loan);
+      return loan?.member || loan?.group || schedule.loan;
+    })).size;
+    const collectionOfficerMap = {};
+    collectionSchedules.forEach(schedule => {
+      const loan = loansById.get(schedule.loan);
+      const officerKey = loan?.processed_by || 'unassigned';
+      if (!collectionOfficerMap[officerKey]) {
+        collectionOfficerMap[officerKey] = {
+          id: officerKey,
+          name: loan ? getOfficerName(loan) : 'Unassigned',
+          installments: 0,
+          clients: new Set(),
+          gross: 0,
+          paid: 0,
+          expected: 0
+        };
+      }
+      collectionOfficerMap[officerKey].installments += 1;
+      collectionOfficerMap[officerKey].clients.add(loan?.member || loan?.group || schedule.loan);
+      collectionOfficerMap[officerKey].gross += Number(schedule.amount) || 0;
+      collectionOfficerMap[officerKey].paid += Number(schedule.paid) || 0;
+      collectionOfficerMap[officerKey].expected += scheduleRemaining(schedule);
+    });
+    const collectionOfficerRows = Object.values(collectionOfficerMap)
+      .map(row => ({ ...row, clients: row.clients.size }))
+      .sort((a, b) => b.expected - a.expected);
     
     // Correct savings calculation
     const totalSavings = fSavings
@@ -160,6 +246,12 @@ export const renderAnalyticsDashboard = async () => {
     const totalRepaid = scopedRepayments.reduce((sum, r) => sum + r.amount, 0);
     const totalLiabilityOverall = scopedLoans.filter(isGivenLoan).reduce((sum, l) => sum + getLoanLiability(l), 0);
     const repaymentRate = totalLiabilityOverall > 0 ? ((totalRepaid / totalLiabilityOverall) * 100).toFixed(1) : 0;
+    const repaymentRateNumber = Number(repaymentRate) || 0;
+    const repaymentHealth = repaymentRateNumber <= 50
+      ? { label: 'Action Required', color: 'var(--danger)' }
+      : repaymentRateNumber <= 70
+        ? { label: 'Average Portfolio', color: 'var(--warning)' }
+        : { label: 'Healthy Portfolio', color: 'var(--success)' };
 
     // Real Trend logic (Members registered in current month vs total)
     const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
@@ -229,7 +321,13 @@ export const renderAnalyticsDashboard = async () => {
             <option value="ytd" ${currentFilter === 'ytd' ? 'selected' : ''}>Year to Date</option>
             <option value="all" ${currentFilter === 'all' ? 'selected' : ''}>All Time</option>
           </select>
-          <button class="btn btn-outline" onclick="window.print()">🖨️ Export</button>
+          <select id="collection-window-filter" class="form-control" style="width: auto; min-width: 170px;">
+            <option value="this_month" ${currentCollectionWindow === 'this_month' ? 'selected' : ''}>Collections: This Month</option>
+            <option value="next_7_days" ${currentCollectionWindow === 'next_7_days' ? 'selected' : ''}>Collections: Next 7 Days</option>
+            <option value="next_month" ${currentCollectionWindow === 'next_month' ? 'selected' : ''}>Collections: Next Month</option>
+            <option value="overdue" ${currentCollectionWindow === 'overdue' ? 'selected' : ''}>Collections: Overdue</option>
+            <option value="all_upcoming" ${currentCollectionWindow === 'all_upcoming' ? 'selected' : ''}>Collections: All Upcoming</option>
+          </select>
         </div>
       </div>
 
@@ -260,6 +358,12 @@ export const renderAnalyticsDashboard = async () => {
           <div class="kpi-trend trend-up">${currentOfficerFilter === 'all' ? `${officerTargets.filter(o => o.id !== 'unassigned').length} officers assigned` : 'Selected officer view'}</div>
         </div>
         <div class="kpi-card">
+          <div class="kpi-icon" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">📅</div>
+          <div class="kpi-label">${collectionWindow.label} Collections Expected</div>
+          <div class="kpi-value">KES ${expectedCollection.toLocaleString()}</div>
+          <div class="kpi-trend ${expectedCollection > 0 ? 'trend-up' : 'trend-down'}">${expectedCollectionClients} clients · ${collectionSchedules.length} installments</div>
+        </div>
+        <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(16, 185, 129, 0.1); color: var(--success);">🏦</div>
           <div class="kpi-label">Total Savings Base</div>
           <div class="kpi-value">KES ${totalSavings.toLocaleString()}</div>
@@ -269,13 +373,61 @@ export const renderAnalyticsDashboard = async () => {
           <div class="kpi-icon" style="background: rgba(201, 168, 76, 0.1); color: var(--accent);">✅</div>
           <div class="kpi-label">Global Repayment Rate</div>
           <div class="kpi-value">${repaymentRate}%</div>
-          <div class="kpi-trend ${repaymentRate > 90 ? 'trend-up' : 'trend-down'}">${repaymentRate > 90 ? '🎯 Healthy Portfolio' : '⚠ Action Required'}</div>
+          <div class="kpi-trend" style="color: ${repaymentHealth.color};">${repaymentHealth.label}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(239, 68, 68, 0.1); color: var(--danger);">⚠️</div>
           <div class="kpi-label">Total Arrears</div>
           <div class="kpi-value">KES ${totalArrearsGlobal.toLocaleString()}</div>
           <div class="kpi-trend trend-down">Amount Overdue</div>
+        </div>
+      </div>
+
+      <div class="chart-card" style="min-height: auto; margin-top: 24px; border-left: 4px solid #7c3aed;">
+        <div class="chart-header">
+          <div>
+            <div class="chart-title">Collection Forecast</div>
+            <div class="text-xs text-muted" style="margin-top: 4px;">
+              ${collectionWindow.label} · ${collectionWindowRange} · ${currentOfficerFilter === 'all' ? 'All loan users' : 'Selected loan user'}
+            </div>
+          </div>
+          <div style="display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end; font-size: 0.8rem;">
+            <span class="badge badge-primary">Due: KES ${scheduledGrossCollection.toLocaleString()}</span>
+            <span class="badge badge-success">Paid: KES ${scheduledPaidCollection.toLocaleString()}</span>
+            <span class="badge badge-warning">Remaining: KES ${expectedCollection.toLocaleString()}</span>
+          </div>
+        </div>
+        <div class="table-responsive">
+          <table class="table" style="font-size: 0.875rem;">
+            <thead>
+              <tr>
+                <th>Loan Officer</th>
+                <th>Clients</th>
+                <th>Installments</th>
+                <th class="text-right">Scheduled Due</th>
+                <th class="text-right">Already Paid</th>
+                <th class="text-right">Expected Collection</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${collectionOfficerRows.length === 0 ? '<tr><td colspan="6" class="text-center text-muted">No scheduled collections for this forecast window.</td></tr>' : collectionOfficerRows.map(row => `
+                <tr>
+                  <td>
+                    <div class="font-semibold">${escapeHtml(row.name)}</div>
+                    <div class="text-xs text-muted">${row.id === 'unassigned' ? 'No officer recorded' : escapeHtml(row.id)}</div>
+                  </td>
+                  <td>${row.clients.toLocaleString()}</td>
+                  <td>${row.installments.toLocaleString()}</td>
+                  <td class="text-right">${row.gross.toLocaleString()}</td>
+                  <td class="text-right text-success">${row.paid.toLocaleString()}</td>
+                  <td class="text-right font-semibold text-danger">${row.expected.toLocaleString()}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="text-xs text-muted" style="margin-top: 10px;">
+          Expected collection is calculated from unpaid repayment schedule balances: installment amount minus amount already paid.
         </div>
       </div>
 
@@ -304,8 +456,8 @@ export const renderAnalyticsDashboard = async () => {
                     <div class="text-xs text-muted">${o.id === 'unassigned' ? 'No officer recorded' : escapeHtml(o.id)}</div>
                   </td>
                   <td>${o.loans.toLocaleString()}</td>
-                  <td class="text-right">KES ${o.principal.toLocaleString()}</td>
-                  <td class="text-right font-semibold text-danger">KES ${o.expected.toLocaleString()}</td>
+                  <td class="text-right">${o.principal.toLocaleString()}</td>
+                  <td class="text-right font-semibold text-danger">${o.expected.toLocaleString()}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -375,7 +527,7 @@ export const renderAnalyticsDashboard = async () => {
                       <div class="font-semibold">${b.name}</div>
                       <div class="text-xs text-muted">${b.id}</div>
                     </td>
-                    <td class="text-right font-semibold text-danger">KES ${b.balance.toLocaleString()}</td>
+                    <td class="text-right font-semibold text-danger">${b.balance.toLocaleString()}</td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -415,6 +567,10 @@ export const renderAnalyticsDashboard = async () => {
       currentFilter = e.target.value;
       renderData();
     };
+    container.querySelector('#collection-window-filter').onchange = (e) => {
+      currentCollectionWindow = e.target.value;
+      renderData();
+    };
 
     const updateArrearsUI = () => {
       const start = (arrearsPage - 1) * pageSize;
@@ -429,7 +585,7 @@ export const renderAnalyticsDashboard = async () => {
           <tr>
             <td><div class="font-semibold">${a.name}</div><div class="text-xs text-muted">${a.id}</div></td>
             <td><span class="badge ${badge}">${a.daysOverdue} Days</span></td>
-            <td class="text-right font-semibold text-danger">KES ${a.amount.toLocaleString()}</td>
+            <td class="text-right font-semibold text-danger">${a.amount.toLocaleString()}</td>
           </tr>`;
       }).join('');
 

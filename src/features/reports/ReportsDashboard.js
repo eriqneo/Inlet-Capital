@@ -170,14 +170,19 @@ export const renderReportsDashboard = async () => {
           <table class="table" style="font-size: 0.75rem;">
             <thead>
               <tr>
-                <th>Loan No</th>
-                <th>Client</th>
-                <th>Group</th>
-                <th>Disbursed</th>
-                <th>Start Date</th>
-                <th>Period</th>
-                <th>Guarantor</th>
-                <th>Securities</th>
+                <th>LOAN NO</th>
+                <th>CLIENT NAME</th>
+                <th>PHONE NO</th>
+                <th>ID NUMBER</th>
+                <th>GROUP</th>
+                <th>DISBURSED</th>
+                <th>PERIOD</th>
+                <th>GUARANTOR</th>
+                <th>G. PHONE NUMBER</th>
+                <th>G. ID NO</th>
+                <th>RELATION</th>
+                <th>SECURITIES</th>
+                <th>OFFICERS</th>
               </tr>
             </thead>
             <tbody id="disbursements-table-body"></tbody>
@@ -236,6 +241,10 @@ export const renderReportsDashboard = async () => {
       <!-- 7. Withdrawals -->
       <div id="withdrawals-tab" class="report-section" style="display: none;">
         <h2 style="margin-bottom: 16px;">Withdrawal Report</h2>
+        <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--danger); margin-bottom: 16px;">
+          <div class="text-xs text-muted">Total Withdrawal Amount</div>
+          <div class="text-xl font-semibold text-danger" id="withdrawals-total-amount">KES 0</div>
+        </div>
         <div class="table-responsive card" style="padding: 0;">
           <table class="table">
             <thead>
@@ -407,10 +416,10 @@ export const renderReportsDashboard = async () => {
           <td><div class="font-semibold">${m.full_name}</div><div class="text-xs text-muted">${m.id_number}</div></td>
           <td><span class="badge badge-outline" style="font-size: 0.65rem;">${groupName}</span></td>
           <td>${getMemberPhone(m)}</td>
-          <td>KES ${(totalSav || 0).toLocaleString()}</td>
-          <td class="text-danger font-semibold">KES ${olBalance.toLocaleString()}</td>
-          <td class="text-success font-semibold">KES ${totalRepaid.toLocaleString()}</td>
-          <td class="text-danger font-bold">KES ${totalArrears.toLocaleString()}</td>
+          <td>${(totalSav || 0).toLocaleString()}</td>
+          <td class="text-danger font-semibold">${olBalance.toLocaleString()}</td>
+          <td class="text-success font-semibold">${totalRepaid.toLocaleString()}</td>
+          <td class="text-danger font-bold">${totalArrears.toLocaleString()}</td>
           <td>
             <div style="display: flex; align-items: center; gap: 8px;">
               <div style="flex: 1; height: 6px; background: var(--bg-light); border-radius: 3px; overflow: hidden; min-width: 60px;">
@@ -507,11 +516,11 @@ export const renderReportsDashboard = async () => {
           </div>
         </td>
         <td>${getGroupPhone(g)}</td>
-        <td>KES ${(g.totalSavings || 0).toLocaleString()}</td>
-        <td>KES ${(g.outstandingLoan || 0).toLocaleString()}</td>
+        <td>${(g.totalSavings || 0).toLocaleString()}</td>
+        <td>${(g.outstandingLoan || 0).toLocaleString()}</td>
         <td class="font-bold text-success">${g.activeCount}</td>
         <td class="font-bold text-danger">${g.inactiveCount}</td>
-        <td class="font-bold text-danger">KES ${(g.arrearsAmount || 0).toLocaleString()}</td>
+        <td class="font-bold text-danger">${(g.arrearsAmount || 0).toLocaleString()}</td>
         <td class="font-bold text-warning">${g.arrearsCount}</td>
       </tr>`).join('');
     
@@ -532,9 +541,14 @@ export const renderReportsDashboard = async () => {
 
     const allApproved = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date);
     const filtered = allApproved.filter(l => {
+      const member = l.expand?.member;
+      const memberGroup = member?.expand?.group || null;
+      const isGroupAccount = Boolean(l.group && !l.member);
+      const isGroupMember = Boolean(l.member && (l.group || memberGroup));
       if (activeFilters.disbursements === 'all') return true;
-      if (activeFilters.disbursements === 'individual') return !!l.member;
-      if (activeFilters.disbursements === 'group') return !!l.group && !l.member;
+      if (activeFilters.disbursements === 'individual') return Boolean(l.member) && !isGroupMember;
+      if (activeFilters.disbursements === 'group_members') return isGroupMember;
+      if (activeFilters.disbursements === 'group') return isGroupAccount;
       return true;
     });
 
@@ -542,23 +556,34 @@ export const renderReportsDashboard = async () => {
     const paginated = filtered.slice(start, start + pageSize);
     
     container.querySelector('#disbursements-table-body').innerHTML = paginated.map(l => {
-      let clientName = l.expand?.member?.full_name || l.expand?.group?.name || 'Unknown';
-      let clientRef = l.expand?.member?.reg_no || l.expand?.group?.group_id || '';
-      let groupName = l.expand?.member?.expand?.group?.name || l.expand?.group?.name || 'Individual';
+      const member = l.expand?.member;
+      const group = l.expand?.group || member?.expand?.group;
+      const officer = l.expand?.processed_by;
+      const guarantor = l.guarantor || {};
+      const clientName = member?.full_name || group?.name || 'Unknown';
+      const clientPhone = member ? getMemberPhone(member) : (group?.phone || group?.phone_number || '-');
+      const clientId = member?.id_number || group?.group_id || '-';
+      const groupName = group?.name || 'Individual';
+      const guarantorPhone = guarantor.phone || guarantor.phone_number || guarantor.guarantorPhone || '-';
+      const guarantorId = guarantor.id_number || guarantor.idNo || guarantor.id_no || guarantor.national_id || '-';
+      const guarantorRelation = guarantor.relationship || guarantor.relation || '-';
+      const officerName = officer?.name || officer?.email || officer?.username || '-';
 
       return `
       <tr>
         <td class="font-semibold">${l.loan_no}</td>
-        <td>
-          <div class="font-semibold">${clientName}</div>
-          <div class="text-xs text-muted">${clientRef}</div>
-        </td>
+        <td class="font-semibold">${clientName}</td>
+        <td>${clientPhone}</td>
+        <td>${clientId}</td>
         <td><span class="badge badge-outline" style="font-size: 0.65rem;">${groupName}</span></td>
-        <td class="text-success font-semibold">KES ${(l.approved_amount || 0).toLocaleString()}</td>
-        <td>${formatDate(l.disbursement_date)}</td>
+        <td class="text-success font-semibold">${(l.approved_amount || 0).toLocaleString()}</td>
         <td>${l.period} Months</td>
-        <td>${l.guarantor?.name || '-'}</td>
+        <td>${guarantor.name || '-'}</td>
+        <td>${guarantorPhone}</td>
+        <td>${guarantorId}</td>
+        <td>${guarantorRelation}</td>
         <td>${formatSecurities(l.collaterals)}</td>
+        <td>${officerName}</td>
       </tr>`;
     }).join('');
     
@@ -598,7 +623,7 @@ export const renderReportsDashboard = async () => {
         </td>
         <td><span class="badge badge-outline" style="font-size: 0.65rem;">${groupName}</span></td>
         <td><div>${m.id_number}</div><div class="text-xs text-muted">${getMemberPhone(m)}</div></td>
-        <td>KES ${(m.registration_fee || 0).toLocaleString()}</td>
+        <td>${(m.registration_fee || 0).toLocaleString()}</td>
         <td>${m.nok_name} (${m.nok_relationship})</td>
         <td><a href="tel:${m.nok_phone}" style="color: var(--primary); text-decoration: none;">${m.nok_phone || '-'}</a></td>
       </tr>`;
@@ -742,7 +767,7 @@ export const renderReportsDashboard = async () => {
           </td>
           <td><span class="badge badge-outline" style="font-size: 0.65rem;">${e.groupName}</span></td>
           <td>${e.ref || '-'}</td>
-          <td class="font-bold text-success">KES ${(e.amount || 0).toLocaleString()}</td>
+          <td class="font-bold text-success">${(e.amount || 0).toLocaleString()}</td>
           <td><span class="text-xs">${e.method}</span></td>
         </tr>`;
     }).join('');
@@ -760,9 +785,12 @@ export const renderReportsDashboard = async () => {
       .map(s => {
         const member = s.expand?.member;
         const group = s.expand?.group || member?.expand?.group;
+        const isGroupAccount = Boolean(s.group && !s.member);
+        const isGroupMember = Boolean(member && group);
         return {
           name: member?.full_name || group?.name || 'Unknown',
           groupName: group?.name || (member ? 'Individual' : '-'),
+          accountScope: isGroupAccount ? 'group_account' : (isGroupMember ? 'group_member' : 'independent'),
           remarks: s.remarks || '-',
           amount: Number(s.amount) || 0,
           date: s.date || s.created
@@ -771,10 +799,14 @@ export const renderReportsDashboard = async () => {
       .sort((a, b) => new Date(b.date) - new Date(a.date));
 
     const filtered = withdrawalRows.filter(row => {
-      if (activeFilters.withdrawals === 'individual') return row.groupName === 'Individual';
-      if (activeFilters.withdrawals === 'group') return row.groupName !== 'Individual';
+      if (activeFilters.withdrawals === 'individual') return row.accountScope === 'independent';
+      if (activeFilters.withdrawals === 'group_members') return row.accountScope === 'group_member';
+      if (activeFilters.withdrawals === 'group') return row.accountScope === 'group_account';
       return true;
     });
+    const totalWithdrawalsAmount = filtered.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+    const totalEl = container.querySelector('#withdrawals-total-amount');
+    if (totalEl) totalEl.textContent = `KES ${totalWithdrawalsAmount.toLocaleString()}`;
 
     const start = (pages.withdrawals - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
@@ -786,7 +818,7 @@ export const renderReportsDashboard = async () => {
           <td class="font-semibold">${row.name}</td>
           <td><span class="badge badge-outline" style="font-size: 0.65rem;">${row.groupName}</span></td>
           <td class="text-sm">${row.remarks}</td>
-          <td class="font-bold text-danger">KES ${row.amount.toLocaleString()}</td>
+          <td class="font-bold text-danger">${row.amount.toLocaleString()}</td>
         </tr>
       `).join('');
 
@@ -955,6 +987,7 @@ export const renderReportsDashboard = async () => {
       filters = [
         { id: 'all', label: 'All Disbursements' },
         { id: 'individual', label: 'To Individuals' },
+        { id: 'group_members', label: 'To Individual in Groups' },
         { id: 'group', label: 'To Groups' }
       ];
     } else if (tab === 'registrations') {
@@ -973,8 +1006,9 @@ export const renderReportsDashboard = async () => {
     } else if (tab === 'withdrawals') {
       filters = [
         { id: 'all', label: 'All Withdrawals' },
-        { id: 'individual', label: 'Individuals' },
-        { id: 'group', label: 'Groups' }
+        { id: 'individual', label: 'Independent Individuals' },
+        { id: 'group_members', label: 'Individuals in Groups' },
+        { id: 'group', label: 'Group Accounts' }
       ];
     }
 
@@ -1087,7 +1121,7 @@ export const renderReportsDashboard = async () => {
       [members, groups, loans, expenses] = await Promise.all([
         memberService.getAll(),
         groupService.getAll(),
-        loanService.getFullListCached({ expand: 'member,group', cacheKey: 'loans:reports:expanded:v1' }),
+        loanService.getFullListCached({ expand: 'member,member.group,group,processed_by', cacheKey: 'loans:reports:expanded:v2' }),
         dataCache.get('expenses', () => expenseService.getFullList())
       ]);
 

@@ -154,11 +154,14 @@ export const renderMemberRegistration = async () => {
   const takePhotoBtn = container.querySelector('#take-photo-btn');
   const preview = container.querySelector('#passport-preview');
   const photoInput = container.querySelector('#passport-data');
+  let passportPhotoFile = null;
 
   takePhotoBtn.onclick = () => {
-    openCamera((dataUrl) => {
+    openCamera((dataUrl, file, meta) => {
       preview.innerHTML = `<img src="${dataUrl}" style="width: 100%; height: 100%; object-fit: cover;" />`;
-      photoInput.value = dataUrl;
+      photoInput.value = '';
+      passportPhotoFile = file || null;
+      if (window.notify && meta?.sizeKb) window.notify.success(`Photo compressed to ${meta.sizeKb} KB.`);
     });
   };
 
@@ -214,6 +217,7 @@ export const renderMemberRegistration = async () => {
       status: 'active',
       registered_by: authService.getUser()?.id || null
     };
+    if (passportPhotoFile) member.passportPhotoFile = passportPhotoFile;
 
     const restoreButton = setButtonLoading(form.querySelector('button[type="submit"]'), 'Registering...');
 

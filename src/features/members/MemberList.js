@@ -61,12 +61,14 @@ export const renderMemberList = async () => {
   const renderRows = (members) => {
     tableBody.innerHTML = members.length === 0 ? `
       <tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">No members found.</td></tr>
-    ` : members.map(m => `
+    ` : members.map(m => {
+      const photoUrl = memberService.getPhotoUrl(m);
+      return `
       <tr>
         <td>
           <div style="display: flex; align-items: center; gap: 12px;">
             <div style="width: 40px; height: 40px; background: var(--bg-light); border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center;">
-              ${m.passportPhoto ? `<img src="${m.passportPhoto}" style="width: 100%; height: 100%; object-fit: cover;" />` : `<span style="font-size: 20px;">👤</span>`}
+              ${photoUrl ? `<img src="${photoUrl}" style="width: 100%; height: 100%; object-fit: cover;" />` : `<span style="font-size: 20px;">👤</span>`}
             </div>
             <div>
               <div class="font-semibold">${m.full_name || m.fullName}</div>
@@ -81,7 +83,8 @@ export const renderMemberList = async () => {
           <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/members/${m.reg_no || m.regNo}'">View Profile</button>
         </td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
 
     paginationWrapper.innerHTML = '';
     const pagination = renderPagination(totalItems, pageSize, currentPage, (newPage) => {

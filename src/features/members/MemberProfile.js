@@ -8,6 +8,7 @@ import { openCamera } from '../../components/Camera.js';
 import { navigate } from '../../core/router.js';
 import { setButtonLoading } from '../../core/uiState.js';
 import { authService } from '../../services/authService.js';
+import { withReturnTo } from '../../core/navigation.js';
 
 export const renderMemberProfile = async (params) => {
   const { id } = params;
@@ -30,12 +31,14 @@ export const renderMemberProfile = async (params) => {
 
   const legacyRegNo = member.reg_no || member.regNo;
   const canRecordSavings = authService.hasRole('super_admin', 'admin', 'cashier');
+  const canManageRecords = authService.hasRole('super_admin', 'admin');
   const memberDob = member.dob || member.date_of_birth || member.dateOfBirth || member.birth_date || '';
   const memberChildrenCount = member.childrenCount ?? member.children_count ?? member.children ?? member.no_of_children ?? 0;
   const memberMaritalStatus = member.maritalStatus || member.marital_status || 'Single';
   const memberPhone = member.phone_number || member.phone || '';
   const memberGroupId = member.group || '';
-  const canAssignGroup = authService.hasRole('super_admin', 'admin', 'manager', 'group_officer');
+  const memberPhotoUrl = memberService.getPhotoUrl(member);
+  const canAssignGroup = canManageRecords;
 
   // Fetch live data from PocketBase
   let memberLoans = [], memberSavings = [], allGroups = [];
@@ -69,6 +72,7 @@ export const renderMemberProfile = async (params) => {
 
   let loanPage = 1, savingsPage = 1;
   const pageSize = 10;
+  const memberProfileRoute = `#/members/${legacyRegNo}`;
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -77,10 +81,9 @@ export const renderMemberProfile = async (params) => {
         <h1 class="text-xl">Member Profile</h1>
       </div>
       <div style="display: flex; gap: 12px;">
-        <button class="btn btn-outline btn-sm" id="edit-profile-btn">Edit Profile</button>
+        ${canManageRecords ? `<button class="btn btn-outline btn-sm" id="edit-profile-btn">Edit Profile</button>` : ''}
         ${canAssignGroup ? `<button class="btn btn-outline btn-sm" id="assign-group-btn">${currentGroupName ? 'Change Group' : '+ Add to Group'}</button>` : ''}
-        ${canRecordSavings ? `<button class="btn btn-primary btn-sm" onclick="window.location.hash = '#/savings/new?memberId=${legacyRegNo}'">+ Save</button>` : ''}
-        <button class="btn btn-secondary btn-sm" onclick="window.location.hash = '#/loans/new?memberId=${legacyRegNo}'">+ Apply for Loan</button>
+        <button class="btn btn-primary btn-sm" id="member-context-action-btn" style="display: none;">+</button>
       </div>
     </div>
 
@@ -120,10 +123,10 @@ export const renderMemberProfile = async (params) => {
               <h4 class="text-sm text-muted" style="margin-bottom: 12px; border-bottom: 1px solid var(--bg-light);">Photos & Next of Kin</h4>
               <div class="form-group" style="text-align: center;">
                 <div id="edit-photo-preview" style="width: 100px; height: 100px; border-radius: 50%; border: 2px solid var(--border-color); margin: 0 auto 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--bg-light);">
-                  ${member.passportPhoto ? `<img src="${member.passportPhoto}" style="width: 100%; height: 100%; object-fit: cover;" />` : '<span>👤</span>'}
+                  ${memberPhotoUrl ? `<img src="${memberPhotoUrl}" style="width: 100%; height: 100%; object-fit: cover;" />` : '<span>👤</span>'}
                 </div>
                 <button type="button" id="edit-photo-btn" class="btn btn-outline btn-xs">Change Photo</button>
-                <input type="hidden" name="passportPhoto" id="edit-photo-data" value="${member.passportPhoto || ''}" />
+                <input type="hidden" name="passportPhoto" id="edit-photo-data" value="" />
               </div>
               <div class="form-group"><label class="form-label">Next of Kin Name</label><input type="text" name="nok_name" class="form-control" value="${member.nok_name || ''}" required /></div>
               <div class="form-group"><label class="form-label">Next of Kin Phone</label><input type="tel" name="nok_phone" class="form-control" value="${member.nok_phone || ''}" required /></div>
@@ -158,6 +161,15 @@ export const renderMemberProfile = async (params) => {
               <div class="detail-value">${escapeHtml(currentGroupName || 'Not assigned')}</div>
             </div>
           </div>
+          ${currentGroupName ? `
+            <div style="margin-bottom: 18px; padding: 14px 16px; border-radius: 8px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.24); display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+              <div>
+                <div class="font-semibold" style="font-size: 0.9rem;">Change to Individual</div>
+                <div class="text-xs text-muted" style="margin-top: 2px;">Remove this member from ${escapeHtml(currentGroupName)} and keep them as an individual client.</div>
+              </div>
+              <button type="button" class="btn btn-outline btn-sm" id="make-individual-btn">Make Individual</button>
+            </div>
+          ` : ''}
           <div class="form-group">
             <label class="form-label">Search Group</label>
             <input type="search" id="assign-group-search" class="form-control" placeholder="Type group name, ID, location, or chairperson" autocomplete="off" />
@@ -167,7 +179,7 @@ export const renderMemberProfile = async (params) => {
           </div>
           <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border-color);">
             <button type="button" class="btn btn-outline" id="cancel-assign-group-btn">Cancel</button>
-            <button type="button" class="btn btn-primary" id="confirm-assign-group-btn" disabled>${currentGroupName ? 'Update Group' : 'Add to Group'}</button>
+            <button type="button" class="btn btn-primary" id="confirm-assign-group-btn" disabled>${currentGroupName ? 'Update Member' : 'Add to Group'}</button>
           </div>
         </div>
       </div>
@@ -204,7 +216,7 @@ export const renderMemberProfile = async (params) => {
       <div>
         <div class="card text-center" style="margin-bottom: 24px;">
           <div style="width: 120px; height: 120px; background: var(--bg-light); border-radius: 50%; margin: 0 auto 16px; overflow: hidden; display: flex; align-items: center; justify-content: center; border: 4px solid white; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-            ${member.passportPhoto ? `<img src="${member.passportPhoto}" style="width: 100%; height: 100%; object-fit: cover;" />` : `<span style="font-size: 48px;">👤</span>`}
+            ${memberPhotoUrl ? `<img src="${memberPhotoUrl}" style="width: 100%; height: 100%; object-fit: cover;" />` : `<span style="font-size: 48px;">👤</span>`}
           </div>
           <h2 style="font-size: 1.25rem;">${member.full_name}</h2>
           <p class="text-muted text-sm">${member.reg_no}</p>
@@ -341,17 +353,22 @@ export const renderMemberProfile = async (params) => {
       </div>
       <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px;">
         <button type="button" class="btn btn-outline" id="view-open-loan-btn">Open Full Loan</button>
-        <button type="button" class="btn btn-outline" id="view-edit-loan-btn">Edit</button>
+        ${canManageRecords ? `<button type="button" class="btn btn-outline" id="view-edit-loan-btn">Edit</button>` : ''}
         <button type="button" class="btn btn-primary" id="view-close-loan-btn">Done</button>
       </div>
     `;
     loanModalBody.querySelector('#view-open-loan-btn').onclick = () => { window.location.hash = `#/loans/${loan.loan_no}`; };
-    loanModalBody.querySelector('#view-edit-loan-btn').onclick = () => openLoanEdit(loan);
+    const editLoanBtn = loanModalBody.querySelector('#view-edit-loan-btn');
+    if (editLoanBtn) editLoanBtn.onclick = () => openLoanEdit(loan);
     loanModalBody.querySelector('#view-close-loan-btn').onclick = () => toggleLoanModal(false);
     toggleLoanModal(true);
   };
 
   const openLoanEdit = (loan) => {
+    if (!canManageRecords) {
+      if (window.notify) window.notify.error('Only admins can edit loan records.');
+      return;
+    }
     loanModalTitle.textContent = 'Edit Loan Record';
     loanModalSubtitle.textContent = 'Quick edits update the saved PocketBase loan record.';
     loanModalBody.innerHTML = `
@@ -405,6 +422,10 @@ export const renderMemberProfile = async (params) => {
   };
 
   const deleteLoan = async (loan) => {
+    if (!canManageRecords) {
+      if (window.notify) window.notify.error('Only admins can delete loan records.');
+      return;
+    }
     const confirmed = window.confirmDialog ? await window.confirmDialog({
       title: 'Delete Loan Record',
       message: `This will permanently delete loan ${loan.loan_no}. If repayments or schedules exist, PocketBase may block the deletion to protect financial history.`,
@@ -430,15 +451,17 @@ export const renderMemberProfile = async (params) => {
     tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="7" class="text-center text-muted">No loan history found.</td></tr>' : paginated.map(l => `
       <tr>
         <td><strong>${l.loan_no}</strong></td>
-        <td>KES ${(l.amount_applied || 0).toLocaleString()}</td>
+        <td>${(l.amount_applied || 0).toLocaleString()}</td>
         <td><span class="badge ${l.status === 'disbursed' || l.status === 'completed' ? 'badge-success' : (l.status === 'approved' || l.status === 'partial_approved') ? 'badge-primary' : l.status === 'pending' ? 'badge-warning' : 'badge-danger'}" style="${l.status === 'approved' || l.status === 'partial_approved' ? 'background:#0d9488;color:white;' : ''}">${l.status.toUpperCase()}</span></td>
         <td>${formatDate(l.application_date)}</td>
         <td class="text-xs text-muted">${escapeHtml(formatSecurities(l.collaterals))}</td>
         <td class="text-xs text-muted">${escapeHtml(getLoanRemarks(l) || '-')}</td>
         <td style="white-space: nowrap;">
           <button type="button" class="icon-action-btn loan-action" data-action="view" data-id="${l.id}" title="View loan" aria-label="View loan">⊙</button>
-          <button type="button" class="icon-action-btn loan-action" data-action="edit" data-id="${l.id}" title="Edit loan" aria-label="Edit loan">✎</button>
-          <button type="button" class="icon-action-btn danger loan-action" data-action="delete" data-id="${l.id}" title="Delete loan" aria-label="Delete loan">×</button>
+          ${canManageRecords ? `
+            <button type="button" class="icon-action-btn loan-action" data-action="edit" data-id="${l.id}" title="Edit loan" aria-label="Edit loan">✎</button>
+            <button type="button" class="icon-action-btn danger loan-action" data-action="delete" data-id="${l.id}" title="Delete loan" aria-label="Delete loan">×</button>
+          ` : ''}
         </td>
       </tr>`).join('');
     const pag = container.querySelector('#member-loans-pagination');
@@ -492,16 +515,21 @@ export const renderMemberProfile = async (params) => {
         <div class="detail-value">${escapeHtml(saving.remarks || 'No remarks added.')}</div>
       </div>
       <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px;">
-        <button type="button" class="btn btn-outline" id="view-edit-saving-btn" data-id="${saving.id}">Edit</button>
+        ${canManageRecords ? `<button type="button" class="btn btn-outline" id="view-edit-saving-btn" data-id="${saving.id}">Edit</button>` : ''}
         <button type="button" class="btn btn-primary" id="view-close-saving-btn">Done</button>
       </div>
     `;
     savingsModalBody.querySelector('#view-close-saving-btn').onclick = () => toggleSavingsModal(false);
-    savingsModalBody.querySelector('#view-edit-saving-btn').onclick = () => openSavingsEdit(saving);
+    const editSavingBtn = savingsModalBody.querySelector('#view-edit-saving-btn');
+    if (editSavingBtn) editSavingBtn.onclick = () => openSavingsEdit(saving);
     toggleSavingsModal(true);
   };
 
   const openSavingsEdit = (saving) => {
+    if (!canManageRecords) {
+      if (window.notify) window.notify.error('Only admins can edit savings transactions.');
+      return;
+    }
     const method = saving.payment_method || (saving.type === 'withdrawal' ? 'cash' : 'mpesa');
     const isCash = method === 'cash';
     savingsModalTitle.textContent = 'Edit Savings Transaction';
@@ -599,6 +627,10 @@ export const renderMemberProfile = async (params) => {
   };
 
   const deleteSaving = async (saving) => {
+    if (!canManageRecords) {
+      if (window.notify) window.notify.error('Only admins can delete savings transactions.');
+      return;
+    }
     const confirmed = window.confirmDialog ? await window.confirmDialog({
       title: 'Delete Savings Transaction',
       message: `This will permanently delete the ${saving.type} of KES ${(Number(saving.amount) || 0).toLocaleString()} from ${formatDate(saving.date)}. This affects the member balance and cannot be undone.`,
@@ -630,8 +662,10 @@ export const renderMemberProfile = async (params) => {
         <td class="text-xs text-muted">${escapeHtml(s.remarks || '-')}</td>
         <td style="white-space: nowrap;">
           <button type="button" class="icon-action-btn savings-action" data-action="view" data-id="${s.id}" title="View transaction" aria-label="View transaction">⊙</button>
-          <button type="button" class="icon-action-btn savings-action" data-action="edit" data-id="${s.id}" title="Edit transaction" aria-label="Edit transaction">✎</button>
-          <button type="button" class="icon-action-btn danger savings-action" data-action="delete" data-id="${s.id}" title="Delete transaction" aria-label="Delete transaction">×</button>
+          ${canManageRecords ? `
+            <button type="button" class="icon-action-btn savings-action" data-action="edit" data-id="${s.id}" title="Edit transaction" aria-label="Edit transaction">✎</button>
+            <button type="button" class="icon-action-btn danger savings-action" data-action="delete" data-id="${s.id}" title="Delete transaction" aria-label="Delete transaction">×</button>
+          ` : ''}
         </td>
       </tr>`).join('');
     const pag = container.querySelector('#member-savings-pagination');
@@ -692,6 +726,8 @@ export const renderMemberProfile = async (params) => {
   const assignGroupResults = container.querySelector('#assign-group-results');
   const selectedGroupSummary = container.querySelector('#selected-group-summary');
   const confirmAssignGroupBtn = container.querySelector('#confirm-assign-group-btn');
+  const makeIndividualBtn = container.querySelector('#make-individual-btn');
+  const INDIVIDUAL_GROUP_VALUE = '__individual__';
   const normalizeSearch = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
   const groupSearchText = (groupRecord) => normalizeSearch([
     groupRecord.name,
@@ -757,10 +793,19 @@ export const renderMemberProfile = async (params) => {
     `).join('');
   };
   const selectGroupForMember = (groupId) => {
+    if (groupId === INDIVIDUAL_GROUP_VALUE) {
+      assignGroupIdInput.value = INDIVIDUAL_GROUP_VALUE;
+      confirmAssignGroupBtn.disabled = false;
+      confirmAssignGroupBtn.textContent = 'Confirm Individual';
+      selectedGroupSummary.textContent = `${member.full_name || 'This member'} will be removed from ${currentGroupName || 'the current group'} and changed to an individual client.`;
+      renderAssignGroupResults();
+      return;
+    }
     const groupRecord = allGroups.find(g => g.id === groupId);
     assignGroupIdInput.value = groupRecord?.id || '';
     const isCurrentGroup = Boolean(groupRecord && groupRecord.id === memberGroupId);
     confirmAssignGroupBtn.disabled = !groupRecord || isCurrentGroup;
+    confirmAssignGroupBtn.textContent = currentGroupName ? 'Update Member' : 'Add to Group';
     selectedGroupSummary.textContent = groupRecord
       ? (isCurrentGroup
         ? `${member.full_name || 'This member'} is already assigned to ${groupRecord.name}.`
@@ -799,6 +844,12 @@ export const renderMemberProfile = async (params) => {
       selectGroupForMember('');
       renderAssignGroupResults();
     };
+    if (makeIndividualBtn) {
+      makeIndividualBtn.onclick = () => {
+        assignGroupSearch.value = '';
+        selectGroupForMember(INDIVIDUAL_GROUP_VALUE);
+      };
+    }
     assignGroupResults.onclick = (e) => {
       const option = e.target.closest('.group-picker-option');
       if (!option) return;
@@ -807,17 +858,21 @@ export const renderMemberProfile = async (params) => {
     confirmAssignGroupBtn.onclick = async () => {
       const targetGroupId = assignGroupIdInput.value;
       if (!targetGroupId) {
-        if (window.notify) window.notify.error('Select a group before updating the member.');
+        if (window.notify) window.notify.error('Select a group or choose Make Individual before updating the member.');
         return;
       }
-      const restoreButton = setButtonLoading(confirmAssignGroupBtn, currentGroupName ? 'Updating...' : 'Adding...');
+      const isMakingIndividual = targetGroupId === INDIVIDUAL_GROUP_VALUE;
+      const restoreButton = setButtonLoading(confirmAssignGroupBtn, isMakingIndividual ? 'Updating...' : (currentGroupName ? 'Updating...' : 'Adding...'));
       try {
-        await memberService.update(member.id, { group: targetGroupId });
-        await Promise.all([
-          updateGroupMemberCount(targetGroupId),
-          updateGroupMemberCount(memberGroupId)
-        ]);
-        if (window.notify) window.notify.success(currentGroupName ? 'Member group updated.' : 'Member added to group.');
+        await memberService.update(member.id, { group: isMakingIndividual ? null : targetGroupId });
+        const countUpdates = [updateGroupMemberCount(memberGroupId)];
+        if (!isMakingIndividual) countUpdates.push(updateGroupMemberCount(targetGroupId));
+        await Promise.all(countUpdates);
+        if (window.notify) {
+          window.notify.success(isMakingIndividual
+            ? 'Member changed to individual.'
+            : (currentGroupName ? 'Member group updated.' : 'Member added to group.'));
+        }
         assignGroupModal.style.display = 'none';
         restoreButton();
         navigate(`#/members/${legacyRegNo}?refresh=${Date.now()}`);
@@ -832,28 +887,59 @@ export const renderMemberProfile = async (params) => {
   // Tab switching
   const tabs = container.querySelectorAll('.tab-btn');
   const contents = { overview: container.querySelector('#overview-tab'), loans: container.querySelector('#loans-tab'), savings: container.querySelector('#savings-tab') };
+  const contextActionBtn = container.querySelector('#member-context-action-btn');
+  let activeProfileTab = 'overview';
+  const contextActions = {
+    loans: {
+      label: '+ Apply for Loan',
+      route: withReturnTo(`#/loans/new?memberId=${legacyRegNo}`, memberProfileRoute),
+      visible: true
+    },
+    savings: {
+      label: '+ Record Savings',
+      route: withReturnTo(`#/savings/new?memberId=${legacyRegNo}`, memberProfileRoute),
+      visible: canRecordSavings
+    }
+  };
+  const updateContextAction = () => {
+    const action = contextActions[activeProfileTab];
+    if (!contextActionBtn || !action || !action.visible) {
+      if (contextActionBtn) contextActionBtn.style.display = 'none';
+      return;
+    }
+    contextActionBtn.textContent = action.label;
+    contextActionBtn.style.display = 'inline-flex';
+    contextActionBtn.onclick = () => { window.location.hash = action.route; };
+  };
   tabs.forEach(tab => {
     tab.onclick = () => {
       tabs.forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
       Object.values(contents).forEach(c => c.style.display = 'none');
       contents[tab.dataset.tab].style.display = 'block';
+      activeProfileTab = tab.dataset.tab;
+      updateContextAction();
     };
   });
+  updateContextAction();
 
   // Edit Profile Modal
   const modal = container.querySelector('#edit-profile-modal');
   const editForm = container.querySelector('#edit-member-form');
   const toggleModal = (show) => { modal.style.display = show ? 'flex' : 'none'; };
 
-  container.querySelector('#edit-profile-btn').onclick = () => { toggleModal(true); initDateMask(container.querySelector('#edit-dob-input')); };
+  const editProfileBtn = container.querySelector('#edit-profile-btn');
+  if (editProfileBtn) editProfileBtn.onclick = () => { toggleModal(true); initDateMask(container.querySelector('#edit-dob-input')); };
   container.querySelector('#close-modal-btn').onclick = () => toggleModal(false);
   container.querySelector('#cancel-modal-btn').onclick = () => toggleModal(false);
 
+  let passportPhotoFile = null;
   container.querySelector('#edit-photo-btn').onclick = () => {
-    openCamera((dataUrl) => {
+    openCamera((dataUrl, file, meta) => {
       container.querySelector('#edit-photo-preview').innerHTML = `<img src="${dataUrl}" style="width: 100%; height: 100%; object-fit: cover;" />`;
-      container.querySelector('#edit-photo-data').value = dataUrl;
+      container.querySelector('#edit-photo-data').value = '';
+      passportPhotoFile = file || null;
+      if (window.notify && meta?.sizeKb) window.notify.success(`Photo compressed to ${meta.sizeKb} KB.`);
     });
   };
 
@@ -878,11 +964,11 @@ export const renderMemberProfile = async (params) => {
       children_count: childrenCount,
       address: updatedData.address || '',
       status: updatedData.status || member.status || 'active',
-      passportPhoto: updatedData.passportPhoto || member.passportPhoto || '',
       nok_name: updatedData.nok_name || '',
       nok_phone: updatedData.nok_phone || '',
       nok_relationship: updatedData.nok_relationship || ''
     };
+    if (passportPhotoFile) updatedMember.passportPhotoFile = passportPhotoFile;
     const restoreButton = setButtonLoading(editForm.querySelector('button[type="submit"]'), 'Saving...');
     try {
       const savedMember = await memberService.update(member.id, updatedMember);

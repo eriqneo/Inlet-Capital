@@ -4,9 +4,9 @@ import { groupService } from '../../services/groupService.js';
 import { authService } from '../../services/authService.js';
 import { settingsService } from '../../services/settingsService.js';
 import { generateLoanNo } from '../../core/numberGen.js';
-import { navigate } from '../../core/router.js';
 import { openCamera } from '../../components/Camera.js';
 import { setButtonLoading } from '../../core/uiState.js';
+import { getReturnTo, navigateToReturn } from '../../core/navigation.js';
 import Fuse from 'fuse.js';
 
 export const renderLoanApplicationForm = async (params = {}) => {
@@ -15,14 +15,18 @@ export const renderLoanApplicationForm = async (params = {}) => {
   
   const settings = { interestRate: 20, processingFeeRate: 8 };
   const canEditInterestRate = authService.hasRole('super_admin', 'admin');
+  const returnTo = getReturnTo(params, '#/loans');
   let members = [];
   let groups = [];
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
-      <div>
-        <h1 class="text-xl">New Loan Application</h1>
-        <p class="text-muted">Apply for a loan for an individual or a group.</p>
+      <div style="display: flex; align-items: center; gap: 16px;">
+        <button class="btn btn-outline btn-sm" id="loan-return-btn">← Back</button>
+        <div>
+          <h1 class="text-xl">New Loan Application</h1>
+          <p class="text-muted">Apply for a loan for an individual or a group.</p>
+        </div>
       </div>
       <div class="badge badge-primary" style="font-size: 1rem; padding: 8px 16px;">
         Loan No: ${loanNo}
@@ -183,7 +187,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
       </div>
 
       <div style="margin-top: 32px; display: flex; justify-content: flex-end; gap: 16px;">
-        <button type="button" class="btn btn-outline" onclick="window.location.hash = '#/loans'">Cancel</button>
+        <button type="button" class="btn btn-outline" id="loan-cancel-btn">Cancel</button>
         <button type="submit" class="btn btn-primary btn-lg">Submit Application</button>
       </div>
     </form>
@@ -197,6 +201,9 @@ export const renderLoanApplicationForm = async (params = {}) => {
       .loan-picker-empty { padding: 18px; text-align: center; color: var(--text-muted); font-size: 0.875rem; }
     </style>
   `;
+
+  container.querySelector('#loan-return-btn').onclick = () => { window.location.hash = returnTo; };
+  container.querySelector('#loan-cancel-btn').onclick = () => { window.location.hash = returnTo; };
 
   // Logic: Show/Hide Applicant Selectors & Auto-fill
   const applicantTypeSelect = container.querySelector('#applicant-type');
@@ -508,9 +515,11 @@ export const renderLoanApplicationForm = async (params = {}) => {
   const collateralList = container.querySelector('#collateral-list');
   const addCollateralBtn = container.querySelector('#add-collateral-btn');
   let collateralCount = 0;
+  const collateralPhotoMeta = {};
 
   const addCollateralRow = () => {
     collateralCount++;
+    const collateralIndex = collateralCount;
     const id = `collateral-${collateralCount}`;
     const row = document.createElement('div');
     row.className = 'card';
@@ -537,10 +546,15 @@ export const renderLoanApplicationForm = async (params = {}) => {
     collateralList.appendChild(row);
 
     row.querySelector(`#capture-${id}`).onclick = () => {
-      openCamera((dataUrl) => {
+      openCamera((dataUrl, _file, meta) => {
         row.querySelector(`#preview-${id}`).style.display = 'block';
         row.querySelector(`#preview-${id}`).innerHTML = `<img src="${dataUrl}" style="height: 100%; border-radius: 4px;" />`;
         row.querySelector(`#data-${id}`).value = dataUrl;
+        collateralPhotoMeta[collateralIndex] = {
+          sizeKb: meta?.sizeKb || 0,
+          mimeType: _file?.type || 'image/webp'
+        };
+        if (window.notify && meta?.sizeKb) window.notify.success(`Security image compressed to ${meta.sizeKb} KB.`);
       });
     };
   };
@@ -552,11 +566,17 @@ export const renderLoanApplicationForm = async (params = {}) => {
   const takeGPhotoBtn = container.querySelector('#take-guarantor-photo');
   const gPreview = container.querySelector('#guarantor-preview');
   const gPhotoInput = container.querySelector('#guarantor-photo-data');
+  let guarantorPhotoMeta = null;
 
   takeGPhotoBtn.onclick = () => {
-    openCamera((dataUrl) => {
+    openCamera((dataUrl, _file, meta) => {
       gPreview.innerHTML = `<img src="${dataUrl}" style="width: 100%; height: 100%; object-fit: cover;" />`;
       gPhotoInput.value = dataUrl;
+      guarantorPhotoMeta = {
+        sizeKb: meta?.sizeKb || 0,
+        mimeType: _file?.type || 'image/webp'
+      };
+      if (window.notify && meta?.sizeKb) window.notify.success(`Guarantor photo compressed to ${meta.sizeKb} KB.`);
     });
   };
 
@@ -575,7 +595,9 @@ export const renderLoanApplicationForm = async (params = {}) => {
         collaterals.push({
           item: rawData[`collateral_item_${i}`],
           value: parseFloat(rawData[`collateral_value_${i}`]),
-          photo: rawData[`collateral_photo_${i}`]
+          photo: rawData[`collateral_photo_${i}`],
+          photo_size_kb: collateralPhotoMeta[i]?.sizeKb || null,
+          photo_mime_type: collateralPhotoMeta[i]?.mimeType || null
         });
       }
     }
@@ -606,7 +628,9 @@ export const renderLoanApplicationForm = async (params = {}) => {
         name: rawData.guarantorName,
         phone: rawData.guarantorPhone,
         relationship: rawData.guarantorRelationship,
-        photo: rawData.guarantorPhoto || null
+        photo: rawData.guarantorPhoto || null,
+        photo_size_kb: guarantorPhotoMeta?.sizeKb || null,
+        photo_mime_type: guarantorPhotoMeta?.mimeType || null
       },
       collaterals: collaterals
     };
@@ -631,7 +655,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
     try {
       await loanService.apply(loan);
       if (window.notify) window.notify.success('Loan application submitted successfully!');
-      navigate('#/loans');
+      navigateToReturn(params, '#/loans');
     } catch (err) {
       if (window.notify) window.notify.error('Error submitting loan: ' + (err.message || 'Validation Failed'));
       console.error(err);

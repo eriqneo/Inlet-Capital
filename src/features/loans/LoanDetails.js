@@ -345,7 +345,7 @@ export const renderLoanDetails = async (params) => {
         <td>${formatDate(r.date)}</td>
         <td><div class="font-semibold">${r.reference || 'N/A'}</div><div class="text-xs text-muted">${r.method.toUpperCase()}</div></td>
         <td class="text-xs text-muted">${r.expand?.recorded_by?.name || 'System'}</td>
-        <td class="text-right font-semibold text-success">KES ${r.amount.toLocaleString()}</td>
+        <td class="text-right font-semibold text-success">${r.amount.toLocaleString()}</td>
       </tr>`).join('');
 
     const pag = container.querySelector('#repayment-history-pagination');
@@ -392,8 +392,8 @@ export const renderLoanDetails = async (params) => {
         </td>
         <td>${formatDate(s.due_date)}</td>
         <td class="text-right">
-          <div class="font-semibold">KES ${amountDue.toLocaleString()}</div>
-          ${hasPenalty && !s.penalty_waived ? `<div class="text-xs" style="color: var(--danger); margin-top: 2px;">+KES ${penaltyAmount} penalty</div>` : ''}
+          <div class="font-semibold">${amountDue.toLocaleString()}</div>
+          ${hasPenalty && !s.penalty_waived ? `<div class="text-xs" style="color: var(--danger); margin-top: 2px;">+${penaltyAmount.toLocaleString()} penalty</div>` : ''}
           ${hasPenalty && s.penalty_waived ? `<div class="text-xs" style="color: var(--success); margin-top: 2px;">Penalty waived</div>` : ''}
         </td>
         <td>

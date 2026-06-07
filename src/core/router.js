@@ -1,6 +1,7 @@
 import { authService } from '../services/authService.js';
 import { destroyAppShell, ensureAppShell } from '../components/Layout.js';
 import { updateSidebarActiveRoute } from '../components/Sidebar.js';
+import { canAccessModule } from './permissions.js';
 // Use Map to guarantee route registration order (prevents :id matching /new or /approve)
 const routes = new Map();
 let rootElement = null;
@@ -12,8 +13,8 @@ export const initRouter = (rootId) => {
   handleRoute();
 };
 
-export const addRoute = (path, renderFn, { protect = true, roles = [] } = {}) => {
-  routes.set(path, { renderFn, protect, roles });
+export const addRoute = (path, renderFn, { protect = true, roles = [], module = '' } = {}) => {
+  routes.set(path, { renderFn, protect, roles, module });
 };
 
 export const navigate = (path) => {
@@ -76,8 +77,27 @@ const handleRoute = async () => {
 
   if (route.protect) {
     const user = authService.getUser();
+    if (authService.isInactiveExpired()) {
+      authService.logout({ reason: 'inactivity' });
+      return;
+    }
     if (!user || !authService.isAuthenticated()) {
       navigate('#/login');
+      return;
+    }
+    if (user.force_password_change && hash !== '#/change-password') {
+      navigate('#/change-password');
+      return;
+    }
+    if (route.module && !canAccessModule(user, route.module)) {
+      const pageTarget = await ensureAppShell(rootElement);
+      updateSidebarActiveRoute(fullHash);
+      pageTarget.innerHTML = `
+        <div class="card" style="max-width: 520px; margin: 60px auto; text-align: center;">
+          <h2 style="color: var(--danger);">Access Not Assigned</h2>
+          <p class="text-muted">This module has not been assigned to your account. Contact your administrator if you need access.</p>
+          <button class="btn btn-primary" style="margin-top: 16px;" onclick="window.location.hash='#/'">Back to Dashboard</button>
+        </div>`;
       return;
     }
     if (route.roles && route.roles.length > 0 && !route.roles.includes(user.role)) {

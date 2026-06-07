@@ -3,7 +3,7 @@ import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 import { dataCache, debounce } from '../../services/dataCache.js';
 import { pb } from '../../services/api.js';
-import { showDelayedLoading } from '../../core/uiState.js';
+import { setButtonLoading, showDelayedLoading } from '../../core/uiState.js';
 
 export const renderExpenseList = async () => {
   const container = document.createElement('div');
@@ -19,7 +19,10 @@ export const renderExpenseList = async () => {
         <h1 class="text-xl">Expenses Tracking</h1>
         <p class="text-muted">Overview of institutional spending.</p>
       </div>
-      <button class="btn btn-primary" onclick="window.location.hash = '#/expenses/new'">+ Record Expense</button>
+      <div style="display: flex; gap: 12px; align-items: center;">
+        <button class="btn btn-outline" id="export-expenses-excel-btn" style="border-color: #10b981; color: #10b981;">📥 Export Excel</button>
+        <button class="btn btn-primary" onclick="window.location.hash = '#/expenses/new'">+ Record Expense</button>
+      </div>
     </div>
 
     <div class="card" style="padding: 0; overflow: hidden;">
@@ -44,6 +47,57 @@ export const renderExpenseList = async () => {
 
   const tableBody = container.querySelector('#expense-table-body');
   const paginationWrapper = container.querySelector('#pagination-wrapper');
+  const exportBtn = container.querySelector('#export-expenses-excel-btn');
+
+  const sanitizeCell = (value) => String(value ?? '-')
+    .replace(/\t/g, ' ')
+    .replace(/\r?\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const exportExpensesToExcel = async () => {
+    const restoreButton = setButtonLoading(exportBtn, 'Exporting...');
+    try {
+      const [allExpenses, allVoteheads] = await Promise.all([
+        expenseService.getFullList(),
+        voteheads.length > 0 ? Promise.resolve(voteheads) : expenseService.getVoteheads()
+      ]);
+      const voteheadMap = Object.fromEntries((allVoteheads || []).map(v => [v.id, v.name]));
+      const generatedAt = new Date();
+      let tsv = `Inlet Capital\nExpenses Report\nGenerated ${generatedAt.toLocaleString()}\n\n`;
+      tsv += ['Date', 'Votehead', 'Description', 'Amount', 'Recorded By'].join('\t') + '\n';
+
+      allExpenses.forEach(expense => {
+        const row = [
+          formatDate(expense.date),
+          expense.expand?.votehead?.name || voteheadMap[expense.votehead] || 'Unknown',
+          expense.description || '-',
+          Number(expense.amount || 0).toLocaleString(),
+          expense.expand?.recorded_by?.name || expense.expand?.recorded_by?.email || '-'
+        ].map(sanitizeCell);
+        tsv += row.join('\t') + '\n';
+      });
+
+      const blob = new Blob([tsv], { type: 'application/vnd.ms-excel' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `inlet_expenses_${generatedAt.toISOString().split('T')[0]}.xls`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      if (window.notify) window.notify.success(`Exported ${allExpenses.length} expenses to Excel.`);
+    } catch (err) {
+      console.error('Failed to export expenses', err);
+      if (window.notify) window.notify.error('Failed to export expenses: ' + (err.message || 'Unknown error'));
+    } finally {
+      restoreButton();
+    }
+  };
+
+  exportBtn.onclick = exportExpensesToExcel;
 
   const updateUI = async () => {
     const thisRequest = ++requestId;

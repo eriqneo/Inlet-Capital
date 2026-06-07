@@ -5,6 +5,7 @@ import { pb } from '../../services/api.js';
 import { openCamera } from '../../components/Camera.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { setButtonLoading } from '../../core/uiState.js';
+import { MODULES, getDefaultModulesForRole } from '../../core/permissions.js';
 
 export const renderAdminSettings = async () => {
   const container = document.createElement('div');
@@ -13,6 +14,7 @@ export const renderAdminSettings = async () => {
   let settings = {};
   let timestamps = {};
   let users = [];
+  let userLastLoginMap = {};
   let voteheads = [];
   let auditLogs = [];
   let showArchivedVoteheads = false;
@@ -29,6 +31,7 @@ export const renderAdminSettings = async () => {
 
   const isSuperAdmin = authService.hasRole('super_admin');
   const canManageUsers = isSuperAdmin;
+  const userAssignableModules = MODULES.filter(module => module.id !== 'dashboard');
 
   const loadSettingsData = async () => {
     isSettingsLoading = true;
@@ -50,11 +53,23 @@ export const renderAdminSettings = async () => {
     isUsersLoading = true;
     renderUI();
     try {
-      users = await pb.collection('users').getFullList({ sort: '-created' });
+      const [userRecords, loginActivity] = await Promise.all([
+        pb.collection('users').getFullList({ sort: '-created' }),
+        pb.collection('user_login_activity').getFullList({ sort: '-login_at' }).catch(err => {
+          console.warn('[AdminSettings] Login activity unavailable:', err);
+          return [];
+        })
+      ]);
+      users = userRecords;
+      userLastLoginMap = loginActivity.reduce((map, activity) => {
+        if (activity.user && !map[activity.user]) map[activity.user] = activity.login_at || activity.created;
+        return map;
+      }, {});
       usersLoadError = '';
     } catch (err) {
       console.error("Failed to load users", err);
       users = [];
+      userLastLoginMap = {};
       usersLoadError = err.status === 403
         ? 'Your account can open Settings, but PocketBase does not currently allow this role to list system users.'
         : `Failed to load users: ${err.message || 'Unknown error'}`;
@@ -129,6 +144,10 @@ export const renderAdminSettings = async () => {
 
     // Filter voteheads
     const visibleVoteheads = showArchivedVoteheads ? voteheads : voteheads.filter(v => v.status !== 'archived');
+    const formatLastLogin = (user) => {
+      const timestamp = userLastLoginMap[user.id] || user.last_login || user.lastLogin || '';
+      return timestamp ? new Date(timestamp).toLocaleString() : 'Never';
+    };
 
     container.innerHTML = `
       <div style="margin-bottom: 24px;">
@@ -252,7 +271,7 @@ export const renderAdminSettings = async () => {
                           ${(u.status || 'active').toUpperCase()}
                         </span>
                       </td>
-                      <td class="text-xs text-muted">${u.last_login ? new Date(u.last_login).toLocaleString() : 'Never'}</td>
+                      <td class="text-xs text-muted">${formatLastLogin(u)}</td>
                       <td>
                         <div style="display: flex; gap: 8px;">
                           ${canManageUsers ? `
@@ -298,6 +317,21 @@ export const renderAdminSettings = async () => {
                       <option value="group_officer">Group Officer</option>
                       <option value="auditor">Auditor</option>
                     </select>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px;">
+                    <label class="form-label" style="margin: 0;">Modules</label>
+                    <button type="button" class="btn btn-outline btn-xs" id="use-role-default-modules">Use Role Defaults</button>
+                  </div>
+                  <div class="text-xs text-muted" style="margin-bottom: 10px;">Dashboard is always available. Select the extra modules this user should access.</div>
+                  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px;">
+                    ${userAssignableModules.map(module => `
+                      <label style="display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-light); cursor: pointer;">
+                        <input type="checkbox" name="module_permissions" value="${module.id}" />
+                        <span class="text-sm">${module.label}</span>
+                      </label>
+                    `).join('')}
                   </div>
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
@@ -588,6 +622,17 @@ export const renderAdminSettings = async () => {
     // User Modal Logic
     const userModal = container.querySelector('#user-modal');
     const userForm = container.querySelector('#user-form');
+    const roleInput = container.querySelector('[name="role"]');
+    const moduleInputs = Array.from(container.querySelectorAll('[name="module_permissions"]'));
+    const applyModuleSelection = (moduleIds = []) => {
+      const selected = new Set((moduleIds || []).filter(id => id !== 'dashboard'));
+      moduleInputs.forEach(input => {
+        input.checked = selected.has(input.value);
+      });
+    };
+    const applyRoleDefaults = () => {
+      applyModuleSelection(getDefaultModulesForRole(roleInput.value));
+    };
     
     const addUserBtn = container.querySelector('#add-user-btn');
     if (addUserBtn) {
@@ -599,11 +644,17 @@ export const renderAdminSettings = async () => {
         container.querySelector('#pwd-input').required = true;
         container.querySelector('#pwd-confirm').required = true;
         container.querySelector('#pwd-label').textContent = 'Password';
+        applyRoleDefaults();
         userModal.style.display = 'flex';
       };
     }
 
     container.querySelector('#close-user-modal').onclick = () => userModal.style.display = 'none';
+    container.querySelector('#use-role-default-modules').onclick = applyRoleDefaults;
+    roleInput.onchange = () => {
+      const editId = container.querySelector('#user-edit-id').value;
+      if (!editId) applyRoleDefaults();
+    };
 
     container.querySelectorAll('.edit-user-btn').forEach(btn => {
       btn.onclick = () => {
@@ -616,6 +667,9 @@ export const renderAdminSettings = async () => {
         container.querySelector('[name="email"]').value = user.email || '';
         container.querySelector('[name="email"]').readOnly = true;
         container.querySelector('[name="role"]').value = user.role || 'user';
+        applyModuleSelection(Array.isArray(user.module_permissions)
+          ? user.module_permissions
+          : getDefaultModulesForRole(user.role));
         
         container.querySelector('#pwd-input').required = false;
         container.querySelector('#pwd-confirm').required = false;
@@ -629,6 +683,9 @@ export const renderAdminSettings = async () => {
       const formData = new FormData(userForm);
       const data = Object.fromEntries(formData.entries());
       const editId = container.querySelector('#user-edit-id').value;
+      data.module_permissions = moduleInputs
+        .filter(input => input.checked)
+        .map(input => input.value);
 
       if (data.password || data.passwordConfirm) {
         if (data.password !== data.passwordConfirm) {
@@ -644,10 +701,17 @@ export const renderAdminSettings = async () => {
 
       try {
         if (editId) {
+          if (data.password) {
+            data.force_password_change = true;
+          }
           await authService.updateUser(editId, data);
+          if (editId === pb.authStore.model?.id) {
+            await authService.refreshSession();
+          }
           await logAudit('user_updated', `User ${data.email} updated`);
           if (window.notify) window.notify.success('User updated!');
         } else {
+          data.force_password_change = true;
           await pb.collection('users').create(data);
           await logAudit('user_created', `User ${data.email} created with role ${data.role}`);
           if (window.notify) window.notify.success('User created!');

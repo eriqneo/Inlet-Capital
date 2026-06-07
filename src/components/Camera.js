@@ -1,3 +1,5 @@
+import { compressImageSource } from '../core/imageUtils.js';
+
 export const openCamera = (onCapture) => {
   const modal = document.createElement('div');
   modal.style.cssText = `
@@ -54,7 +56,7 @@ export const openCamera = (onCapture) => {
     }
   });
 
-  captureBtn.onclick = () => {
+  captureBtn.onclick = async () => {
     if (!stream) {
       if (window.notify) notify.error('Camera not available. Please use the Upload File option instead.');
       return;
@@ -62,27 +64,35 @@ export const openCamera = (onCapture) => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext('2d').drawImage(video, 0, 0);
-    const dataUrl = canvas.toDataURL('image/jpeg');
+    const rawDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    const compressed = await compressImageSource(rawDataUrl, {
+      maxWidth: 640,
+      maxHeight: 640,
+      quality: 0.72,
+      filename: 'capture.webp'
+    });
     
     // Stop stream
     stream.getTracks().forEach(track => track.stop());
     document.body.removeChild(modal);
     
-    onCapture(dataUrl);
+    onCapture(compressed.dataUrl, compressed.file, compressed);
   };
 
   uploadBtn.onclick = () => fileUpload.click();
 
-  fileUpload.onchange = (e) => {
+  fileUpload.onchange = async (e) => {
     const file = e.target.files[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (stream) stream.getTracks().forEach(track => track.stop());
-        document.body.removeChild(modal);
-        onCapture(event.target.result);
-      };
-      reader.readAsDataURL(file);
+      const compressed = await compressImageSource(file, {
+        maxWidth: 640,
+        maxHeight: 640,
+        quality: 0.72,
+        filename: file.name || 'upload.webp'
+      });
+      if (stream) stream.getTracks().forEach(track => track.stop());
+      document.body.removeChild(modal);
+      onCapture(compressed.dataUrl, compressed.file, compressed);
     }
   };
 

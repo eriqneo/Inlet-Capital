@@ -2,6 +2,7 @@ import { authService } from '../services/authService.js';
 import { navigate } from '../core/router.js';
 import { pb } from '../services/api.js';
 import { settingsService } from '../services/settingsService.js';
+import { canAccessModule } from '../core/permissions.js';
 
 const PENDING_LOANS_CACHE_KEY = 'inlet_pending_loans_count';
 const PENDING_LOANS_TTL = 2 * 60 * 1000;
@@ -19,10 +20,23 @@ const roleLinks = {
   '#/settings':   ['super_admin', 'admin'],
 };
 
-const canView = (path, role) => {
+const pathModules = {
+  '#/': 'dashboard',
+  '#/analytics': 'analytics',
+  '#/members': 'members',
+  '#/groups': 'groups',
+  '#/loans': 'loans',
+  '#/savings': 'savings',
+  '#/expenses': 'expenses',
+  '#/reports': 'reports',
+  '#/settings': 'settings'
+};
+
+const canView = (path, user) => {
   const allowed = roleLinks[path];
   if (!allowed) return false;
-  return allowed.includes('*') || allowed.includes(role);
+  const roleAllowed = allowed.includes('*') || allowed.includes(user?.role);
+  return roleAllowed && canAccessModule(user, pathModules[path]);
 };
 
 export const updateSidebarActiveRoute = (currentHash = window.location.hash || '#/') => {
@@ -118,20 +132,20 @@ export const renderSidebar = async () => {
       </button>
     </div>
     <ul class="nav-links">
-      ${canView('#/', session?.role) ? `<li><a href="#/" class="nav-item active" data-nav-path="#/" data-tooltip="Dashboard"><span class="nav-icon">📊</span> <span class="nav-label">Dashboard</span></a></li>` : ''}
-      ${canView('#/analytics', session?.role) ? `<li><a href="#/analytics" class="nav-item" data-nav-path="#/analytics" data-tooltip="Analytics"><span class="nav-icon">📈</span> <span class="nav-label">Analytics</span></a></li>` : ''}
-      ${canView('#/members', session?.role) ? `<li><a href="#/members" class="nav-item" data-nav-path="#/members" data-tooltip="Members"><span class="nav-icon">👥</span> <span class="nav-label">Members</span></a></li>` : ''}
-      ${canView('#/groups', session?.role) ? `<li><a href="#/groups" class="nav-item" data-nav-path="#/groups" data-tooltip="Groups"><span class="nav-icon">🏘️</span> <span class="nav-label">Groups</span></a></li>` : ''}
-      ${canView('#/loans', session?.role) ? `<li>
+      ${canView('#/', session) ? `<li><a href="#/" class="nav-item active" data-nav-path="#/" data-tooltip="Dashboard"><span class="nav-icon">📊</span> <span class="nav-label">Dashboard</span></a></li>` : ''}
+      ${canView('#/analytics', session) ? `<li><a href="#/analytics" class="nav-item" data-nav-path="#/analytics" data-tooltip="Analytics"><span class="nav-icon">📈</span> <span class="nav-label">Analytics</span></a></li>` : ''}
+      ${canView('#/members', session) ? `<li><a href="#/members" class="nav-item" data-nav-path="#/members" data-tooltip="Members"><span class="nav-icon">👥</span> <span class="nav-label">Members</span></a></li>` : ''}
+      ${canView('#/groups', session) ? `<li><a href="#/groups" class="nav-item" data-nav-path="#/groups" data-tooltip="Groups"><span class="nav-icon">🏘️</span> <span class="nav-label">Groups</span></a></li>` : ''}
+      ${canView('#/loans', session) ? `<li>
         <a href="#/loans" class="nav-item" data-nav-path="#/loans" data-tooltip="Loans">
           <span class="nav-icon">💰</span> <span class="nav-label">Loans</span>
           ${pendingCount > 0 ? `<span class="badge-counter">${pendingCount}</span>` : ''}
         </a>
       </li>` : ''}
-      ${canView('#/savings', session?.role) ? `<li><a href="#/savings" class="nav-item" data-nav-path="#/savings" data-tooltip="Savings"><span class="nav-icon">🏦</span> <span class="nav-label">Savings</span></a></li>` : ''}
-      ${canView('#/expenses', session?.role) ? `<li><a href="#/expenses" class="nav-item" data-nav-path="#/expenses" data-tooltip="Expenses"><span class="nav-icon">📉</span> <span class="nav-label">Expenses</span></a></li>` : ''}
-      ${canView('#/reports', session?.role) ? `<li><a href="#/reports" class="nav-item" data-nav-path="#/reports" data-tooltip="Reports"><span class="nav-icon">📑</span> <span class="nav-label">Reports</span></a></li>` : ''}
-      ${canView('#/settings', session?.role) ? `<li><a href="#/settings" class="nav-item" data-nav-path="#/settings" data-tooltip="Settings"><span class="nav-icon">⚙️</span> <span class="nav-label">Settings</span></a></li>` : ''}
+      ${canView('#/savings', session) ? `<li><a href="#/savings" class="nav-item" data-nav-path="#/savings" data-tooltip="Savings"><span class="nav-icon">🏦</span> <span class="nav-label">Savings</span></a></li>` : ''}
+      ${canView('#/expenses', session) ? `<li><a href="#/expenses" class="nav-item" data-nav-path="#/expenses" data-tooltip="Expenses"><span class="nav-icon">📉</span> <span class="nav-label">Expenses</span></a></li>` : ''}
+      ${canView('#/reports', session) ? `<li><a href="#/reports" class="nav-item" data-nav-path="#/reports" data-tooltip="Reports"><span class="nav-icon">📑</span> <span class="nav-label">Reports</span></a></li>` : ''}
+      ${canView('#/settings', session) ? `<li><a href="#/settings" class="nav-item" data-nav-path="#/settings" data-tooltip="Settings"><span class="nav-icon">⚙️</span> <span class="nav-label">Settings</span></a></li>` : ''}
     </ul>
 
     <div class="sidebar-footer">

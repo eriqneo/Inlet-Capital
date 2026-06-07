@@ -23,7 +23,7 @@ export const renderLoanApprovalQueue = async () => {
 
   let allLoans;
   try {
-    allLoans = await pb.collection('loans').getFullList({ filter: QUEUE_FILTER, expand: 'member,group' });
+    allLoans = await pb.collection('loans').getFullList({ filter: QUEUE_FILTER, expand: 'member,member.group,group' });
   } catch (err) {
     console.error('[LoanApprovalQueue] Failed to fetch loans:', err);
     container.innerHTML = `
@@ -58,7 +58,7 @@ export const renderLoanApprovalQueue = async () => {
   }
 
   // Fetch fresh loans if statuses changed
-  const freshLoans = updatedAny ? await pb.collection('loans').getFullList({ filter: QUEUE_FILTER, expand: 'member,group' }) : allLoans;
+  const freshLoans = updatedAny ? await pb.collection('loans').getFullList({ filter: QUEUE_FILTER, expand: 'member,member.group,group' }) : allLoans;
 
   // Filter queues
   const pendingLoans = freshLoans.filter(l => l.status === 'pending');

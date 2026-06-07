@@ -1,6 +1,30 @@
 import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
 
+const normalizePhone = (value = '') => {
+  let digits = String(value || '').replace(/\D/g, '');
+  if (digits.startsWith('254') && digits.length === 12) digits = `0${digits.slice(3)}`;
+  if (digits.startsWith('1') && digits.length === 10) digits = `0${digits}`;
+  return digits;
+};
+
+const normalizeIdNumber = (value = '') => String(value || '').trim().toLowerCase();
+
+const getPrimaryPhone = (record = {}) => record.phone_number || record.phone || '';
+
+const toMemberPayload = (data = {}) => {
+  if (!data.passportPhotoFile) return data;
+  const formData = new FormData();
+  Object.entries(data).forEach(([key, value]) => {
+    if (key === 'passportPhotoFile') return;
+    if (key === 'passportPhoto') return;
+    if (value === undefined || value === null) return;
+    formData.append(key, value);
+  });
+  formData.append('passport_photo', data.passportPhotoFile, data.passportPhotoFile.name || 'passport-photo.webp');
+  return formData;
+};
+
 export const memberService = {
   async list({ page = 1, perPage = 20, filter = '', sort = '-created' } = {}) {
     return await pb.collection('members').getList(page, perPage, {
@@ -36,15 +60,83 @@ export const memberService = {
   },
 
   async create(data) {
-    const record = await pb.collection('members').create(data);
+    const duplicate = await this.findDuplicatePrincipalIdentifiers(data);
+    if (duplicate) {
+      throw new Error(`${duplicate.field} already belongs to ${duplicate.memberName}. A principal member cannot be registered twice.`);
+    }
+    const record = await pb.collection('members').create(toMemberPayload(data));
     await dataCache.invalidatePrefix('members:');
     return record;
   },
 
   async update(id, data) {
-    const record = await pb.collection('members').update(id, data);
+    const duplicate = await this.findDuplicatePrincipalIdentifiers(data, id);
+    if (duplicate) {
+      throw new Error(`${duplicate.field} already belongs to ${duplicate.memberName}. A principal member cannot be registered twice.`);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'group') && data.group) {
+      await this.validateSingleGroupPrincipalMembership(id);
+    }
+    const record = await pb.collection('members').update(id, toMemberPayload(data));
     await dataCache.invalidatePrefix('members:');
     return record;
+  },
+
+  getPhotoUrl(member = {}) {
+    if (member.passport_photo) return pb.files.getURL(member, member.passport_photo);
+    return member.passportPhoto || '';
+  },
+
+  async validateSingleGroupPrincipalMembership(memberId) {
+    const member = await pb.collection('members').getOne(memberId, {
+      fields: 'id,full_name,reg_no,id_number,phone,phone_number,group'
+    });
+    const targetIdNumber = normalizeIdNumber(member.id_number);
+    const targetPhone = normalizePhone(getPrimaryPhone(member));
+    if (!targetIdNumber && !targetPhone) return true;
+
+    const members = await pb.collection('members').getFullList({
+      fields: 'id,full_name,reg_no,id_number,phone,phone_number,group'
+    });
+
+    const duplicateInGroup = members.find(candidate => {
+      if (candidate.id === memberId || !candidate.group) return false;
+      const sameId = targetIdNumber && normalizeIdNumber(candidate.id_number) === targetIdNumber;
+      const samePhone = targetPhone && normalizePhone(getPrimaryPhone(candidate)) === targetPhone;
+      return sameId || samePhone;
+    });
+
+    if (duplicateInGroup) {
+      throw new Error(`This principal member appears to already be in a group as ${duplicateInGroup.full_name || 'another member'}${duplicateInGroup.reg_no ? ` (${duplicateInGroup.reg_no})` : ''}. One principal member can only belong to one group.`);
+    }
+
+    return true;
+  },
+
+  async findDuplicatePrincipalIdentifiers(data = {}, excludeId = '') {
+    const targetIdNumber = normalizeIdNumber(data.id_number);
+    const targetPhone = normalizePhone(data.phone_number || data.phone);
+    if (!targetIdNumber && !targetPhone) return null;
+
+    const members = await pb.collection('members').getFullList({
+      fields: 'id,full_name,reg_no,id_number,phone,phone_number'
+    });
+
+    const duplicate = members.find(member => {
+      if (excludeId && member.id === excludeId) return false;
+      const sameId = targetIdNumber && normalizeIdNumber(member.id_number) === targetIdNumber;
+      const samePhone = targetPhone && normalizePhone(getPrimaryPhone(member)) === targetPhone;
+      return sameId || samePhone;
+    });
+
+    if (!duplicate) return null;
+
+    const duplicateId = targetIdNumber && normalizeIdNumber(duplicate.id_number) === targetIdNumber;
+    return {
+      field: duplicateId ? 'ID number' : 'Phone number',
+      memberName: `${duplicate.full_name || 'another member'}${duplicate.reg_no ? ` (${duplicate.reg_no})` : ''}`,
+      member: duplicate
+    };
   },
 
   async getSavingsBalance(memberId) {

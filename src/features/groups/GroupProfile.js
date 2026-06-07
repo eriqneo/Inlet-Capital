@@ -8,6 +8,7 @@ import { formatDate } from '../../core/utils.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { pb } from '../../services/api.js';
 import { setButtonLoading } from '../../core/uiState.js';
+import { withReturnTo } from '../../core/navigation.js';
 
 export const renderGroupProfile = async (params) => {
   const { id } = params;
@@ -153,6 +154,8 @@ export const renderGroupProfile = async (params) => {
 
   const allFinancialLoansSorted = groupLoans.sort((a, b) => new Date(b.application_date) - new Date(a.application_date));
   const allFinancialSavingsSorted = groupSavings.sort((a, b) => new Date(b.date) - new Date(a.date));
+  const groupProfileRoute = `#/groups/${id}`;
+  const canManageRecords = authService.hasRole('super_admin', 'admin');
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -161,8 +164,8 @@ export const renderGroupProfile = async (params) => {
         <h1 class="text-xl">${group.name}</h1>
       </div>
       <div style="display: flex; gap: 12px;">
-        <button class="btn btn-outline btn-sm" id="add-member-btn">+ Add Member</button>
-        <button class="btn btn-secondary btn-sm" onclick="window.location.hash = '#/loans/new?groupId=${id}'">Apply for Group Loan</button>
+        ${canManageRecords ? `<button class="btn btn-outline btn-sm" id="add-member-btn">+ Add Member</button>` : ''}
+        <button class="btn btn-secondary btn-sm" onclick="window.location.hash = '${withReturnTo(`#/loans/new?groupId=${id}`, groupProfileRoute)}'">Apply for Group Loan</button>
       </div>
     </div>
 
@@ -407,7 +410,8 @@ export const renderGroupProfile = async (params) => {
     renderMemberSearchResults();
   };
 
-  container.querySelector('#add-member-btn').onclick = () => {
+  const addMemberBtn = container.querySelector('#add-member-btn');
+  if (addMemberBtn) addMemberBtn.onclick = () => {
     resetAddMemberPicker();
     modal.style.display = 'flex';
     setTimeout(() => addMemberSearch.focus(), 0);
@@ -560,9 +564,9 @@ export const renderGroupProfile = async (params) => {
       <tr>
         <td><div class="font-semibold">${m.full_name}</div><div class="text-xs text-muted">${m.reg_no}</div></td>
         <td>${m.phone_number || m.phone || '-'}</td>
-        <td class="font-semibold text-success">KES ${m.totalSavings.toLocaleString()}</td>
-        <td class="font-semibold text-primary">KES ${m.olBalance.toLocaleString()}</td>
-        <td class="font-semibold text-danger">KES ${m.totalArrears.toLocaleString()}</td>
+        <td class="font-semibold text-success">${m.totalSavings.toLocaleString()}</td>
+        <td class="font-semibold text-primary">${m.olBalance.toLocaleString()}</td>
+        <td class="font-semibold text-danger">${m.totalArrears.toLocaleString()}</td>
         <td><span class="badge ${m.totalArrears > 0 ? 'badge-warning' : 'badge-outline'}" style="font-size: 0.65rem;">${m.totalArrears > 0 ? 'YES' : 'NO'}</span></td>
         <td><span class="badge ${m.isActive ? 'badge-success' : 'badge-danger'}">${m.isActive ? 'ACTIVE' : 'INACTIVE'}</span></td>
         <td><span class="text-sm ${m.isActive ? 'text-muted' : 'text-danger font-semibold'}">${m.lastSavingsDate ? formatDate(m.lastSavingsDate) : 'Never'}</span></td>
@@ -585,8 +589,7 @@ export const renderGroupProfile = async (params) => {
   }
 
   // Rating logic
-  const user = authService.getUser();
-  const isAdmin = user && user.role === 'admin';
+  const isAdmin = canManageRecords;
   const ratingContainer = container.querySelector('#group-rating-container');
   const ratingLabels = { 1: 'Very Poor', 2: 'Poor', 3: 'Fair', 4: 'Very Good', 5: 'Excellent' };
 
@@ -642,7 +645,7 @@ export const renderGroupProfile = async (params) => {
       <tr>
         <td><strong>${l.loan_no}</strong></td>
         <td><div class="font-semibold">${getOwnerName(l)}</div><div class="text-xs text-muted">${l.member ? 'Member' : 'Group account'}</div></td>
-        <td class="font-semibold text-danger">KES ${calculateLoanBalance(l, allRepayments).toLocaleString()}</td>
+        <td class="font-semibold text-danger">${calculateLoanBalance(l, allRepayments).toLocaleString()}</td>
         <td><span class="badge ${l.status === 'disbursed' ? 'badge-success' : (l.status === 'approved' || l.status === 'partial_approved') ? 'badge-primary' : l.status === 'pending' ? 'badge-warning' : 'badge-danger'}">${l.status.toUpperCase()}</span></td>
         <td>${formatDate(l.application_date)}</td>
         <td class="text-xs text-muted">${getLoanRemarks(l) || '-'}</td>

@@ -4,6 +4,7 @@ import { memberService } from '../../services/memberService.js';
 import { groupService } from '../../services/groupService.js';
 import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
+import { withReturnTo } from '../../core/navigation.js';
 
 export const renderDashboard = async () => {
   const container = document.createElement('div');
@@ -25,6 +26,114 @@ export const renderDashboard = async () => {
       console.warn(`[Dashboard] ${label} failed:`, err);
       return fallback;
     }
+  };
+
+  const maybeShowWelcomeTour = () => {
+    if (localStorage.getItem('inlet_show_welcome_tour') !== 'true') return;
+    localStorage.removeItem('inlet_show_welcome_tour');
+
+    const stepDefs = [
+      {
+        target: 'h1',
+        title: 'Dashboard',
+        body: 'This is your daily command center: alerts, portfolio health, recent activity, and quick actions.'
+      },
+      {
+        target: '[data-nav-path="#/members"]',
+        title: 'Members',
+        body: 'Use this area to find clients, open profiles, and work with their savings or loan history.'
+      },
+      {
+        target: '[data-nav-path="#/loans"]',
+        title: 'Loans',
+        body: 'This is where loan applications, approvals, disbursements, and repayments are managed.'
+      },
+      {
+        target: '[data-nav-path="#/savings"]',
+        title: 'Savings',
+        body: 'Record member or group deposits and withdrawals here, based on your assigned role.'
+      },
+      {
+        target: '[data-nav-path="#/reports"]',
+        title: 'Reports',
+        body: 'Use reports for audits, disbursement analysis, cashflow, collections, and export-ready tables.'
+      },
+      {
+        target: '[data-nav-path="#/settings"]',
+        title: 'Settings',
+        body: 'Admins manage users, roles, organization details, rates, and audit settings here.'
+      }
+    ];
+
+    const steps = stepDefs
+      .map(step => ({ ...step, element: document.querySelector(step.target) }))
+      .filter(step => step.element);
+    if (steps.length === 0) return;
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position: fixed; inset: 0; z-index: 20000; pointer-events: none;';
+    overlay.innerHTML = `
+      <div id="tour-scrim" style="position: absolute; inset: 0; background: rgba(15, 37, 69, 0.42); pointer-events: auto;"></div>
+      <div id="tour-highlight" style="position: absolute; border: 2px solid var(--secondary); border-radius: 10px; box-shadow: 0 0 0 9999px rgba(15, 37, 69, 0.42), 0 12px 30px rgba(0,0,0,0.18); transition: all 0.2s ease;"></div>
+      <div id="tour-card" class="card" style="position: absolute; width: min(360px, calc(100vw - 32px)); pointer-events: auto; padding: 18px; box-shadow: 0 18px 48px rgba(15, 37, 69, 0.28);">
+        <div class="text-xs text-muted" id="tour-count" style="margin-bottom: 6px;"></div>
+        <h3 id="tour-title" style="margin-bottom: 8px;"></h3>
+        <p id="tour-body" class="text-sm text-muted" style="line-height: 1.6; margin-bottom: 16px;"></p>
+        <div style="display: flex; justify-content: space-between; gap: 10px;">
+          <button type="button" class="btn btn-outline btn-sm" id="tour-skip-btn">Skip</button>
+          <button type="button" class="btn btn-primary btn-sm" id="tour-next-btn">Next</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const highlight = overlay.querySelector('#tour-highlight');
+    const card = overlay.querySelector('#tour-card');
+    const title = overlay.querySelector('#tour-title');
+    const body = overlay.querySelector('#tour-body');
+    const count = overlay.querySelector('#tour-count');
+    const nextBtn = overlay.querySelector('#tour-next-btn');
+    const skipBtn = overlay.querySelector('#tour-skip-btn');
+    let index = 0;
+
+    const closeTour = () => {
+      window.removeEventListener('resize', renderStep);
+      overlay.remove();
+    };
+
+    function renderStep() {
+      const step = steps[index];
+      const rect = step.element.getBoundingClientRect();
+      const pad = 8;
+      highlight.style.left = `${Math.max(8, rect.left - pad)}px`;
+      highlight.style.top = `${Math.max(8, rect.top - pad)}px`;
+      highlight.style.width = `${Math.min(window.innerWidth - 16, rect.width + pad * 2)}px`;
+      highlight.style.height = `${rect.height + pad * 2}px`;
+      title.textContent = step.title;
+      body.textContent = step.body;
+      count.textContent = `Step ${index + 1} of ${steps.length}`;
+      nextBtn.textContent = index === steps.length - 1 ? 'Finish' : 'Next';
+
+      const cardTop = rect.bottom + 16 + card.offsetHeight < window.innerHeight
+        ? rect.bottom + 16
+        : Math.max(16, rect.top - card.offsetHeight - 16);
+      const cardLeft = Math.min(window.innerWidth - card.offsetWidth - 16, Math.max(16, rect.left));
+      card.style.top = `${cardTop}px`;
+      card.style.left = `${cardLeft}px`;
+    }
+
+    nextBtn.onclick = () => {
+      if (index >= steps.length - 1) {
+        closeTour();
+        return;
+      }
+      index += 1;
+      renderStep();
+    };
+    skipBtn.onclick = closeTour;
+    overlay.querySelector('#tour-scrim').onclick = closeTour;
+    window.addEventListener('resize', renderStep);
+    setTimeout(renderStep, 50);
   };
   
   const refresh = async () => {
@@ -173,8 +282,8 @@ export const renderDashboard = async () => {
     <!-- Quick Actions -->
     <div style="display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 32px;">
       <button class="btn btn-primary" onclick="window.location.hash = '#/members/new'">+ Register Member</button>
-      <button class="btn btn-secondary" onclick="window.location.hash = '#/loans/new'">Apply for Loan</button>
-      <button class="btn btn-outline" onclick="window.location.hash = '#/savings/new'">Record Savings</button>
+      <button class="btn btn-secondary" onclick="window.location.hash = '${withReturnTo('#/loans/new', '#/')}';">Apply for Loan</button>
+      <button class="btn btn-outline" onclick="window.location.hash = '${withReturnTo('#/savings/new', '#/')}';">Record Savings</button>
     </div>
     
     <div class="card">
@@ -210,6 +319,7 @@ export const renderDashboard = async () => {
       </div>
     </div>
   `;
+      setTimeout(maybeShowWelcomeTour, 80);
     } catch (err) {
       console.error('[Dashboard] Refresh failed:', err);
       container.innerHTML = `
