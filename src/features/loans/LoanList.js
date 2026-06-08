@@ -40,7 +40,7 @@ export const renderLoanList = async () => {
       <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; gap: 16px; flex-wrap: wrap;">
         <input type="text" id="loan-search" class="form-control" placeholder="Search by Loan No..." style="max-width: 400px;" />
         <select id="loan-status-filter" class="form-control" style="max-width: 240px;">
-          <option value="active" selected>Active / Awaiting Loans</option>
+          <option value="active" selected>Running Loans</option>
           <option value="pending">Pending Approval</option>
           <option value="awaiting">Awaiting Disbursement</option>
           <option value="disbursed">Disbursed</option>
@@ -148,13 +148,15 @@ export const renderLoanList = async () => {
           const member = l.expand?.member;
           const loanGroup = l.expand?.group;
           const memberGroup = member?.expand?.group;
-          const tableBankingGroup = loanGroup || memberGroup;
-          const isTableBankingApplicant = Boolean(tableBankingGroup);
+          const isGroupAccountLoan = Boolean(loanGroup && !member);
           const clientName = member ? member.full_name : (loanGroup ? loanGroup.name : 'Unknown');
           const clientReg = member ? member.reg_no : (loanGroup ? loanGroup.group_id : 'Unknown');
-          const applicantBadge = isTableBankingApplicant
+          const applicantBadge = isGroupAccountLoan
             ? `<span class="badge" style="background: var(--surface-dark); color: white; font-size: 0.7rem;">TB</span>`
-            : `<span class="badge badge-primary" style="font-size: 0.7rem;">INDIV</span>`;
+            : (memberGroup ? '' : `<span class="badge badge-primary" style="font-size: 0.7rem;">INDIV</span>`);
+          const groupContext = member && memberGroup
+            ? `<div class="text-xs text-muted" style="margin-top: 4px;">${memberGroup.name || memberGroup.group_id || 'Group member'}</div>`
+            : '';
           
           return `
           <tr>
@@ -165,7 +167,7 @@ export const renderLoanList = async () => {
             <td class="font-semibold">${clientName}</td>
             <td class="text-sm">
               ${applicantBadge} ${clientReg}
-              ${member && tableBankingGroup ? `<div class="text-xs text-muted" style="margin-top: 4px;">${tableBankingGroup.name || tableBankingGroup.group_id || 'Table Banking'}</div>` : ''}
+              ${groupContext}
             </td>
             <td>${l.amount_applied.toLocaleString()}</td>
             <td>${l.total_liability.toLocaleString()}</td>
