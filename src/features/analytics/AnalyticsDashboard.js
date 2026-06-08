@@ -19,10 +19,10 @@ export const renderAnalyticsDashboard = async () => {
       [members, loans, repayments, groups, savings, schedules, users] = await Promise.all([
         memberService.getAll(),
         loanService.getFullListCached({ cacheKey: 'loans:analytics:expanded:v1' }),
-        dataCache.get('loan_repayments', () => pb.collection('loan_repayments').getFullList()),
+        pb.collection('loan_repayments').getFullList(),
         groupService.getAll(),
         savingsService.getFullListCached({ expand: '', cacheKey: 'savings:analytics:basic:v1' }),
-        dataCache.get('loan_schedule', () => pb.collection('loan_schedule').getFullList()),
+        pb.collection('loan_schedule').getFullList(),
         dataCache.get('users:analytics:loan-users:v1', () => pb.collection('users').getFullList({
           filter: 'role="loan_officer" || role="group_officer" || role="manager" || role="admin" || role="super_admin"',
           sort: 'email'
@@ -786,12 +786,26 @@ export const renderAnalyticsDashboard = async () => {
   }, 500);
 
   const pollInterval = setInterval(() => {
-    debouncedRefresh();
-  }, 30000);
+    if (!document.hidden) debouncedRefresh();
+  }, 10000);
 
-  container.__subscriptions = [
-    () => clearInterval(pollInterval)
-  ];
+  container.__subscriptionPromise = Promise.all([
+    pb.collection('loan_repayments').subscribe('*', debouncedRefresh).catch(err => {
+      console.warn('[Analytics] Repayment realtime unavailable, polling will continue:', err.message);
+      return null;
+    }),
+    pb.collection('loan_schedule').subscribe('*', debouncedRefresh).catch(err => {
+      console.warn('[Analytics] Schedule realtime unavailable, polling will continue:', err.message);
+      return null;
+    }),
+    pb.collection('loans').subscribe('*', debouncedRefresh).catch(err => {
+      console.warn('[Analytics] Loan realtime unavailable, polling will continue:', err.message);
+      return null;
+    })
+  ]).then(unsubs => [
+    () => clearInterval(pollInterval),
+    ...unsubs.filter(unsub => typeof unsub === 'function')
+  ]);
 
   return container;
 };

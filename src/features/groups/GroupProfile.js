@@ -682,7 +682,7 @@ export const renderGroupProfile = async (params) => {
         <td><span class="badge ${l.status === 'disbursed' ? 'badge-success' : (l.status === 'approved' || l.status === 'partial_approved') ? 'badge-primary' : l.status === 'pending' ? 'badge-warning' : 'badge-danger'}">${l.status.toUpperCase()}</span></td>
         <td>${formatDate(l.application_date)}</td>
         <td class="text-xs text-muted">${getLoanRemarks(l) || '-'}</td>
-        <td><button class="btn btn-outline btn-xs" onclick="window.location.hash = '#/loans/${l.loan_no}'">View</button></td>
+        <td><button class="btn btn-outline btn-xs" onclick="window.location.hash = '${withReturnTo(`#/loans/${l.loan_no}`, groupProfileRoute)}'">View</button></td>
       </tr>`).join('');
     const pag = container.querySelector('#group-loans-pagination');
     pag.innerHTML = '';

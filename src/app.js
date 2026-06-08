@@ -87,9 +87,9 @@ const initApp = async () => {
     return await renderLoanApplicationForm(params || {});
   }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer'], module: 'loans' });
 
-  addRoute('#/loans/approve', async () => {
+  addRoute('#/loans/approve', async (params) => {
     const { renderLoanApprovalQueue } = await import('./features/loans/LoanApprovalQueue.js');
-    return await renderLoanApprovalQueue();
+    return await renderLoanApprovalQueue(params || {});
   }, { protect: true, roles: ['super_admin', 'admin'], module: 'loans' });
 
   addRoute('#/loans/:id', async (params) => {

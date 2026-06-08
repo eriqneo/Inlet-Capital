@@ -241,13 +241,17 @@ export const loanService = {
 
   async createScheduleInstallment(data) {
     const record = await pb.collection('loan_schedule').create(data);
+    await dataCache.invalidate('loan_schedule');
     await dataCache.invalidatePrefix('loan_schedule:');
+    await dataCache.invalidatePrefix('loan_schedule');
     return record;
   },
 
   async updateScheduleInstallment(id, data) {
     const record = await pb.collection('loan_schedule').update(id, data);
+    await dataCache.invalidate('loan_schedule');
     await dataCache.invalidatePrefix('loan_schedule:');
+    await dataCache.invalidatePrefix('loan_schedule');
     return record;
   },
 
@@ -263,7 +267,9 @@ export const loanService = {
 
   async recordRepayment(data) {
     const record = await pb.collection('loan_repayments').create(data);
+    await dataCache.invalidate('loan_repayments');
     await dataCache.invalidatePrefix('loan_repayments:');
+    await dataCache.invalidatePrefix('loan_repayments');
     await dataCache.invalidatePrefix('loans:');
     return record;
   },

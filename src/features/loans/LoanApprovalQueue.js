@@ -4,17 +4,22 @@ import { navigate } from '../../core/router.js';
 import { formatDate } from '../../core/utils.js';
 import { pb } from '../../services/api.js'; // We'll use pb to get all loans for the queue
 import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
+import { getReturnTo, withReturnTo } from '../../core/navigation.js';
 
 const QUEUE_FILTER = 'status="pending" || status="approved" || status="partial_approved" || status="expired"';
 
-export const renderLoanApprovalQueue = async () => {
+export const renderLoanApprovalQueue = async (params = {}) => {
   const container = document.createElement('div');
+  const returnTo = getReturnTo(params, '#/loans');
 
   // Show loading shell immediately so router never appends an empty element
   container.innerHTML = `
-    <div style="margin-bottom: 24px;">
-      <h1 class="text-xl">Loan Decision Centre</h1>
-      <p class="text-muted">Review pending applications, manage approved disbursement windows, and re-activate expired approvals.</p>
+    <div style="margin-bottom: 24px; display: flex; align-items: center; gap: 16px;">
+      <button class="btn btn-outline btn-sm" onclick="window.location.hash = '${returnTo}'">← Back</button>
+      <div>
+        <h1 class="text-xl">Loan Decision Centre</h1>
+        <p class="text-muted">Review pending applications, manage approved disbursement windows, and re-activate expired approvals.</p>
+      </div>
     </div>
     <div style="display: grid; gap: 16px;">
       ${renderCardSkeleton({ title: 'Checking approval queue from PocketHost...', rows: 4 })}
@@ -28,7 +33,10 @@ export const renderLoanApprovalQueue = async () => {
   } catch (err) {
     console.error('[LoanApprovalQueue] Failed to fetch loans:', err);
     container.innerHTML = `
-      <div style="margin-bottom: 24px;"><h1 class="text-xl">Loan Decision Centre</h1></div>
+      <div style="margin-bottom: 24px; display: flex; align-items: center; gap: 16px;">
+        <button class="btn btn-outline btn-sm" onclick="window.location.hash = '${returnTo}'">← Back</button>
+        <h1 class="text-xl">Loan Decision Centre</h1>
+      </div>
       <div class="card text-center" style="padding: 60px; border-top: 3px solid var(--danger);">
         <p class="text-danger font-semibold">Failed to load approval queue.</p>
         <p class="text-muted text-sm">${err.message || 'Check your connection and try again.'}</p>
@@ -84,9 +92,12 @@ export const renderLoanApprovalQueue = async () => {
   }[char]));
 
   container.innerHTML = `
-    <div style="margin-bottom: 24px;">
-      <h1 class="text-xl">Loan Decision Centre</h1>
-      <p class="text-muted">Review pending applications, manage approved disbursement windows, and re-activate expired approvals.</p>
+    <div style="margin-bottom: 24px; display: flex; align-items: center; gap: 16px;">
+      <button class="btn btn-outline btn-sm" onclick="window.location.hash = '${returnTo}'">← Back</button>
+      <div>
+        <h1 class="text-xl">Loan Decision Centre</h1>
+        <p class="text-muted">Review pending applications, manage approved disbursement windows, and re-activate expired approvals.</p>
+      </div>
     </div>
 
     <!-- Queue Tab Selection Buttons -->
@@ -461,10 +472,10 @@ export const renderLoanApprovalQueue = async () => {
   const refreshQueue = async (tabName) => {
     const parent = container.parentNode;
     if (!parent) {
-      navigate('#/loans/approve');
+      navigate(withReturnTo('#/loans/approve', returnTo));
       return;
     }
-    const newContainer = await renderLoanApprovalQueue();
+    const newContainer = await renderLoanApprovalQueue({ returnTo });
     parent.replaceChild(newContainer, container);
     if (tabName) {
       const tab = newContainer.querySelector(`[data-queue="${tabName}"]`);

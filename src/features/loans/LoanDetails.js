@@ -5,9 +5,11 @@ import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
 import { getScheduleRemaining, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
+import { getReturnTo } from '../../core/navigation.js';
 
 export const renderLoanDetails = async (params) => {
   const { id: loanNo } = params;
+  const returnTo = getReturnTo(params, '#/loans');
   const container = document.createElement('div');
   container.innerHTML = `
     ${renderCardSkeleton({ title: 'Loading loan file from PocketHost...', rows: 5 })}
@@ -24,7 +26,7 @@ export const renderLoanDetails = async (params) => {
   }
 
   if (!loan) {
-    container.innerHTML = `<div class="card text-center"><h2>Loan Not Found</h2><button class="btn btn-primary" onclick="window.location.hash = '#/loans'">Back to List</button></div>`;
+    container.innerHTML = `<div class="card text-center"><h2>Loan Not Found</h2><button class="btn btn-primary" onclick="window.location.hash = '${returnTo}'">Back</button></div>`;
     return;
   }
 
@@ -66,7 +68,7 @@ export const renderLoanDetails = async (params) => {
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
       <div style="display: flex; align-items: center; gap: 16px;">
-        <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/loans'">← Back</button>
+        <button class="btn btn-outline btn-sm" onclick="window.location.hash = '${returnTo}'">← Back</button>
         <div>
           <h1 class="text-xl">Loan Management: ${loan.loan_no}</h1>
           <div class="text-sm text-muted" style="margin-top: 4px;">Client: <span class="font-semibold" style="color: var(--primary);">${clientName}</span></div>
@@ -554,7 +556,13 @@ export const renderLoanDetails = async (params) => {
         }
       }
 
-      window.location.reload();
+      const parent = container.parentNode;
+      if (parent) {
+        const freshContainer = await renderLoanDetails(params);
+        parent.replaceChild(freshContainer, container);
+      } else {
+        window.location.hash = window.location.hash;
+      }
     } catch (err) {
       console.error(err);
       if (window.notify) window.notify.error('Error: ' + err.message);

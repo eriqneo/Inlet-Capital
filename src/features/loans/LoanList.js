@@ -15,7 +15,7 @@ export const renderLoanList = async () => {
   let currentPage = 1;
   const pageSize = 10;
   let searchTerm = '';
-  let statusFilter = 'active';
+  let statusFilter = 'running';
   let requestId = 0;
 
   container.innerHTML = `
@@ -24,11 +24,11 @@ export const renderLoanList = async () => {
         <h1 class="text-xl">Loans Management</h1>
         <p class="text-muted">Track all individual and group loan applications.</p>
       </div>
-        ${canApproveLoans ? `<button class="btn btn-secondary" onclick="window.location.hash = '#/loans/approve'" style="background: #eab308; border-color: #eab308; color: white;">
+        ${canApproveLoans ? `<button class="btn btn-secondary" onclick="window.location.hash = '${withReturnTo('#/loans/approve', '#/loans')}'" style="background: #eab308; border-color: #eab308; color: white;">
           <span class="badge" style="background: white; color: #eab308; margin-right: 8px;">!</span>
           Review Pending
         </button>` : ''}
-        ${canApproveLoans ? `<button class="btn btn-primary" onclick="window.location.hash = '#/loans/approve'" style="background: #0d9488; border-color: #0d9488; color: white;">
+        ${canApproveLoans ? `<button class="btn btn-primary" onclick="window.location.hash = '${withReturnTo('#/loans/approve', '#/loans')}'" style="background: #0d9488; border-color: #0d9488; color: white;">
           <span class="badge" style="background: white; color: #0d9488; margin-right: 8px;">!</span>
           Disburse Approved
         </button>` : ''}
@@ -40,10 +40,10 @@ export const renderLoanList = async () => {
       <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; gap: 16px; flex-wrap: wrap;">
         <input type="text" id="loan-search" class="form-control" placeholder="Search by Loan No..." style="max-width: 400px;" />
         <select id="loan-status-filter" class="form-control" style="max-width: 240px;">
-          <option value="active" selected>Running Loans</option>
+          <option value="running" selected>Running Loans</option>
           <option value="pending">Pending Approval</option>
           <option value="awaiting">Awaiting Disbursement</option>
-          <option value="disbursed">Disbursed</option>
+          <option value="declined">Declined</option>
           <option value="completed">Completed</option>
           <option value="all">All Loans</option>
         </select>
@@ -121,14 +121,14 @@ export const renderLoanList = async () => {
     try {
       // Build filter
       const filters = [];
-      if (statusFilter === 'active') {
-        filters.push('(status="approved" || status="partial_approved" || status="disbursed")');
+      if (statusFilter === 'running') {
+        filters.push('status="disbursed"');
       } else if (statusFilter === 'pending') {
         filters.push('status="pending"');
       } else if (statusFilter === 'awaiting') {
         filters.push('(status="approved" || status="partial_approved")');
-      } else if (statusFilter === 'disbursed') {
-        filters.push('status="disbursed"');
+      } else if (statusFilter === 'declined') {
+        filters.push('status="rejected"');
       } else if (statusFilter === 'completed') {
         filters.push('status="completed"');
       }
@@ -157,6 +157,11 @@ export const renderLoanList = async () => {
           const groupContext = member && memberGroup
             ? `<div class="text-xs text-muted" style="margin-top: 4px;">${memberGroup.name || memberGroup.group_id || 'Group member'}</div>`
             : '';
+          const statusLabel = l.status === 'disbursed' ? 'RUNNING' :
+            l.status === 'approved' ? 'AWAITING DISBURSEMENT' :
+            l.status === 'partial_approved' ? 'PARTIAL AWAITING DISBURSEMENT' :
+            l.status === 'rejected' ? 'DECLINED' :
+            l.status.toUpperCase();
           
           return `
           <tr>
@@ -196,14 +201,11 @@ export const renderLoanList = async () => {
               }" style="${
                 l.status === 'approved' || l.status === 'partial_approved' ? 'background: #0d9488; color: white;' : ''
               }">
-                ${l.status === 'disbursed' ? 'DISBURSED' :
-                  l.status === 'approved' ? 'APPROVED' :
-                  l.status === 'partial_approved' ? 'PARTIAL APPROVED' :
-                  l.status.toUpperCase()}
+                ${statusLabel}
               </span>
             </td>
             <td>
-              <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/loans/${l.loan_no}'">View</button>
+              <button class="btn btn-outline btn-sm" onclick="window.location.hash = '${withReturnTo(`#/loans/${l.loan_no}`, '#/loans')}'">View</button>
             </td>
           </tr>`;
         }).join('');

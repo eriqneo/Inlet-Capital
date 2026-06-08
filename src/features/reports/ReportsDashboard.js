@@ -10,6 +10,7 @@ import { dataCache } from '../../services/dataCache.js';
 import { renderCardSkeleton, renderInlineSyncStatus, renderTableSkeletonRows, setButtonLoading } from '../../core/uiState.js';
 import { settingsService } from '../../services/settingsService.js';
 import { getArrearsTotal, getDaysInArrears, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
+import { withReturnTo } from '../../core/navigation.js';
 
 export const renderReportsDashboard = async () => {
   const container = document.createElement('div');
@@ -923,7 +924,7 @@ export const renderReportsDashboard = async () => {
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
           <button class="btn btn-outline btn-xs call-reminder-btn" data-loan="${a.loan}" data-member="${a.member?.id}">📞 Mark Called</button>
-          <button class="btn btn-primary btn-xs" onclick="window.location.hash = '#/loans/${a.loanObj?.loan_no}'">👁 View Loan</button>
+          <button class="btn btn-primary btn-xs" onclick="window.location.hash = '${withReturnTo(`#/loans/${a.loanObj?.loan_no}`, '#/reports?tab=alerts')}'">👁 View Loan</button>
         </div>
       </div>
     `).join('') || '<div class="card text-center text-muted" style="grid-column: 1/-1;">No active alerts found.</div>';
@@ -1153,9 +1154,9 @@ export const renderReportsDashboard = async () => {
       updateRegistrations();
 
       [schedules, savings, repayments] = await Promise.all([
-        dataCache.get('loan_schedule', () => pb.collection('loan_schedule').getFullList()),
+        pb.collection('loan_schedule').getFullList(),
         savingsService.getFullListCached({ expand: 'member,member.group,group', cacheKey: 'savings:reports:expanded:v2' }),
-        dataCache.get('loan_repayments_expanded:v2', () => pb.collection('loan_repayments').getFullList({ expand: 'loan,loan.member,loan.group' }))
+        pb.collection('loan_repayments').getFullList({ expand: 'loan,loan.member,loan.group' })
       ]);
 
       updateIndividuals();

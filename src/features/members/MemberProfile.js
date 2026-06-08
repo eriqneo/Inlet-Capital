@@ -357,7 +357,9 @@ export const renderMemberProfile = async (params) => {
         <button type="button" class="btn btn-primary" id="view-close-loan-btn">Done</button>
       </div>
     `;
-    loanModalBody.querySelector('#view-open-loan-btn').onclick = () => { window.location.hash = `#/loans/${loan.loan_no}`; };
+    loanModalBody.querySelector('#view-open-loan-btn').onclick = () => {
+      window.location.hash = withReturnTo(`#/loans/${loan.loan_no}`, memberProfileRoute);
+    };
     const editLoanBtn = loanModalBody.querySelector('#view-edit-loan-btn');
     if (editLoanBtn) editLoanBtn.onclick = () => openLoanEdit(loan);
     loanModalBody.querySelector('#view-close-loan-btn').onclick = () => toggleLoanModal(false);
