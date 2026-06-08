@@ -3,9 +3,11 @@ import './components/Toast.js';
 import './components/Dialog.js';
 import { initRouter, addRoute } from './core/router.js';
 import { authService } from './services/authService.js';
+import { dataCache } from './services/dataCache.js';
 
 const initApp = async () => {
   // System uses PocketBase which initializes data on server-side
+  await dataCache.ensureCurrentEpoch();
 
   // Register Service Worker for PWA (Production Only)
   if ('serviceWorker' in navigator && !import.meta.env.DEV) {

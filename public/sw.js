@@ -1,4 +1,4 @@
-const CACHE_NAME = 'inlet-v8-vite-dynamic';
+const CACHE_NAME = 'inlet-v9-live-reset';
 const STATIC_ASSETS = [
   '/',
   '/index.html',

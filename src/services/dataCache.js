@@ -3,6 +3,8 @@ const DB_VERSION = 1;
 const STORE_NAME = 'collections';
 const TTL = 5 * 60 * 1000; // 5 minutes (data older than this triggers background refresh on access)
 const DEFAULT_LOCAL_FIRST_REFRESH_INTERVAL = 10 * 1000;
+const CACHE_EPOCH_KEY = 'inlet_data_cache_epoch';
+export const DATA_CACHE_EPOCH = 'live-reset-2026-06-08-v1';
 const inFlightRefreshes = new Map();
 
 // Wrap IndexedDB in a Promise API
@@ -64,6 +66,12 @@ const clearDB = async () => {
   });
 };
 
+const clearBrowserCaches = async () => {
+  if (!('caches' in window)) return;
+  const keys = await caches.keys();
+  await Promise.all(keys.map(key => caches.delete(key)));
+};
+
 const getAllKeys = async () => {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -76,6 +84,35 @@ const getAllKeys = async () => {
 };
 
 export const dataCache = {
+  async ensureCurrentEpoch() {
+    try {
+      const storedEpoch = localStorage.getItem(CACHE_EPOCH_KEY);
+      if (storedEpoch === DATA_CACHE_EPOCH) return false;
+      await clearDB();
+      await clearBrowserCaches();
+      inFlightRefreshes.clear();
+      localStorage.setItem(CACHE_EPOCH_KEY, DATA_CACHE_EPOCH);
+      console.info(`[dataCache] Cleared stale local data cache for ${DATA_CACHE_EPOCH}.`);
+      return true;
+    } catch (e) {
+      console.warn('[dataCache] Cache epoch check failed:', e);
+      return false;
+    }
+  },
+
+  async clearLocalAppCache() {
+    try {
+      await clearDB();
+      await clearBrowserCaches();
+      inFlightRefreshes.clear();
+      localStorage.setItem(CACHE_EPOCH_KEY, DATA_CACHE_EPOCH);
+      return true;
+    } catch (e) {
+      console.error('[dataCache] Manual local cache clear failed:', e);
+      throw e;
+    }
+  },
+
   /**
    * Get data from cache, or fetch it if missing/stale.
    * If cached data exists but is stale, returns cached data immediately
@@ -197,6 +234,7 @@ export const dataCache = {
   async invalidateAll() {
     try {
       await clearDB();
+      inFlightRefreshes.clear();
     } catch (e) {
       console.error(`[dataCache] Clear failed`, e);
     }

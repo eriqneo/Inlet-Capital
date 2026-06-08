@@ -6,6 +6,7 @@ import { openCamera } from '../../components/Camera.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { renderCardSkeleton, renderInlineSyncStatus, renderTableSkeletonRows, setButtonLoading } from '../../core/uiState.js';
 import { MODULES, getDefaultModulesForRole } from '../../core/permissions.js';
+import { dataCache, DATA_CACHE_EPOCH } from '../../services/dataCache.js';
 
 export const renderAdminSettings = async () => {
   const container = document.createElement('div');
@@ -170,6 +171,15 @@ export const renderAdminSettings = async () => {
           
           <!-- 1. Organisation Profile -->
           <div id="org-tab" class="tab-section" style="display: ${activeTab === 'org' ? 'block' : 'none'};">
+            <div class="card" style="margin-bottom: 20px; background: var(--bg-light); border: 1px solid var(--border-color);">
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;">
+                <div>
+                  <div class="font-semibold" style="color: var(--primary);">Local Data Cache</div>
+                  <div class="text-xs text-muted" style="margin-top: 4px;">Current cache version: ${DATA_CACHE_EPOCH}</div>
+                </div>
+                <button type="button" class="btn btn-outline btn-sm" id="clear-local-cache-btn">Clear Local Cache</button>
+              </div>
+            </div>
             <form id="org-form">
               ${isSettingsLoading ? `<div class="text-xs text-muted" style="margin-bottom: 16px;">Loading current organisation settings...</div>` : ''}
               <div style="display: grid; grid-template-columns: 200px 1fr; gap: 32px;">
@@ -581,6 +591,29 @@ export const renderAdminSettings = async () => {
         reader.readAsDataURL(file);
       }
     };
+
+    const clearLocalCacheBtn = container.querySelector('#clear-local-cache-btn');
+    if (clearLocalCacheBtn) {
+      clearLocalCacheBtn.onclick = async () => {
+        const confirmed = window.confirmDialog ? await window.confirmDialog({
+          title: 'Clear Local Cache',
+          message: 'This clears cached app data from this browser only. It will not delete server data or users. Continue?',
+          confirmText: 'Clear Cache',
+          cancelText: 'Cancel'
+        }) : confirm('Clear cached app data from this browser?');
+        if (!confirmed) return;
+
+        const restoreButton = setButtonLoading(clearLocalCacheBtn, 'Clearing...');
+        try {
+          await dataCache.clearLocalAppCache();
+          if (window.notify) window.notify.success('Local app cache cleared. Refreshing...');
+          setTimeout(() => window.location.reload(), 400);
+        } catch (err) {
+          if (window.notify) window.notify.error('Failed to clear local cache: ' + (err.message || 'Unknown error'));
+          restoreButton();
+        }
+      };
+    }
 
     // Generic Settings Save
     const handleSettingsSave = async (e, label) => {
