@@ -244,8 +244,10 @@ export const renderAnalyticsDashboard = async () => {
       .filter(s => !s.is_reversed)
       .reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
     
-    const totalRepaid = scopedRepayments.reduce((sum, r) => sum + r.amount, 0);
-    const totalLiabilityOverall = scopedLoans.filter(isGivenLoan).reduce((sum, l) => sum + getLoanLiability(l), 0);
+    const activeLoanIds = new Set(activeLoans.map(loan => loan.id));
+    const activeLoanRepayments = repayments.filter(repayment => activeLoanIds.has(repayment.loan));
+    const totalRepaid = activeLoanRepayments.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+    const totalLiabilityOverall = activeLoans.reduce((sum, l) => sum + getLoanLiability(l), 0);
     const repaymentRate = totalLiabilityOverall > 0 ? ((totalRepaid / totalLiabilityOverall) * 100).toFixed(1) : 0;
     const repaymentRateNumber = Number(repaymentRate) || 0;
     const repaymentHealth = repaymentRateNumber <= 50

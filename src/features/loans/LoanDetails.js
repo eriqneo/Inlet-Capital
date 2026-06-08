@@ -57,9 +57,19 @@ export const renderLoanDetails = async (params) => {
   }[char]));
 
   // Calculate Financials
-  const totalPaid = repayments.reduce((sum, r) => sum + r.amount, 0);
-  const outstandingBalance = Math.max(0, loan.total_liability - totalPaid);
-  const percentRepaid = Math.min(100, (totalPaid / loan.total_liability) * 100);
+  const getLoanLiability = (loanRecord) => {
+    const storedLiability = Number(loanRecord.total_liability) || 0;
+    if (storedLiability > 0) return storedLiability;
+    const principal = Number(loanRecord.approved_amount || loanRecord.amount_applied) || 0;
+    const interest = Number(loanRecord.interest_amount) || 0;
+    return principal + interest;
+  };
+  const totalLiability = getLoanLiability(loan);
+  const totalPaid = repayments.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+  const outstandingBalance = Math.max(0, totalLiability - totalPaid);
+  const percentRepaid = totalLiability > 0
+    ? Math.min(100, (totalPaid / totalLiability) * 100)
+    : (['completed', 'closed'].includes(loan.status) ? 100 : 0);
 
   let historyPage = 1;
   let schedulePage = 1;
@@ -216,11 +226,11 @@ export const renderLoanDetails = async (params) => {
               </div>
               <div style="margin-top: 20px;">
                 <div style="display: flex; justify-content: space-between; font-size: 0.875rem; margin-bottom: 6px;">
-                  <span>Repayment Progress</span>
+                  <span>Current Loan Progress</span>
                   <span class="font-semibold">${percentRepaid.toFixed(1)}%</span>
                 </div>
                 <div style="width: 100%; height: 8px; background: var(--bg-light); border-radius: 4px; overflow: hidden;">
-                  <div style="width: ${percentRepaid}%; height: 100%; background: var(--success); transition: width 0.3s ease;"></div>
+                  <div style="width: ${Math.max(0, Math.min(100, percentRepaid))}%; height: 100%; background: var(--success); transition: width 0.3s ease;"></div>
                 </div>
               </div>
             </div>
@@ -228,7 +238,7 @@ export const renderLoanDetails = async (params) => {
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Total Liability</div>
-                <div class="font-semibold">KES ${loan.total_liability.toLocaleString()}</div>
+                <div class="font-semibold">KES ${totalLiability.toLocaleString()}</div>
               </div>
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Total Repaid</div>
@@ -347,7 +357,7 @@ export const renderLoanDetails = async (params) => {
         <td>${formatDate(r.date)}</td>
         <td><div class="font-semibold">${r.reference || 'N/A'}</div><div class="text-xs text-muted">${r.method.toUpperCase()}</div></td>
         <td class="text-xs text-muted">${r.expand?.recorded_by?.name || 'System'}</td>
-        <td class="text-right font-semibold text-success">${r.amount.toLocaleString()}</td>
+        <td class="text-right font-semibold text-success">${(Number(r.amount) || 0).toLocaleString()}</td>
       </tr>`).join('');
 
     const pag = container.querySelector('#repayment-history-pagination');
@@ -532,7 +542,7 @@ export const renderLoanDetails = async (params) => {
       
       const totalRepaidNow = totalPaid + amount;
 
-      if (totalRepaidNow >= loan.total_liability) {
+      if (totalLiability > 0 && totalRepaidNow >= totalLiability) {
         await loanService.update(loan.id, { status: 'completed' });
         if (window.notify) window.notify.success('Loan fully repaid and closed!');
       } else {
@@ -633,7 +643,7 @@ export const renderLoanDetails = async (params) => {
 
   // --- Helper: Generate Repayment Schedule ---
   async function generateSchedule(loanObj) {
-    const installmentAmount = loanObj.total_liability / loanObj.period;
+    const installmentAmount = getLoanLiability(loanObj) / loanObj.period;
     const startDate = new Date(loanObj.disbursement_date);
     for (let i = 1; i <= loanObj.period; i++) {
       const dueDate = new Date(startDate);

@@ -384,6 +384,13 @@ export const renderReportsDashboard = async () => {
   setReportLoadingRows();
 
   const updateIndividuals = () => {
+    const getLoanLiability = (loan) => {
+      const storedLiability = Number(loan.total_liability) || 0;
+      if (storedLiability > 0) return storedLiability;
+      const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
+      const interest = Number(loan.interest_amount) || 0;
+      return principal + interest;
+    };
     const filtered = members.filter(m => {
       if (activeFilters.individuals === 'all') return true;
       const isGroupMember = !!m.group;
@@ -397,10 +404,16 @@ export const renderReportsDashboard = async () => {
     const tbody = container.querySelector('#individuals-table-body');
     
     tbody.innerHTML = paginated.map(m => {
-      const mLoans = loans.filter(l => (l.member === m.id) && (['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date));
-      const collectibleLoans = mLoans.filter(l => l.status === 'disbursed' || (['approved', 'partial_approved'].includes(l.status) && l.disbursement_date));
-      const totalLiability = mLoans.reduce((sum, l) => sum + (l.total_liability || 0), 0);
-      const totalRepaid = repayments.filter(r => r.expand?.loan?.member === m.id && mLoans.some(ml => ml.id === r.loan)).reduce((sum, r) => sum + r.amount, 0);
+      const allMemberLoans = loans.filter(l => (l.member === m.id) && l.disbursement_date);
+      const runningLoans = allMemberLoans.filter(l => l.status === 'disbursed' || (['approved', 'partial_approved'].includes(l.status) && l.disbursement_date));
+      const completedLoans = allMemberLoans.filter(l => ['completed', 'closed'].includes(l.status));
+      const mLoans = runningLoans.length > 0 ? runningLoans : completedLoans;
+      const collectibleLoans = runningLoans;
+      const totalLiability = mLoans.reduce((sum, l) => sum + getLoanLiability(l), 0);
+      const memberLoanIds = new Set(mLoans.map(loan => loan.id));
+      const totalRepaid = repayments
+        .filter(r => memberLoanIds.has(r.loan))
+        .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
       const olBalance = Math.max(0, totalLiability - totalRepaid);
       const percentRepaid = totalLiability > 0 ? ((totalRepaid / totalLiability) * 100).toFixed(1) : (mLoans.length > 0 ? 100 : 0);
       const overdueSchedules = schedules.filter(s => collectibleLoans.some(ml => ml.id === s.loan) && isScheduleInArrears(s));
