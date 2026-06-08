@@ -5,6 +5,7 @@ import { groupService } from '../../services/groupService.js';
 import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
 import { withReturnTo } from '../../core/navigation.js';
+import { getArrearsTotal, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
 
 export const renderDashboard = async () => {
   const container = document.createElement('div');
@@ -139,7 +140,7 @@ export const renderDashboard = async () => {
   const refresh = async () => {
     try {
     let members, groups, loans, savings, schedules;
-    const todayIso = new Date().toISOString();
+    const today = new Date();
     const upcomingThreshold = new Date();
     upcomingThreshold.setDate(upcomingThreshold.getDate() + 7);
 
@@ -164,18 +165,21 @@ export const renderDashboard = async () => {
     const activeMembers = members.filter(m => m.status !== 'inactive').length;
     const activeGroups = groups.length;
     const pendingLoans = loans.filter(l => l.status === 'pending').length;
-    const overdueSchedules = schedules.filter(s => s.status !== 'paid' && new Date(s.due_date) < new Date(todayIso));
-    const alertSchedules = schedules.filter(s => s.status !== 'paid' && new Date(s.due_date) <= upcomingThreshold);
+    const loansById = new Map(loans.map(loan => [loan.id, loan]));
+    const isCollectibleLoan = (loan) => loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
+    const overdueSchedules = schedules.filter(s => isCollectibleLoan(loansById.get(s.loan)) && isScheduleInArrears(s, today));
+    const alertSchedules = schedules.filter(s => !isSchedulePaid(s) && new Date(s.due_date) <= upcomingThreshold);
 
   // calculate savings correctly
   const totalSavings = savings
     .reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
 
-  const totalArrears = overdueSchedules.reduce((sum, s) => sum + s.amount, 0);
+  const totalArrears = getArrearsTotal(overdueSchedules, today);
 
   const totalAlerts = alertSchedules.map(s => {
     const loan = loans.find(l => l.id === s.loan);
-    if (!loan || !['disbursed', 'approved', 'completed', 'closed'].includes(loan.status) || !loan.disbursement_date) return null;
+    if (getScheduleRemaining(s) <= 0) return null;
+    if (!isCollectibleLoan(loan)) return null;
     return true;
   }).filter(Boolean).length;
 

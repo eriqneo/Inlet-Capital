@@ -88,7 +88,7 @@ const initApp = async () => {
   addRoute('#/loans/approve', async () => {
     const { renderLoanApprovalQueue } = await import('./features/loans/LoanApprovalQueue.js');
     return await renderLoanApprovalQueue();
-  }, { protect: true, roles: ['super_admin', 'admin', 'manager'], module: 'loans' });
+  }, { protect: true, roles: ['super_admin', 'admin'], module: 'loans' });
 
   addRoute('#/loans/:id', async (params) => {
     const { renderLoanDetails } = await import('./features/loans/LoanDetails.js');

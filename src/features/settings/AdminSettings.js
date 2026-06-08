@@ -4,7 +4,7 @@ import { authService } from '../../services/authService.js';
 import { pb } from '../../services/api.js';
 import { openCamera } from '../../components/Camera.js';
 import { renderPagination } from '../../components/Pagination.js';
-import { setButtonLoading } from '../../core/uiState.js';
+import { renderCardSkeleton, renderInlineSyncStatus, renderTableSkeletonRows, setButtonLoading } from '../../core/uiState.js';
 import { MODULES, getDefaultModulesForRole } from '../../core/permissions.js';
 
 export const renderAdminSettings = async () => {
@@ -238,12 +238,7 @@ export const renderAdminSettings = async () => {
                 </thead>
                 <tbody>
                   ${isUsersLoading ? `
-                    <tr>
-                      <td colspan="5" class="text-center text-muted" style="padding: 32px;">
-                        <div class="spinner" style="margin: 0 auto 12px;"></div>
-                        Loading users...
-                      </td>
-                    </tr>
+                    ${renderTableSkeletonRows(5, 5)}
                   ` : usersLoadError ? `
                     <tr>
                       <td colspan="5" class="text-center" style="padding: 28px;">
@@ -365,10 +360,7 @@ export const renderAdminSettings = async () => {
             </div>
             <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">
               ${isVoteheadsLoading ? `
-                <div class="card text-center text-muted" style="grid-column: 1/-1;">
-                  <div class="spinner" style="margin: 0 auto 12px;"></div>
-                  Loading voteheads...
-                </div>
+                <div style="grid-column: 1/-1;">${renderCardSkeleton({ title: 'Loading expense categories from PocketHost...', rows: 3 })}</div>
               ` : visibleVoteheads.length === 0 ? '<p class="text-muted">No voteheads found.</p>' : visibleVoteheads.map(v => `
                 <div class="card" style="background: var(--bg-light); border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: flex-start; opacity: ${v.status === 'archived' ? '0.6' : '1'};">
                   <div>
@@ -473,10 +465,10 @@ export const renderAdminSettings = async () => {
             </div>
             <div class="table-responsive card" style="padding: 0;">
               ${isAuditLoading ? `
-                <div class="text-muted text-center" style="padding: 32px;">
-                  <div class="spinner" style="margin: 0 auto 12px;"></div>
-                  Loading audit trail...
-                </div>
+                <div style="padding: 16px;">${renderInlineSyncStatus('Loading audit trail from PocketHost...')}</div>
+                <table class="table" style="font-size: 0.8rem;">
+                  <tbody>${renderTableSkeletonRows(5, 6)}</tbody>
+                </table>
               ` : auditLogs.length === 0 ? `<p class="text-muted text-center" style="padding: 20px;">No audit logs found.</p>` : `
                 <table class="table" style="font-size: 0.8rem;">
                   <thead>

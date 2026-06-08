@@ -884,3 +884,75 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 600;
   box-shadow: 0 0 0 3px rgba(27, 61, 114, 0.1);
 }
+
+/* Quiet loading states for server-backed views */
+.skeleton-card {
+  padding: 24px;
+}
+
+.skeleton-status,
+.inline-sync-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.skeleton-status {
+  margin-bottom: 18px;
+}
+
+.inline-sync-status {
+  padding: 6px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.sync-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--primary);
+  box-shadow: 0 0 0 0 rgba(27, 61, 114, 0.35);
+  animation: syncPulse 1.3s ease-out infinite;
+  flex: 0 0 auto;
+}
+
+.skeleton-line {
+  display: block;
+  height: 12px;
+  width: 72%;
+  max-width: 220px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--bg-light), #eef2f7, var(--bg-light));
+  background-size: 220% 100%;
+  animation: skeletonSweep 1.4s ease-in-out infinite;
+}
+
+.skeleton-line.wide {
+  width: 92%;
+  max-width: 320px;
+}
+
+.skeleton-card .skeleton-line + .skeleton-line {
+  margin-top: 12px;
+}
+
+.skeleton-row td {
+  padding-top: 18px;
+  padding-bottom: 18px;
+}
+
+@keyframes skeletonSweep {
+  0% { background-position: 120% 0; }
+  100% { background-position: -120% 0; }
+}
+
+@keyframes syncPulse {
+  0% { box-shadow: 0 0 0 0 rgba(27, 61, 114, 0.35); }
+  70% { box-shadow: 0 0 0 7px rgba(27, 61, 114, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(27, 61, 114, 0); }
+}

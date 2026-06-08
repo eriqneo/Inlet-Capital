@@ -7,8 +7,9 @@ import { pb } from '../../services/api.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 import { dataCache } from '../../services/dataCache.js';
-import { setButtonLoading } from '../../core/uiState.js';
+import { renderCardSkeleton, renderInlineSyncStatus, renderTableSkeletonRows, setButtonLoading } from '../../core/uiState.js';
 import { settingsService } from '../../services/settingsService.js';
+import { getArrearsTotal, getDaysInArrears, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
 
 export const renderReportsDashboard = async () => {
   const container = document.createElement('div');
@@ -173,13 +174,13 @@ export const renderReportsDashboard = async () => {
                 <th>LOAN NO</th>
                 <th>CLIENT NAME</th>
                 <th>PHONE NO</th>
-                <th>ID NUMBER</th>
                 <th>GROUP</th>
                 <th>DISBURSED</th>
+                <th>DISBURSED DATE</th>
                 <th>PERIOD</th>
+                <th>END DATE</th>
                 <th>GUARANTOR</th>
                 <th>G. PHONE NUMBER</th>
-                <th>G. ID NO</th>
                 <th>RELATION</th>
                 <th>SECURITIES</th>
                 <th>OFFICERS</th>
@@ -349,14 +350,15 @@ export const renderReportsDashboard = async () => {
   const setReportLoadingRows = () => {
     ['individuals', 'groups', 'disbursements', 'registrations', 'cashflow', 'withdrawals'].forEach(tab => {
       const tbody = container.querySelector(`#${tab}-table-body`);
-      if (tbody) tbody.innerHTML = `<tr><td colspan="9" class="text-center text-muted" style="padding: 32px;">Loading report data...</td></tr>`;
+      if (tbody) tbody.innerHTML = renderTableSkeletonRows(tab === 'cashflow' ? 7 : 9, 6);
     });
     container.querySelector('#alerts-container').innerHTML = `
-      <div class="card text-center text-muted" style="grid-column: 1/-1;">
-        <div class="spinner" style="margin: 0 auto 12px;"></div>
-        Loading repayment alerts...
-      </div>
+      <div style="grid-column: 1/-1;">${renderCardSkeleton({ title: 'Loading repayment alerts from PocketHost...', rows: 4 })}</div>
     `;
+    const activeSection = container.querySelector('.report-section[style*="block"]') || container.querySelector('#pl-tab');
+    if (activeSection && !activeSection.querySelector('.inline-sync-status')) {
+      activeSection.insertAdjacentHTML('afterbegin', `<div class="no-print" style="margin-bottom: 12px;">${renderInlineSyncStatus('Syncing report data from PocketHost...')}</div>`);
+    }
   };
 
   const getMemberPhone = (member) => member?.phone_number || member?.phone || member?.mobile || '-';
@@ -395,13 +397,14 @@ export const renderReportsDashboard = async () => {
     
     tbody.innerHTML = paginated.map(m => {
       const mLoans = loans.filter(l => (l.member === m.id) && (['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date));
+      const collectibleLoans = mLoans.filter(l => l.status === 'disbursed' || (['approved', 'partial_approved'].includes(l.status) && l.disbursement_date));
       const totalLiability = mLoans.reduce((sum, l) => sum + (l.total_liability || 0), 0);
       const totalRepaid = repayments.filter(r => r.expand?.loan?.member === m.id && mLoans.some(ml => ml.id === r.loan)).reduce((sum, r) => sum + r.amount, 0);
       const olBalance = Math.max(0, totalLiability - totalRepaid);
       const percentRepaid = totalLiability > 0 ? ((totalRepaid / totalLiability) * 100).toFixed(1) : (mLoans.length > 0 ? 100 : 0);
-      const overdueSchedules = schedules.filter(s => mLoans.some(ml => ml.id === s.loan) && s.status !== 'paid' && new Date(s.due_date) < new Date());
+      const overdueSchedules = schedules.filter(s => collectibleLoans.some(ml => ml.id === s.loan) && isScheduleInArrears(s));
       const onTrack = overdueSchedules.length === 0;
-      const totalArrears = overdueSchedules.reduce((sum, s) => sum + (s.amount || 0), 0);
+      const totalArrears = getArrearsTotal(overdueSchedules);
 
       // Active Logic: Savings in last 90 days
       const mSavings = savings.filter(s => s.member === m.id && !s.is_reversed);
@@ -448,6 +451,7 @@ export const renderReportsDashboard = async () => {
 
   const updateGroups = () => {
     const isOutstandingLoan = (loan) => ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status);
+    const isCollectibleLoan = (loan) => loan.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan.status) && loan.disbursement_date);
     const calculateOutstandingLoanBalance = (groupLoans) => groupLoans
       .filter(isOutstandingLoan)
       .reduce((sum, loan) => {
@@ -477,19 +481,19 @@ export const renderReportsDashboard = async () => {
         
         if (isInactive) inactiveCount++; else activeCount++;
 
-        const mLoans = loans.filter(l => l.member === m.id && isOutstandingLoan(l));
-        const overdueSchedules = schedules.filter(s => mLoans.some(ml => ml.id === s.loan) && s.status !== 'paid' && new Date(s.due_date) < new Date());
+        const mLoans = loans.filter(l => l.member === m.id && isCollectibleLoan(l));
+        const overdueSchedules = schedules.filter(s => mLoans.some(ml => ml.id === s.loan) && isScheduleInArrears(s));
         const hasArrears = overdueSchedules.length > 0;
         if (hasArrears) arrearsCount++;
-        arrearsAmount += overdueSchedules.reduce((sum, s) => sum + (s.amount || 0), 0);
+        arrearsAmount += getArrearsTotal(overdueSchedules);
       });
       
-      const gl = loans.filter(l => l.group === g.id && !l.member && isOutstandingLoan(l));
+      const gl = loans.filter(l => l.group === g.id && !l.member && isCollectibleLoan(l));
       const allGroupRelatedLoans = loans.filter(l => (l.group === g.id && !l.member) || groupMemberIds.has(l.member));
       const gOutstanding = calculateOutstandingLoanBalance(allGroupRelatedLoans);
       arrearsAmount += schedules
-        .filter(s => gl.some(loan => loan.id === s.loan) && s.status !== 'paid' && new Date(s.due_date) < new Date())
-        .reduce((sum, s) => sum + (s.amount || 0), 0);
+        .filter(s => gl.some(loan => loan.id === s.loan) && isScheduleInArrears(s))
+        .reduce((sum, s) => sum + getArrearsTotal([s]), 0);
 
       return { ...g, activeCount, inactiveCount, arrearsCount, arrearsAmount, totalSavings: gTotalSavings, outstandingLoan: Math.max(0, gOutstanding) };
     });
@@ -538,6 +542,23 @@ export const renderReportsDashboard = async () => {
         .filter(Boolean);
       return items.length > 0 ? items.join(', ') : '-';
     };
+    const addMonths = (dateInput, months) => {
+      const date = new Date(dateInput);
+      if (Number.isNaN(date.getTime())) return null;
+      date.setMonth(date.getMonth() + (Number(months) || 0));
+      return date;
+    };
+    const getLoanEndDate = (loan) => {
+      const loanSchedules = schedules.filter(schedule => schedule.loan === loan.id && schedule.due_date);
+      if (loanSchedules.length > 0) {
+        const latestDueDate = loanSchedules
+          .map(schedule => new Date(schedule.due_date))
+          .filter(date => !Number.isNaN(date.getTime()))
+          .sort((a, b) => b - a)[0];
+        if (latestDueDate) return latestDueDate;
+      }
+      return addMonths(loan.disbursement_date, loan.period);
+    };
 
     const allApproved = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date);
     const filtered = allApproved.filter(l => {
@@ -562,25 +583,24 @@ export const renderReportsDashboard = async () => {
       const guarantor = l.guarantor || {};
       const clientName = member?.full_name || group?.name || 'Unknown';
       const clientPhone = member ? getMemberPhone(member) : (group?.phone || group?.phone_number || '-');
-      const clientId = member?.id_number || group?.group_id || '-';
       const groupName = group?.name || 'Individual';
       const guarantorPhone = guarantor.phone || guarantor.phone_number || guarantor.guarantorPhone || '-';
-      const guarantorId = guarantor.id_number || guarantor.idNo || guarantor.id_no || guarantor.national_id || '-';
       const guarantorRelation = guarantor.relationship || guarantor.relation || '-';
       const officerName = officer?.name || officer?.email || officer?.username || '-';
+      const endDate = getLoanEndDate(l);
 
       return `
       <tr>
         <td class="font-semibold">${l.loan_no}</td>
         <td class="font-semibold">${clientName}</td>
         <td>${clientPhone}</td>
-        <td>${clientId}</td>
         <td><span class="badge badge-outline" style="font-size: 0.65rem;">${groupName}</span></td>
         <td class="text-success font-semibold">${(l.approved_amount || 0).toLocaleString()}</td>
+        <td>${formatDate(l.disbursement_date)}</td>
         <td>${l.period} Months</td>
+        <td>${formatDate(endDate)}</td>
         <td>${guarantor.name || '-'}</td>
         <td>${guarantorPhone}</td>
-        <td>${guarantorId}</td>
         <td>${guarantorRelation}</td>
         <td>${formatSecurities(l.collaterals)}</td>
         <td>${officerName}</td>
@@ -835,16 +855,19 @@ export const renderReportsDashboard = async () => {
     upcomingThreshold.setDate(now.getDate() + 7);
 
     // Find all unpaid schedule items that are overdue or upcoming
-    const alertItems = schedules.filter(s => s.status !== 'paid').map(s => {
+    const alertItems = schedules.filter(s => !isSchedulePaid(s)).map(s => {
       const loan = loans.find(l => l.id === s.loan);
-      if (!loan || !['disbursed', 'approved', 'completed', 'closed'].includes(loan.status) || !loan.disbursement_date) return null;
+      const isCollectibleLoan = loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
+      if (!isCollectibleLoan) return null;
+      if (getScheduleRemaining(s) <= 0) return null;
       
       const member = loan.expand?.member;
       const groupName = member?.expand?.group?.name || loan.expand?.group?.name || 'Individual';
 
       const dueDate = new Date(s.due_date);
-      const diffTime = now - dueDate;
-      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      const diffDays = isScheduleInArrears(s, now)
+        ? getDaysInArrears(s, now)
+        : Math.floor((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate())) / (1000 * 60 * 60 * 24));
 
       let priority = '';
       let color = '';
@@ -1137,6 +1160,7 @@ export const renderReportsDashboard = async () => {
 
       updateIndividuals();
       updateGroups();
+      updateDisbursements();
 
       const activeTab = Array.from(tabs).find(t => t.classList.contains('active'))?.dataset.tab;
       if (activeTab === 'cashflow') updateCashFlow();

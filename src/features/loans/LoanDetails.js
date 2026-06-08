@@ -3,16 +3,16 @@ import { authService } from '../../services/authService.js';
 import { settingsService } from '../../services/settingsService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
-import { setButtonLoading } from '../../core/uiState.js';
+import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
+import { getScheduleRemaining, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
 
 export const renderLoanDetails = async (params) => {
   const { id: loanNo } = params;
   const container = document.createElement('div');
   container.innerHTML = `
-    <div class="card text-center" style="padding:60px;">
-      <div class="spinner" style="margin: 0 auto 16px;"></div>
-      <p class="text-muted">Loading loan details...</p>
-    </div>
+    ${renderCardSkeleton({ title: 'Loading loan file from PocketHost...', rows: 5 })}
+    <div style="height: 16px;"></div>
+    ${renderCardSkeleton({ title: 'Preparing repayments and schedule...', rows: 4 })}
   `;
   
   (async () => {
@@ -368,13 +368,12 @@ export const renderLoanDetails = async (params) => {
     const isAdmin = authService.getUser()?.role === 'admin' || true; 
     
     tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No schedule found.</td></tr>' : paginated.map(s => {
-      let isOverdue = false;
       let hasPenalty = false;
-      let amountDue = s.amount;
+      let amountDue = getScheduleRemaining(s);
       const dueTime = new Date(s.due_date).getTime();
+      const isOverdue = isScheduleInArrears(s);
       
-      if (s.status !== 'paid' && dueTime < today) {
-        isOverdue = true;
+      if (isOverdue) {
         if ((today - dueTime) > graceMs) {
           hasPenalty = true;
         }
@@ -385,10 +384,10 @@ export const renderLoanDetails = async (params) => {
       }
 
       return `
-      <tr style="${isOverdue && s.status !== 'paid' ? 'background: rgba(239, 68, 68, 0.02);' : ''}">
+      <tr style="${isOverdue ? 'background: rgba(239, 68, 68, 0.02);' : ''}">
         <td>
           <div class="font-semibold">${s.installment_no}</div>
-          ${isOverdue && s.status !== 'paid' ? `<div class="badge badge-danger" style="margin-top: 4px; font-size: 0.65rem;">OVERDUE</div>` : ''}
+          ${isOverdue ? `<div class="badge badge-danger" style="margin-top: 4px; font-size: 0.65rem;">OVERDUE</div>` : ''}
         </td>
         <td>${formatDate(s.due_date)}</td>
         <td class="text-right">
@@ -542,13 +541,14 @@ export const renderLoanDetails = async (params) => {
       let remaining = amount;
       for (const s of schedule) {
         if (remaining <= 0) break;
-        if (s.status === 'pending') {
-          // Simplistic schedule update: just mark full paid if we had enough
-          if (remaining >= s.amount) {
-            await loanService.updateScheduleInstallment(s.id, { status: 'paid', paid: s.amount });
-            remaining -= s.amount;
+        const installmentRemaining = getScheduleRemaining(s);
+        if (installmentRemaining > 0) {
+          const currentPaid = Number(s.paid) || 0;
+          if (remaining >= installmentRemaining) {
+            await loanService.updateScheduleInstallment(s.id, { status: 'paid', paid: Number(s.amount) || 0 });
+            remaining -= installmentRemaining;
           } else {
-            await loanService.updateScheduleInstallment(s.id, { status: 'partial', paid: s.paid + remaining });
+            await loanService.updateScheduleInstallment(s.id, { status: 'partial', paid: currentPaid + remaining });
             remaining = 0;
           }
         }

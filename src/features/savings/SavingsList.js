@@ -2,7 +2,7 @@ import { savingsService } from '../../services/savingsService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 import { dataCache } from '../../services/dataCache.js';
-import { showDelayedLoading } from '../../core/uiState.js';
+import { renderTableSkeletonRows, showDelayedLoading } from '../../core/uiState.js';
 import { withReturnTo } from '../../core/navigation.js';
 
 export const renderSavingsList = async () => {
@@ -90,7 +90,7 @@ export const renderSavingsList = async () => {
     const thisRequest = ++requestId;
     const cancelLoading = showDelayedLoading(() => {
       if (thisRequest !== requestId) return;
-      tableBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">Loading transactions...</td></tr>';
+      tableBody.innerHTML = renderTableSkeletonRows(5, 6);
       paginationWrapper.innerHTML = '';
     });
     try {

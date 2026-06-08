@@ -2,11 +2,14 @@ import { loanService } from '../../services/loanService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 import { dataCache, debounce } from '../../services/dataCache.js';
-import { setButtonLoading, showDelayedLoading } from '../../core/uiState.js';
+import { renderTableSkeletonRows, setButtonLoading, showDelayedLoading } from '../../core/uiState.js';
 import { withReturnTo } from '../../core/navigation.js';
+import { authService } from '../../services/authService.js';
 
 export const renderLoanList = async () => {
   const container = document.createElement('div');
+  const currentUser = authService.getUser();
+  const canApproveLoans = ['super_admin', 'admin'].includes(currentUser?.role);
   
   // We will fetch the loans per page
   let currentPage = 1;
@@ -21,11 +24,11 @@ export const renderLoanList = async () => {
         <h1 class="text-xl">Loans Management</h1>
         <p class="text-muted">Track all individual and group loan applications.</p>
       </div>
-        ${true ? `<button class="btn btn-secondary" onclick="window.location.hash = '#/loans/approve'" style="background: #eab308; border-color: #eab308; color: white;">
+        ${canApproveLoans ? `<button class="btn btn-secondary" onclick="window.location.hash = '#/loans/approve'" style="background: #eab308; border-color: #eab308; color: white;">
           <span class="badge" style="background: white; color: #eab308; margin-right: 8px;">!</span>
           Review Pending
         </button>` : ''}
-        ${true ? `<button class="btn btn-primary" onclick="window.location.hash = '#/loans/approve'" style="background: #0d9488; border-color: #0d9488; color: white;">
+        ${canApproveLoans ? `<button class="btn btn-primary" onclick="window.location.hash = '#/loans/approve'" style="background: #0d9488; border-color: #0d9488; color: white;">
           <span class="badge" style="background: white; color: #0d9488; margin-right: 8px;">!</span>
           Disburse Approved
         </button>` : ''}
@@ -37,7 +40,9 @@ export const renderLoanList = async () => {
       <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; gap: 16px; flex-wrap: wrap;">
         <input type="text" id="loan-search" class="form-control" placeholder="Search by Loan No..." style="max-width: 400px;" />
         <select id="loan-status-filter" class="form-control" style="max-width: 240px;">
-          <option value="active" selected>Active Loans</option>
+          <option value="active" selected>Active / Awaiting Loans</option>
+          <option value="pending">Pending Approval</option>
+          <option value="awaiting">Awaiting Disbursement</option>
           <option value="disbursed">Disbursed</option>
           <option value="completed">Completed</option>
           <option value="all">All Loans</option>
@@ -110,7 +115,7 @@ export const renderLoanList = async () => {
     const thisRequest = ++requestId;
     const cancelLoading = showDelayedLoading(() => {
       if (thisRequest !== requestId) return;
-      tableBody.innerHTML = `<tr><td colspan="8" class="text-center text-muted" style="padding: 40px;">Loading loans...</td></tr>`;
+      tableBody.innerHTML = renderTableSkeletonRows(8, 6);
       paginationWrapper.innerHTML = '';
     });
     try {
@@ -118,6 +123,10 @@ export const renderLoanList = async () => {
       const filters = [];
       if (statusFilter === 'active') {
         filters.push('(status="approved" || status="partial_approved" || status="disbursed")');
+      } else if (statusFilter === 'pending') {
+        filters.push('status="pending"');
+      } else if (statusFilter === 'awaiting') {
+        filters.push('(status="approved" || status="partial_approved")');
       } else if (statusFilter === 'disbursed') {
         filters.push('status="disbursed"');
       } else if (statusFilter === 'completed') {

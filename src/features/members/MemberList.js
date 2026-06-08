@@ -1,7 +1,7 @@
 import { memberService } from '../../services/memberService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { debounce } from '../../services/dataCache.js';
-import { showDelayedLoading } from '../../core/uiState.js';
+import { renderTableSkeletonRows, showDelayedLoading } from '../../core/uiState.js';
 
 export const renderMemberList = async () => {
   const container = document.createElement('div');
@@ -38,7 +38,7 @@ export const renderMemberList = async () => {
             </tr>
           </thead>
           <tbody id="member-table-body">
-            <tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">Loading members...</td></tr>
+            ${renderTableSkeletonRows(5, 6)}
           </tbody>
         </table>
       </div>
@@ -98,7 +98,7 @@ export const renderMemberList = async () => {
     const thisRequest = ++requestId;
     const cancelLoading = showDelayedLoading(() => {
       if (thisRequest !== requestId) return;
-      tableBody.innerHTML = `<tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">Loading members...</td></tr>`;
+      tableBody.innerHTML = renderTableSkeletonRows(5, 6);
       paginationWrapper.innerHTML = '';
     });
 

@@ -3,7 +3,7 @@ import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 import { dataCache, debounce } from '../../services/dataCache.js';
 import { pb } from '../../services/api.js';
-import { setButtonLoading, showDelayedLoading } from '../../core/uiState.js';
+import { renderTableSkeletonRows, setButtonLoading, showDelayedLoading } from '../../core/uiState.js';
 
 export const renderExpenseList = async () => {
   const container = document.createElement('div');
@@ -103,7 +103,7 @@ export const renderExpenseList = async () => {
     const thisRequest = ++requestId;
     const cancelLoading = showDelayedLoading(() => {
       if (thisRequest !== requestId) return;
-      tableBody.innerHTML = `<tr><td colspan="4" class="text-center text-muted" style="padding: 40px;">Loading expenses...</td></tr>`;
+      tableBody.innerHTML = renderTableSkeletonRows(4, 6);
       paginationWrapper.innerHTML = '';
     });
 

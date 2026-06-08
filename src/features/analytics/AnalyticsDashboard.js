@@ -5,6 +5,7 @@ import { memberService } from '../../services/memberService.js';
 import { groupService } from '../../services/groupService.js';
 import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
+import { getDaysInArrears, getScheduleArrearsAmount, getScheduleRemaining, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
 
 export const renderAnalyticsDashboard = async () => {
   const container = document.createElement('div');
@@ -158,7 +159,6 @@ export const renderAnalyticsDashboard = async () => {
       : collectionWindow.end
         ? `Before ${formatShortDate(todayStart)}`
         : `From ${formatShortDate(todayStart)}`;
-    const scheduleRemaining = (schedule) => Math.max(0, (Number(schedule.amount) || 0) - (Number(schedule.paid) || 0));
     const scheduleMatchesCollectionWindow = (schedule) => {
       const dueDate = new Date(schedule.due_date);
       if (Number.isNaN(dueDate.getTime())) return false;
@@ -202,10 +202,11 @@ export const renderAnalyticsDashboard = async () => {
       .filter(schedule => {
         const loan = loansById.get(schedule.loan);
         if (!loan || !filterByOfficer(loan)) return false;
-        if (schedule.status === 'paid' || scheduleRemaining(schedule) <= 0) return false;
+        if (!isActiveDisbursedLoan(loan)) return false;
+        if (getScheduleRemaining(schedule) <= 0) return false;
         return scheduleMatchesCollectionWindow(schedule);
       });
-    const expectedCollection = collectionSchedules.reduce((sum, schedule) => sum + scheduleRemaining(schedule), 0);
+    const expectedCollection = collectionSchedules.reduce((sum, schedule) => sum + getScheduleRemaining(schedule), 0);
     const scheduledGrossCollection = collectionSchedules.reduce((sum, schedule) => sum + (Number(schedule.amount) || 0), 0);
     const scheduledPaidCollection = collectionSchedules.reduce((sum, schedule) => sum + (Number(schedule.paid) || 0), 0);
     const expectedCollectionLoans = new Set(collectionSchedules.map(schedule => schedule.loan)).size;
@@ -232,7 +233,7 @@ export const renderAnalyticsDashboard = async () => {
       collectionOfficerMap[officerKey].clients.add(loan?.member || loan?.group || schedule.loan);
       collectionOfficerMap[officerKey].gross += Number(schedule.amount) || 0;
       collectionOfficerMap[officerKey].paid += Number(schedule.paid) || 0;
-      collectionOfficerMap[officerKey].expected += scheduleRemaining(schedule);
+      collectionOfficerMap[officerKey].expected += getScheduleRemaining(schedule);
     });
     const collectionOfficerRows = Object.values(collectionOfficerMap)
       .map(row => ({ ...row, clients: row.clients.size }))
@@ -282,18 +283,19 @@ export const renderAnalyticsDashboard = async () => {
     const arrearsMap = {};
     let totalArrearsGlobal = 0;
     
-    scopedSchedules.filter(s => s.status !== 'paid' && new Date(s.due_date) < today).forEach(s => {
+    scopedSchedules.filter(s => isScheduleInArrears(s, today)).forEach(s => {
        const loan = loans.find(l => l.id === s.loan);
-       if (loan) {
-          totalArrearsGlobal += s.amount;
+       if (loan && isActiveDisbursedLoan(loan)) {
+          const arrearsAmount = getScheduleArrearsAmount(s, today);
+          totalArrearsGlobal += arrearsAmount;
           const id = loan.member || loan.group;
           if (!arrearsMap[id]) arrearsMap[id] = { name: '', id: '', amount: 0, daysOverdue: 0 };
           const member = members.find(m => m.id === id);
           const group = groups.find(g => g.id === id);
           arrearsMap[id].name = member ? member.full_name : (group ? group.name : 'Unknown');
           arrearsMap[id].id = member?.reg_no || group?.group_id || id;
-          arrearsMap[id].amount += s.amount;
-          const daysOverdue = Math.floor((today - new Date(s.due_date)) / (1000 * 60 * 60 * 24));
+          arrearsMap[id].amount += arrearsAmount;
+          const daysOverdue = getDaysInArrears(s, today);
           if (daysOverdue > arrearsMap[id].daysOverdue) {
              arrearsMap[id].daysOverdue = daysOverdue;
           }

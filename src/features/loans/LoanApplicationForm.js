@@ -73,12 +73,13 @@ export const renderLoanApplicationForm = async (params = {}) => {
           
           <div class="form-group">
             <label class="form-label">Loan Product / Type</label>
-            <select name="type" class="form-control" required>
+            <select name="type" id="loan-type-select" class="form-control" required>
               <option value="business">Business Loan</option>
               <option value="emergency">Emergency Loan</option>
               <option value="school_fees">School Fees</option>
               <option value="development">Development Loan</option>
             </select>
+            <div class="text-xs text-muted" style="margin-top: 6px;">Members with an active unpaid loan can only apply for Emergency or School Fees loans.</div>
           </div>
           
           <div class="form-group">
@@ -170,6 +171,10 @@ export const renderLoanApplicationForm = async (params = {}) => {
           <div class="form-group">
             <label class="form-label">Guarantor Phone</label>
             <input type="tel" name="guarantorPhone" class="form-control" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Guarantor ID Number</label>
+            <input type="text" name="guarantorIdNumber" class="form-control" inputmode="numeric" pattern="[0-9\\s-]{5,}" required />
           </div>
           <div class="form-group">
             <label class="form-label">Relationship</label>
@@ -627,6 +632,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
       guarantor: {
         name: rawData.guarantorName,
         phone: rawData.guarantorPhone,
+        id_number: rawData.guarantorIdNumber,
         relationship: rawData.guarantorRelationship,
         photo: rawData.guarantorPhoto || null,
         photo_size_kb: guarantorPhotoMeta?.sizeKb || null,

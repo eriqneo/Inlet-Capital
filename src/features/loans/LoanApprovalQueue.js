@@ -3,7 +3,7 @@ import { settingsService } from '../../services/settingsService.js';
 import { navigate } from '../../core/router.js';
 import { formatDate } from '../../core/utils.js';
 import { pb } from '../../services/api.js'; // We'll use pb to get all loans for the queue
-import { setButtonLoading } from '../../core/uiState.js';
+import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
 
 const QUEUE_FILTER = 'status="pending" || status="approved" || status="partial_approved" || status="expired"';
 
@@ -14,10 +14,11 @@ export const renderLoanApprovalQueue = async () => {
   container.innerHTML = `
     <div style="margin-bottom: 24px;">
       <h1 class="text-xl">Loan Decision Centre</h1>
-      <p class="text-muted">Loading queue data…</p>
+      <p class="text-muted">Review pending applications, manage approved disbursement windows, and re-activate expired approvals.</p>
     </div>
-    <div class="card text-center" style="padding: 60px;">
-      <p class="text-muted">Fetching loans from server…</p>
+    <div style="display: grid; gap: 16px;">
+      ${renderCardSkeleton({ title: 'Checking approval queue from PocketHost...', rows: 4 })}
+      ${renderCardSkeleton({ title: 'Preparing disbursement windows...', rows: 3 })}
     </div>
   `;
 

@@ -9,6 +9,7 @@ import { renderPagination } from '../../components/Pagination.js';
 import { pb } from '../../services/api.js';
 import { setButtonLoading } from '../../core/uiState.js';
 import { withReturnTo } from '../../core/navigation.js';
+import { getArrearsTotal, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
 
 export const renderGroupProfile = async (params) => {
   const { id } = params;
@@ -39,6 +40,7 @@ export const renderGroupProfile = async (params) => {
       return s.type === 'deposit' ? sum + amount : sum - amount;
     }, 0);
   const isOutstandingLoanStatus = (status) => ['disbursed', 'approved', 'partial_approved'].includes(status);
+  const isCollectibleLoan = (loan) => loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
   const calculateLoanBalance = (loan, repayments) => {
     if (!isOutstandingLoanStatus(loan.status)) return 0;
     const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
@@ -113,10 +115,10 @@ export const renderGroupProfile = async (params) => {
 
     const totalSavings = calculateSavingsTotal(mSavings);
 
-    const activeLoans = mLoans.filter(l => ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(l.status));
+    const activeLoans = mLoans.filter(isCollectibleLoan);
     const memberLoanIds = new Set(activeLoans.map(l => l.id));
-    const overdue = allSchedules.filter(s => memberLoanIds.has(s.loan) && s.status !== 'paid' && new Date(s.due_date) < new Date());
-    const totalArrears = overdue.reduce((sum, s) => sum + s.amount, 0);
+    const overdue = allSchedules.filter(s => memberLoanIds.has(s.loan) && isScheduleInArrears(s));
+    const totalArrears = getArrearsTotal(overdue);
 
     const olBalance = calculateOutstandingLoanBalance(mLoans, allRepayments);
     const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
@@ -131,11 +133,11 @@ export const renderGroupProfile = async (params) => {
   let totalGroupSavings = totalMemberSavings + groupAccountSavings;
 
   // Group-level loan arrears
-  const activeGroupLoans = groupLoans.filter(l => !l.member && ['disbursed', 'completed', 'closed'].includes(l.status));
+  const activeGroupLoans = groupLoans.filter(l => !l.member && isCollectibleLoan(l));
   const activeGroupLoanIds = new Set(activeGroupLoans.map(gl => gl.id));
   const groupLevelArrears = allSchedules
-    .filter(s => activeGroupLoanIds.has(s.loan) && s.status !== 'paid' && new Date(s.due_date) < new Date())
-    .reduce((sum, s) => sum + s.amount, 0);
+    .filter(s => activeGroupLoanIds.has(s.loan) && isScheduleInArrears(s))
+    .reduce((sum, s) => sum + getArrearsTotal([s]), 0);
   totalGroupArrears += groupLevelArrears;
 
   // Calculate totals from enrichedMembers
@@ -184,9 +186,13 @@ export const renderGroupProfile = async (params) => {
             <div class="text-xs text-muted">Total Members</div>
             <div class="text-lg font-semibold text-primary" id="group-total-members-kpi">${allGroupMembers.length}</div>
           </div>
+          <div class="card" style="padding: 16px; border-left: 3px solid ${totalGroupArrears > 0 ? 'var(--danger)' : 'var(--border-color)'};">
+            <div class="text-xs text-muted">Total Arrears</div>
+            <div class="text-lg font-semibold" id="group-total-arrears-kpi" style="color: ${totalGroupArrears > 0 ? 'var(--danger)' : 'inherit'};">KES ${totalGroupArrears.toLocaleString()}</div>
+          </div>
           <div class="card" style="padding: 16px; border-left: 3px solid ${membersInArrearsCount > 0 ? 'var(--warning)' : 'var(--border-color)'};">
             <div class="text-xs text-muted">Members in Arrears</div>
-            <div class="text-lg font-semibold" id="group-arrears-kpi" style="color: ${membersInArrearsCount > 0 ? 'var(--warning)' : 'inherit'};">${membersInArrearsCount} <span class="text-xs text-muted" style="font-weight:normal;">(KES ${totalGroupArrears.toLocaleString()})</span></div>
+            <div class="text-lg font-semibold" id="group-arrears-kpi" style="color: ${membersInArrearsCount > 0 ? 'var(--warning)' : 'inherit'};">${membersInArrearsCount}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid ${inactiveMembersCount > 0 ? 'var(--danger)' : 'var(--border-color)'};">
             <div class="text-xs text-muted">Inactive Members</div>
@@ -205,7 +211,7 @@ export const renderGroupProfile = async (params) => {
               <select id="group-account-scope" class="form-control">
                 <option value="all">All Members + Group Accounts</option>
                 <option value="members">All Members</option>
-                <option value="groups">All Groups</option>
+                <option value="groups">Group Acc (Account)</option>
               </select>
             </div>
             <div class="form-group" style="margin: 0;">
@@ -484,7 +490,7 @@ export const renderGroupProfile = async (params) => {
     const scope = accountScopeSelect?.value || 'all';
     return enrichedMembers.filter(m => {
       if (scope === 'groups') return false;
-      if (currentMemberStatusFilter === 'arrears' && m.totalArrears <= 0) return false;
+      if (currentMemberStatusFilter === 'arrears' && getMemberArrears(m) <= 0) return false;
       if (currentMemberStatusFilter === 'inactive' && m.isActive) return false;
       if (!query) return true;
       return [m.full_name, m.reg_no, m.phone_number, m.phone]
@@ -498,6 +504,26 @@ export const renderGroupProfile = async (params) => {
     const query = (memberSearchInput?.value || '').trim();
     if (scope === 'groups') return true;
     return currentMemberStatusFilter === 'all' && !query && scope === 'all';
+  };
+
+  const getMemberLoans = (member) => groupLoans.filter(l => l.member === member.id);
+  const getMemberActiveLoanIds = (member) => new Set(
+    getMemberLoans(member)
+      .filter(isCollectibleLoan)
+      .map(l => l.id)
+  );
+  const getMemberArrears = (member) => {
+    const memberLoanIds = getMemberActiveLoanIds(member);
+    return getArrearsTotal(allSchedules.filter(s => memberLoanIds.has(s.loan)));
+  };
+  const getMemberOlBalance = (member) => calculateOutstandingLoanBalance(getMemberLoans(member), allRepayments);
+  const getGroupLevelArrears = () => {
+    const activeGroupLoanIds = new Set(
+      groupLoans
+        .filter(l => !l.member && isCollectibleLoan(l))
+        .map(l => l.id)
+    );
+    return getArrearsTotal(allSchedules.filter(s => activeGroupLoanIds.has(s.loan)));
   };
 
   const applyDateFilters = (records, dateField) => records.filter(r => {
@@ -525,8 +551,8 @@ export const renderGroupProfile = async (params) => {
     const filteredLoans = getFilteredLoans();
     const filteredSavings = getFilteredSavings();
     const includeGroupAccount = scopeIncludesGroupAccount();
-    const arrearsAmount = filteredMembers.reduce((sum, m) => sum + (Number(m.totalArrears) || 0), 0) + (includeGroupAccount ? groupLevelArrears : 0);
-    const arrearsCount = filteredMembers.filter(m => m.totalArrears > 0).length;
+    const arrearsAmount = filteredMembers.reduce((sum, m) => sum + getMemberArrears(m), 0) + (includeGroupAccount ? getGroupLevelArrears() : 0);
+    const arrearsCount = filteredMembers.filter(m => getMemberArrears(m) > 0).length;
     const inactiveCount = filteredMembers.filter(m => !m.isActive).length;
     const savingsTotal = calculateSavingsTotal(filteredSavings);
     const outstandingLoan = calculateOutstandingLoanBalance(filteredLoans, allRepayments);
@@ -534,11 +560,14 @@ export const renderGroupProfile = async (params) => {
     container.querySelector('#group-total-savings-kpi').textContent = `KES ${savingsTotal.toLocaleString()}`;
     container.querySelector('#group-outstanding-loan-kpi').textContent = `KES ${outstandingLoan.toLocaleString()}`;
     container.querySelector('#group-total-members-kpi').textContent = filteredMembers.length;
-    container.querySelector('#group-arrears-kpi').innerHTML = `${arrearsCount} <span class="text-xs text-muted" style="font-weight:normal;">(KES ${arrearsAmount.toLocaleString()})</span>`;
+    const totalArrearsKpi = container.querySelector('#group-total-arrears-kpi');
+    totalArrearsKpi.textContent = `KES ${arrearsAmount.toLocaleString()}`;
+    totalArrearsKpi.style.color = arrearsAmount > 0 ? 'var(--danger)' : 'inherit';
+    container.querySelector('#group-arrears-kpi').textContent = arrearsCount;
     container.querySelector('#group-inactive-members-kpi').innerHTML = `${inactiveCount} <span class="text-xs text-muted" style="font-weight:normal;">(>90 days)</span>`;
 
     const scope = accountScopeSelect?.value || 'all';
-    const scopeLabel = scope === 'all' ? 'all members and group accounts' : (scope === 'members' ? 'all members' : 'all groups');
+    const scopeLabel = scope === 'all' ? 'all members and group accounts' : (scope === 'members' ? 'all members' : 'group account');
     const dateLabel = currentStartDate || currentEndDate
       ? `, ${dateStartInput.value || 'start'} to ${dateEndInput.value || 'today'}`
       : '';
@@ -560,19 +589,23 @@ export const renderGroupProfile = async (params) => {
     if (!tbody) return;
     const filtered = getFilteredMembers();
 
-    tbody.innerHTML = filtered.length === 0 ? `<tr><td colspan="9" class="text-center text-muted" style="padding: 32px;">No members found matching this filter.</td></tr>` : filtered.map(m => `
+    tbody.innerHTML = filtered.length === 0 ? `<tr><td colspan="9" class="text-center text-muted" style="padding: 32px;">No members found matching this filter.</td></tr>` : filtered.map(m => {
+      const totalArrears = getMemberArrears(m);
+      const olBalance = getMemberOlBalance(m);
+      return `
       <tr>
         <td><div class="font-semibold">${m.full_name}</div><div class="text-xs text-muted">${m.reg_no}</div></td>
         <td>${m.phone_number || m.phone || '-'}</td>
         <td class="font-semibold text-success">${m.totalSavings.toLocaleString()}</td>
-        <td class="font-semibold text-primary">${m.olBalance.toLocaleString()}</td>
-        <td class="font-semibold text-danger">${m.totalArrears.toLocaleString()}</td>
-        <td><span class="badge ${m.totalArrears > 0 ? 'badge-warning' : 'badge-outline'}" style="font-size: 0.65rem;">${m.totalArrears > 0 ? 'YES' : 'NO'}</span></td>
+        <td class="font-semibold text-primary">${olBalance.toLocaleString()}</td>
+        <td class="font-semibold text-danger">${totalArrears.toLocaleString()}</td>
+        <td><span class="badge ${totalArrears > 0 ? 'badge-warning' : 'badge-outline'}" style="font-size: 0.65rem;">${totalArrears > 0 ? 'YES' : 'NO'}</span></td>
         <td><span class="badge ${m.isActive ? 'badge-success' : 'badge-danger'}">${m.isActive ? 'ACTIVE' : 'INACTIVE'}</span></td>
         <td><span class="text-sm ${m.isActive ? 'text-muted' : 'text-danger font-semibold'}">${m.lastSavingsDate ? formatDate(m.lastSavingsDate) : 'Never'}</span></td>
         <td><button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/members/${m.reg_no}'">View</button></td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
   };
 
   const filterBtns = { all: container.querySelector('#filter-all-btn'), arrears: container.querySelector('#filter-arrears-btn'), inactive: container.querySelector('#filter-inactive-btn') };
@@ -730,6 +763,12 @@ export const renderGroupProfile = async (params) => {
         ? await pb.collection('loan_repayments').getFullList({
             filter: loanIds.map(loanId => `loan="${loanId}"`).join(' || '),
             sort: '-date'
+          })
+        : [];
+      allSchedules = loanIds.length > 0
+        ? await pb.collection('loan_schedule').getFullList({
+            filter: loanIds.map(loanId => `loan="${loanId}"`).join(' || '),
+            sort: 'installment_no'
           })
         : [];
       totalOutstandingLoan = calculateOutstandingLoanBalance(groupLoans, allRepayments);

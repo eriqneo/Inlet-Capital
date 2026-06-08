@@ -8,15 +8,128 @@ const requireAdminRecordManager = () => {
   }
 };
 
+const normalizeGuarantorId = (value) => String(value || '').replace(/\D/g, '').trim();
+
+const activeGuarantorStatuses = ['pending', 'approved', 'partial_approved', 'disbursed'];
+const normalLoanRestrictedStatuses = ['pending', 'approved', 'partial_approved', 'disbursed'];
+const repeatLoanAllowedTypes = ['emergency', 'school_fees'];
+
+const getLoanOwnerLabel = (loan) => {
+  const member = loan.expand?.member;
+  const group = loan.expand?.group;
+  if (member) return `${member.full_name || 'Member'} (${member.reg_no || member.id})`;
+  if (group) return `${group.name || 'Group'} (${group.group_id || group.id})`;
+  return loan.member || loan.group || 'Unknown applicant';
+};
+
+const buildRelationFilter = (field, ids) => ids.map(id => `${field}="${id}"`).join(' || ');
+
 export const loanService = {
   /**
    * Apply for a new loan
    */
   async apply(data) {
     console.log('[loanService] Applying for loan:', data);
+    await this.validateMemberBorrowingEligibility(data.member, data.type, {
+      currentLoanNo: data.loan_no
+    });
+    await this.validateGuarantorAvailability(data.guarantor?.id_number, {
+      applicantId: data.member || data.group || '',
+      currentLoanNo: data.loan_no
+    });
     const record = await pb.collection('loans').create(data);
     await dataCache.invalidatePrefix('loans:');
     return record;
+  },
+
+  async validateMemberBorrowingEligibility(memberId, loanType, { excludeLoanId = '', currentLoanNo = '' } = {}) {
+    if (!memberId || repeatLoanAllowedTypes.includes(loanType)) return true;
+
+    const statusFilter = normalLoanRestrictedStatuses.map(status => `status="${status}"`).join(' || ');
+    const openLoans = await pb.collection('loans').getFullList({
+      filter: `member="${memberId}" && (${statusFilter})`,
+      sort: '-application_date',
+      expand: 'member'
+    });
+
+    const candidateLoans = openLoans.filter(loan => {
+      if (excludeLoanId && loan.id === excludeLoanId) return false;
+      if (currentLoanNo && loan.loan_no === currentLoanNo) return false;
+      return true;
+    });
+
+    if (candidateLoans.length === 0) return true;
+
+    const loanIds = candidateLoans.map(loan => loan.id);
+    const repayments = loanIds.length > 0
+      ? await pb.collection('loan_repayments').getFullList({
+          filter: buildRelationFilter('loan', loanIds)
+        }).catch(() => [])
+      : [];
+
+    const blockingLoan = candidateLoans.find(loan => {
+      if (loan.status !== 'disbursed') return true;
+      const liability = Number(loan.total_liability) || 0;
+      const paid = repayments
+        .filter(repayment => repayment.loan === loan.id)
+        .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
+      return liability <= 0 || paid < liability;
+    });
+
+    if (!blockingLoan) return true;
+
+    throw new Error(
+      `This member already has an active unpaid loan (${blockingLoan.loan_no || blockingLoan.id}). They can only apply for an Emergency or School Fees loan until the current loan is fully paid.`
+    );
+  },
+
+  async validateGuarantorAvailability(guarantorId, { excludeLoanId = '', currentLoanNo = '' } = {}) {
+    const normalizedId = normalizeGuarantorId(guarantorId);
+    if (!normalizedId) {
+      throw new Error('Guarantor ID number is required.');
+    }
+
+    const statusFilter = activeGuarantorStatuses.map(status => `status="${status}"`).join(' || ');
+    const activeLoans = await pb.collection('loans').getFullList({
+      filter: `(${statusFilter})`,
+      sort: '-application_date',
+      expand: 'member,group'
+    });
+
+    const matchingLoans = activeLoans.filter(loan => {
+      if (excludeLoanId && loan.id === excludeLoanId) return false;
+      if (currentLoanNo && loan.loan_no === currentLoanNo) return false;
+      return normalizeGuarantorId(
+        loan.guarantor?.id_number
+        || loan.guarantor?.idNo
+        || loan.guarantor?.id_no
+        || loan.guarantor?.national_id
+      ) === normalizedId;
+    });
+
+    if (matchingLoans.length === 0) return true;
+
+    const loanIds = matchingLoans.map(loan => loan.id);
+    const repayments = loanIds.length > 0
+      ? await pb.collection('loan_repayments').getFullList({
+          filter: buildRelationFilter('loan', loanIds)
+        }).catch(() => [])
+      : [];
+
+    const blockingLoan = matchingLoans.find(loan => {
+      if (loan.status !== 'disbursed') return true;
+      const liability = Number(loan.total_liability) || 0;
+      const paid = repayments
+        .filter(repayment => repayment.loan === loan.id)
+        .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
+      return liability <= 0 || paid < liability;
+    });
+
+    if (!blockingLoan) return true;
+
+    throw new Error(
+      `Guarantor ID ${normalizedId} is already tied to active loan ${blockingLoan.loan_no || blockingLoan.id} for ${getLoanOwnerLabel(blockingLoan)}. The guarantor can only guarantee another loan after that loan is fully paid.`
+    );
   },
 
   /**
@@ -69,7 +182,7 @@ export const loanService = {
    */
   async getPendingApprovals() {
     return await pb.collection('loans').getFullList({
-      filter: 'status="pending" || status="partial_approved"',
+      filter: 'status="pending"',
       sort: '-application_date',
       expand: 'member,member.group,group'
     });
