@@ -6,11 +6,12 @@ let inactivityTimer = null;
 let inactivityWatchStarted = false;
 
 const now = () => Date.now();
+const isSuspendedUser = (user) => String(user?.status || '').toLowerCase() === 'suspended';
 
 export const authService = {
   async login(email, password) {
     const authData = await pb.collection('users').authWithPassword(email, password);
-    if (authData.record.status === 'suspended') {
+    if (isSuspendedUser(authData.record)) {
       this.logout();
       throw new Error('Your account has been suspended. Please contact the administrator.');
     }
@@ -37,6 +38,8 @@ export const authService = {
     localStorage.removeItem(LAST_ACTIVITY_KEY);
     if (window.notify && reason === 'inactivity') {
       window.notify.warning('You were logged out after 1 hour of inactivity.');
+    } else if (window.notify && reason === 'suspended') {
+      window.notify.error('Your account has been suspended. Please contact the administrator.');
     }
     window.location.hash = '#/login';
   },
@@ -58,6 +61,10 @@ export const authService = {
     return user && roles.includes(user.role);
   },
 
+  isSuspended() {
+    return isSuspendedUser(this.getUser());
+  },
+
   requireRole(...roles) {
     if (!this.hasRole(...roles)) {
       throw new Error('Access denied: insufficient permissions');
@@ -71,6 +78,10 @@ export const authService = {
         return false;
       }
       await pb.collection('users').authRefresh();
+      if (this.isSuspended()) {
+        this.logout({ reason: 'suspended' });
+        return false;
+      }
       this.markActivity();
       this.startInactivityWatch();
       return true;
@@ -105,6 +116,9 @@ export const authService = {
   },
 
   async suspendUser(id) {
+    if (id === this.getUser()?.id) {
+      throw new Error('You cannot suspend your own active session.');
+    }
     return await pb.collection('users').update(id, { status: 'suspended' });
   },
 

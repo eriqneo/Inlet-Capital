@@ -69,6 +69,21 @@ export const renderMemberProfile = async (params) => {
     return date.toISOString().split('T')[0];
   };
   const totalSavings = calculateSavingsBalance();
+  const inactiveCutoffMs = 90 * 24 * 60 * 60 * 1000;
+  const getValidDate = (value) => {
+    if (!value) return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+  const lastSavingsDate = memberSavings
+    .map(saving => getValidDate(saving.date || saving.created))
+    .filter(Boolean)
+    .sort((a, b) => b - a)[0] || null;
+  const dbMemberStatus = String(member.status || 'active').toLowerCase();
+  const isAdminStatus = ['suspended', 'exited'].includes(dbMemberStatus);
+  const isSavingsActive = lastSavingsDate && (Date.now() - lastSavingsDate.getTime() <= inactiveCutoffMs);
+  const displayMemberStatus = isAdminStatus ? dbMemberStatus.toUpperCase() : (isSavingsActive ? 'ACTIVE' : 'INACTIVE');
+  const displayMemberStatusClass = displayMemberStatus === 'ACTIVE' ? 'badge-success' : 'badge-danger';
 
   let loanPage = 1, savingsPage = 1;
   const pageSize = 10;
@@ -220,7 +235,10 @@ export const renderMemberProfile = async (params) => {
           </div>
           <h2 style="font-size: 1.25rem;">${member.full_name}</h2>
           <p class="text-muted text-sm">${member.reg_no}</p>
-          <div style="margin-top: 12px;"><span class="badge ${member.status === 'active' ? 'badge-success' : 'badge-danger'}">${member.status.toUpperCase()}</span></div>
+          <div style="margin-top: 12px;">
+            <span class="badge ${displayMemberStatusClass}">${displayMemberStatus}</span>
+            <div class="text-xs text-muted" style="margin-top: 6px;">Last saved: ${lastSavingsDate ? formatDate(lastSavingsDate) : 'Never'}</div>
+          </div>
         </div>
         <div class="card" style="font-size: 0.875rem;">
           <h3 style="font-size: 1rem; margin-bottom: 12px;">Financial Summary</h3>

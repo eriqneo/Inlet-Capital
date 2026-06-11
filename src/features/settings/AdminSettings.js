@@ -33,6 +33,11 @@ export const renderAdminSettings = async () => {
   const isSuperAdmin = authService.hasRole('super_admin');
   const canManageUsers = isSuperAdmin;
   const userAssignableModules = MODULES.filter(module => module.id !== 'dashboard');
+  const settingValue = (key, fallback = '') => (
+    Object.prototype.hasOwnProperty.call(settings, key) && settings[key] !== null && settings[key] !== undefined && settings[key] !== ''
+      ? settings[key]
+      : fallback
+  );
 
   const loadSettingsData = async () => {
     isSettingsLoading = true;
@@ -281,9 +286,11 @@ export const renderAdminSettings = async () => {
                         <div style="display: flex; gap: 8px;">
                           ${canManageUsers ? `
                             <button class="btn btn-outline btn-xs edit-user-btn" data-id="${u.id}">Edit</button>
-                            ${u.status === 'suspended' 
-                              ? `<button class="btn btn-outline btn-xs activate-user-btn" data-id="${u.id}" style="color: var(--success); border-color: var(--success);">Activate</button>`
-                              : `<button class="btn btn-outline btn-xs suspend-user-btn" data-id="${u.id}" style="color: var(--warning); border-color: var(--warning);">Suspend</button>`
+                            ${u.id === pb.authStore.model?.id
+                              ? `<span class="text-xs text-muted" style="align-self:center;">Current user</span>`
+                              : u.status === 'suspended' 
+                                ? `<button class="btn btn-outline btn-xs activate-user-btn" data-id="${u.id}" style="color: var(--success); border-color: var(--success);">Activate</button>`
+                                : `<button class="btn btn-outline btn-xs suspend-user-btn" data-id="${u.id}" style="color: var(--warning); border-color: var(--warning);">Suspend</button>`
                             }
                             ${u.id !== pb.authStore.model?.id ? `<button class="btn btn-danger btn-xs delete-user-btn" data-id="${u.id}">Delete</button>` : ''}
                           ` : `<span class="text-xs text-muted">View only</span>`}
@@ -420,36 +427,36 @@ export const renderAdminSettings = async () => {
                   <h4 style="margin-bottom: 12px;">Financial Rates</h4>
                   <div class="form-group">
                     <label class="form-label">Processing Fee (%)</label>
-                    <input type="number" name="processing_fee_percent" class="form-control" value="${settings.processing_fee_percent || 8}" step="0.1" />
+                    <input type="number" name="processing_fee_percent" class="form-control" value="${settingValue('processing_fee_percent', 8)}" step="0.1" min="0" required />
                     ${timestamps.processing_fee_percent ? `<div class="text-xs text-muted" style="margin-top: 4px;">Updated: ${new Date(timestamps.processing_fee_percent).toLocaleDateString()}</div>` : ''}
                   </div>
                   <div class="form-group">
                     <label class="form-label">Interest Rate (%)</label>
-                    <input type="number" name="interest_rate_percent" class="form-control" value="${settings.interest_rate_percent || 20}" step="0.1" />
+                    <input type="number" name="interest_rate_percent" class="form-control" value="${settingValue('interest_rate_percent', 20)}" step="0.1" min="0" required />
                     ${timestamps.interest_rate_percent ? `<div class="text-xs text-muted" style="margin-top: 4px;">Updated: ${new Date(timestamps.interest_rate_percent).toLocaleDateString()}</div>` : ''}
                   </div>
                   <div class="form-group">
                     <label class="form-label">Currency Symbol</label>
-                    <input type="text" name="currency_symbol" class="form-control" value="${settings.currency_symbol || 'KES'}" />
+                    <input type="text" name="currency_symbol" class="form-control" value="${settingValue('currency_symbol', 'KES')}" required />
                   </div>
                 </div>
                 <div class="card" style="background: var(--bg-light);">
                   <h4 style="margin-bottom: 12px;">Registration Fees</h4>
                   <div class="form-group">
                     <label class="form-label">Individual Fee</label>
-                    <input type="number" name="individual_reg_fee" class="form-control" value="${settings.individual_reg_fee || 1000}" />
+                    <input type="number" name="individual_reg_fee" class="form-control" value="${settingValue('individual_reg_fee', 1000)}" min="0" required />
                   </div>
                 </div>
                 <div class="card" style="background: var(--bg-light);">
                   <h4 style="margin-bottom: 12px;">Penalties</h4>
                   <div class="form-group">
                     <label class="form-label">Late Payment Penalty</label>
-                    <input type="number" name="penalty_amount" class="form-control" value="${settings.penalty_amount || 500}" />
+                    <input type="number" name="penalty_amount" class="form-control" value="${settingValue('penalty_amount', 500)}" min="0" required />
                     <div class="text-xs text-muted" style="margin-top: 4px;">Fixed amount charged for overdue payments.</div>
                   </div>
                   <div class="form-group">
                     <label class="form-label">Grace Period (Weeks)</label>
-                    <input type="number" name="penalty_grace_weeks" class="form-control" value="${settings.penalty_grace_weeks || 4}" />
+                    <input type="number" name="penalty_grace_weeks" class="form-control" value="${settingValue('penalty_grace_weeks', 4)}" min="0" required />
                   </div>
                 </div>
               </div>
@@ -737,6 +744,7 @@ export const renderAdminSettings = async () => {
           if (window.notify) window.notify.success('User updated!');
         } else {
           data.force_password_change = true;
+          data.status = 'active';
           await pb.collection('users').create(data);
           await logAudit('user_created', `User ${data.email} created with role ${data.role}`);
           if (window.notify) window.notify.success('User created!');

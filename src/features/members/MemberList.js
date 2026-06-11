@@ -2,6 +2,7 @@ import { memberService } from '../../services/memberService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { debounce } from '../../services/dataCache.js';
 import { renderTableSkeletonRows, showDelayedLoading } from '../../core/uiState.js';
+import { pb } from '../../services/api.js';
 
 export const renderMemberList = async () => {
   const container = document.createElement('div');
@@ -51,6 +52,8 @@ export const renderMemberList = async () => {
   const searchInput = container.querySelector('#member-search');
 
   const escapeFilterValue = (value) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const relationFilter = (field, ids) => ids.map(id => `${field}="${id}"`).join(' || ');
+  const inactiveCutoffMs = 90 * 24 * 60 * 60 * 1000;
 
   const buildSearchFilter = (term) => {
     const q = escapeFilterValue(term.trim());
@@ -58,11 +61,59 @@ export const renderMemberList = async () => {
     return `full_name~"${q}" || reg_no~"${q}" || id_number~"${q}" || phone_number~"${q}"`;
   };
 
+  const getValidDate = (value) => {
+    if (!value) return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+
+  const getActivityStatus = (member) => {
+    const dbStatus = String(member.status || 'active').toLowerCase();
+    if (['suspended', 'exited'].includes(dbStatus)) {
+      return { label: dbStatus.toUpperCase(), className: 'badge-danger' };
+    }
+    const lastSavingsDate = member.__lastSavingsDate || null;
+    const isActive = lastSavingsDate && (Date.now() - lastSavingsDate.getTime() <= inactiveCutoffMs);
+    return {
+      label: isActive ? 'ACTIVE' : 'INACTIVE',
+      className: isActive ? 'badge-success' : 'badge-danger'
+    };
+  };
+
+  const enrichMembersWithActivity = async (memberRows) => {
+    if (!memberRows.length) return memberRows;
+    const memberIds = memberRows.map(member => member.id).filter(Boolean);
+    if (!memberIds.length) return memberRows;
+
+    try {
+      const memberSavings = await pb.collection('savings').getFullList({
+        filter: `(${relationFilter('member', memberIds)}) && is_reversed=false`,
+        fields: 'id,member,date,created',
+        sort: '-date'
+      });
+      const lastSavingsByMember = new Map();
+      memberSavings.forEach(record => {
+        const date = getValidDate(record.date || record.created);
+        if (!date) return;
+        const current = lastSavingsByMember.get(record.member);
+        if (!current || date > current) lastSavingsByMember.set(record.member, date);
+      });
+      return memberRows.map(member => ({
+        ...member,
+        __lastSavingsDate: lastSavingsByMember.get(member.id) || null
+      }));
+    } catch (err) {
+      console.warn('[MemberList] Could not calculate member activity status:', err.message);
+      return memberRows;
+    }
+  };
+
   const renderRows = (members) => {
     tableBody.innerHTML = members.length === 0 ? `
       <tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">No members found.</td></tr>
     ` : members.map(m => {
       const photoUrl = memberService.getPhotoUrl(m);
+      const activityStatus = getActivityStatus(m);
       return `
       <tr>
         <td>
@@ -78,7 +129,10 @@ export const renderMemberList = async () => {
         </td>
         <td>${m.id_number || m.idNo}</td>
         <td>${m.phone_number || ''}</td>
-        <td><span class="badge ${m.status === 'active' ? 'badge-success' : 'badge-danger'}">${(m.status || 'ACTIVE').toUpperCase()}</span></td>
+        <td>
+          <span class="badge ${activityStatus.className}">${activityStatus.label}</span>
+          <div class="text-xs text-muted" style="margin-top: 4px;">Last saved: ${m.__lastSavingsDate ? m.__lastSavingsDate.toLocaleDateString() : 'Never'}</div>
+        </td>
         <td>
           <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/members/${m.reg_no || m.regNo}'">View Profile</button>
         </td>
@@ -111,15 +165,20 @@ export const renderMemberList = async () => {
       };
       const result = await memberService.listCached(query, freshResult => {
         if (thisRequest !== requestId) return;
-        cancelLoading();
-        totalItems = freshResult.totalItems;
-        renderRows(freshResult.items);
+        enrichMembersWithActivity(freshResult.items).then(enrichedItems => {
+          if (thisRequest !== requestId) return;
+          cancelLoading();
+          totalItems = freshResult.totalItems;
+          renderRows(enrichedItems);
+        });
       });
 
       if (thisRequest !== requestId) return;
-      cancelLoading();
       totalItems = result.totalItems;
-      renderRows(result.items);
+      const enrichedItems = await enrichMembersWithActivity(result.items);
+      if (thisRequest !== requestId) return;
+      cancelLoading();
+      renderRows(enrichedItems);
     } catch (err) {
       cancelLoading();
       console.error('[MemberList] Failed to load members:', err);

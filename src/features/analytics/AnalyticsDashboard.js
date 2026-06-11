@@ -110,6 +110,11 @@ export const renderAnalyticsDashboard = async () => {
       if (user) return user.name || user.email || user.username || 'Loan Officer';
       return loan.processed_by ? `User ${String(loan.processed_by).slice(0, 6)}` : 'Unassigned';
     };
+    const getUserName = (userId) => {
+      const user = users.find(u => u.id === userId);
+      if (user) return user.name || user.email || user.username || 'Loan User';
+      return userId ? `User ${String(userId).slice(0, 6)}` : 'Unassigned';
+    };
     const officerOptionMap = {};
     users.forEach(user => {
       officerOptionMap[user.id] = user.name || user.email || user.username || 'Loan Officer';
@@ -119,10 +124,30 @@ export const renderAnalyticsDashboard = async () => {
         officerOptionMap[loan.processed_by] = getOfficerName(loan);
       }
     });
+    members.forEach(member => {
+      if (member.registered_by && !officerOptionMap[member.registered_by]) {
+        officerOptionMap[member.registered_by] = getUserName(member.registered_by);
+      }
+    });
+    groups.forEach(group => {
+      if (group.created_by && !officerOptionMap[group.created_by]) {
+        officerOptionMap[group.created_by] = getUserName(group.created_by);
+      }
+    });
     const officerOptions = Object.entries(officerOptionMap)
       .map(([id, name]) => ({ id, name }))
       .sort((a, b) => a.name.localeCompare(b.name));
     const filterByOfficer = (loan) => currentOfficerFilter === 'all' || loan.processed_by === currentOfficerFilter;
+    const filterMemberByOfficer = (member) => currentOfficerFilter === 'all' || member.registered_by === currentOfficerFilter;
+    const filterGroupByOfficer = (group) => currentOfficerFilter === 'all' || group.created_by === currentOfficerFilter;
+    const membersById = new Map(members.map(member => [member.id, member]));
+    const groupsById = new Map(groups.map(group => [group.id, group]));
+    const filterSavingsByOfficer = (saving) => {
+      if (currentOfficerFilter === 'all') return true;
+      if (saving.member) return membersById.get(saving.member)?.registered_by === currentOfficerFilter;
+      if (saving.group) return groupsById.get(saving.group)?.created_by === currentOfficerFilter;
+      return false;
+    };
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
     const formatShortDate = (date) => date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
     const getCollectionWindow = () => {
@@ -167,7 +192,9 @@ export const renderAnalyticsDashboard = async () => {
       return true;
     };
 
-    const totalMembers = fMembers.length;
+    const scopedMembers = fMembers.filter(filterMemberByOfficer);
+    const scopedSavings = fSavings.filter(filterSavingsByOfficer);
+    const totalMembers = scopedMembers.length;
     const activeLoans = loans.filter(l => isActiveDisbursedLoan(l) && filterByOfficer(l));
     const scopedLoans = fLoans.filter(filterByOfficer);
     const scopedRepayments = currentOfficerFilter === 'all'
@@ -240,7 +267,7 @@ export const renderAnalyticsDashboard = async () => {
       .sort((a, b) => b.expected - a.expected);
     
     // Correct savings calculation
-    const totalSavings = fSavings
+    const totalSavings = scopedSavings
       .filter(s => !s.is_reversed)
       .reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
     
@@ -258,7 +285,7 @@ export const renderAnalyticsDashboard = async () => {
 
     // Real Trend logic (Members registered in current month vs total)
     const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-    const memberTrend = members.filter(m => m.registration_date && m.registration_date.startsWith(currentMonthKey)).length;
+    const memberTrend = members.filter(m => filterMemberByOfficer(m) && m.registration_date && m.registration_date.startsWith(currentMonthKey)).length;
 
     // Compute Top Borrowers (Fixed Top 5) using filtered active loans and all repayments for those loans
     const borrowerMap = {};
@@ -371,7 +398,7 @@ export const renderAnalyticsDashboard = async () => {
           <div class="kpi-icon" style="background: rgba(16, 185, 129, 0.1); color: var(--success);">🏦</div>
           <div class="kpi-label">Total Savings Base</div>
           <div class="kpi-value">KES ${totalSavings.toLocaleString()}</div>
-          <div class="kpi-trend trend-up">System Liquidity</div>
+          <div class="kpi-trend trend-up">${currentOfficerFilter === 'all' ? 'System Liquidity' : 'Savings from assigned clients'}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(201, 168, 76, 0.1); color: var(--accent);">✅</div>
@@ -602,7 +629,7 @@ export const renderAnalyticsDashboard = async () => {
     updateArrearsUI();
 
     setTimeout(() => {
-      initCharts(scopedLoans, scopedRepayments, members, fSavings); // members passed as un-filtered for cumulative count logic
+      initCharts(scopedLoans, scopedRepayments, currentOfficerFilter === 'all' ? members : members.filter(filterMemberByOfficer), scopedSavings);
     }, 100);
   };
 

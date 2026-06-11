@@ -12,9 +12,10 @@ import Fuse from 'fuse.js';
 export const renderLoanApplicationForm = async (params = {}) => {
   const container = document.createElement('div');
   const loanNo = generateLoanNo();
+  const todayInputValue = new Date().toISOString().split('T')[0];
   
   const settings = { interestRate: 20, processingFeeRate: 8 };
-  const canEditInterestRate = authService.hasRole('super_admin', 'admin');
+  const canEditLoanRates = authService.hasRole('super_admin', 'admin');
   const returnTo = getReturnTo(params, '#/loans');
   let members = [];
   let groups = [];
@@ -88,6 +89,11 @@ export const renderLoanApplicationForm = async (params = {}) => {
           </div>
 
           <div class="form-group">
+            <label class="form-label">Application Date</label>
+            <input type="date" name="application_date" class="form-control" value="${todayInputValue}" required />
+          </div>
+
+          <div class="form-group">
             <label class="form-label">Loan Period (Months)</label>
             <select name="period" class="form-control">
               <option value="1">1 Month</option>
@@ -124,7 +130,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
               <span id="summary-interest-label">Interest (${settings.interestRate}%):</span>
               <span id="summary-interest">KES 0</span>
             </div>
-            ${canEditInterestRate ? `
+            ${canEditLoanRates ? `
               <div style="display: grid; grid-template-columns: 1fr 110px; gap: 12px; align-items: end; background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
                 <div>
                   <label for="interest-rate-input" style="display: block; font-size: 0.75rem; opacity: 0.75; margin-bottom: 4px;">Interest Rate Override</label>
@@ -147,6 +153,18 @@ export const renderLoanApplicationForm = async (params = {}) => {
               </div>
               <div style="text-align: right; font-size: 0.75rem; opacity: 0.7;">Payable before<br>disbursement</div>
             </div>
+            ${canEditLoanRates ? `
+              <div style="display: grid; grid-template-columns: 1fr 110px; gap: 12px; align-items: end; background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
+                <div>
+                  <label for="processing-fee-rate-input" style="display: block; font-size: 0.75rem; opacity: 0.75; margin-bottom: 4px;">Processing Fee Override</label>
+                  <div style="font-size: 0.72rem; opacity: 0.62;">Admin-only fee rate for this application.</div>
+                </div>
+                <div style="position: relative;">
+                  <input type="number" id="processing-fee-rate-input" class="form-control" min="0" max="100" step="0.1" value="${settings.processingFeeRate}" style="padding-right: 28px; background: rgba(255,255,255,0.95);" />
+                  <span style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.8rem;">%</span>
+                </div>
+              </div>
+            ` : ''}
           </div>
         </div>
       </div>
@@ -472,6 +490,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
   const sInterestLabel = container.querySelector('#summary-interest-label');
   const sProcessingLabel = container.querySelector('#summary-processing-label');
   const interestRateInput = container.querySelector('#interest-rate-input');
+  const processingFeeRateInput = container.querySelector('#processing-fee-rate-input');
 
   const updateCalculations = () => {
     const amount = parseFloat(amountInput.value) || 0;
@@ -484,6 +503,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
     sTotal.textContent = `KES ${total.toLocaleString()}`;
     sProcessing.textContent = `KES ${processing.toLocaleString()}`;
     sInterestLabel.textContent = `Interest (${settings.interestRate}%):`;
+    sProcessingLabel.textContent = `Processing Fee (${settings.processingFeeRate}%):`;
   };
 
   amountInput.oninput = updateCalculations;
@@ -494,18 +514,26 @@ export const renderLoanApplicationForm = async (params = {}) => {
       updateCalculations();
     };
   }
+  if (processingFeeRateInput) {
+    processingFeeRateInput.oninput = () => {
+      const nextRate = Number(processingFeeRateInput.value);
+      settings.processingFeeRate = Number.isFinite(nextRate) && nextRate >= 0 ? nextRate : 0;
+      updateCalculations();
+    };
+  }
 
   Promise.all([
-    settingsService.get('interest_rate_percent'),
-    settingsService.get('processing_fee_percent'),
+    settingsService.getNumber('interest_rate_percent', settings.interestRate),
+    settingsService.getNumber('processing_fee_percent', settings.processingFeeRate),
     memberService.getAll(),
     groupService.getAll()
   ]).then(([interestRate, processingFeeRate, membersData, groupsData]) => {
-    settings.interestRate = Number(interestRate) || settings.interestRate;
-    settings.processingFeeRate = Number(processingFeeRate) || settings.processingFeeRate;
+    settings.interestRate = interestRate;
+    settings.processingFeeRate = processingFeeRate;
     if (interestRateInput) interestRateInput.value = settings.interestRate;
+    if (processingFeeRateInput) processingFeeRateInput.value = settings.processingFeeRate;
     sInterestLabel.textContent = `Interest (${settings.interestRate}%):`;
-    sProcessingLabel.textContent = `Processing Fee (${settings.processingFeeRate}%)`;
+    sProcessingLabel.textContent = `Processing Fee (${settings.processingFeeRate}%):`;
     members = membersData || [];
     groups = groupsData || [];
     populateApplicantOptions();
@@ -608,12 +636,17 @@ export const renderLoanApplicationForm = async (params = {}) => {
     }
 
     const amount = parseFloat(rawData.amount);
+    const selectedApplicationDate = rawData.application_date || todayInputValue;
     const submittedRate = Number(interestRateInput?.value);
-    const interestRate = canEditInterestRate && Number.isFinite(submittedRate) && submittedRate >= 0
+    const submittedProcessingFeeRate = Number(processingFeeRateInput?.value);
+    const interestRate = canEditLoanRates && Number.isFinite(submittedRate) && submittedRate >= 0
       ? submittedRate
       : settings.interestRate;
+    const processingFeeRate = canEditLoanRates && Number.isFinite(submittedProcessingFeeRate) && submittedProcessingFeeRate >= 0
+      ? submittedProcessingFeeRate
+      : settings.processingFeeRate;
     const interest = amount * (interestRate / 100);
-    const processingFee = amount * (settings.processingFeeRate / 100);
+    const processingFee = amount * (processingFeeRate / 100);
 
     const loan = {
       loan_no: loanNo,
@@ -623,12 +656,13 @@ export const renderLoanApplicationForm = async (params = {}) => {
       interest_rate: interestRate,
       interest_amount: interest,
       total_liability: amount + interest,
+      processing_fee_rate: processingFeeRate,
       processing_fee: processingFee,
       processing_fee_paid: false,
       period: parseInt(rawData.period),
       purpose: rawData.purpose,
       status: 'pending',
-      application_date: new Date().toISOString(),
+      application_date: new Date(`${selectedApplicationDate}T12:00:00`).toISOString(),
       guarantor: {
         name: rawData.guarantorName,
         phone: rawData.guarantorPhone,

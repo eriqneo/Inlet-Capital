@@ -564,7 +564,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
 
     try {
       const loan = await loanService.getById(activePartialLoanId);
-      const interestRate = (await settingsService.get('interest_rate_percent')) || 20;
+      const interestRate = await settingsService.getNumber('interest_rate_percent', 20);
       const interestAmount = amount * (interestRate / 100);
 
       await loanService.update(activePartialLoanId, {

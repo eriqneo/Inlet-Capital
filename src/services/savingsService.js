@@ -18,6 +18,8 @@ export const savingsService = {
     try {
       const result = await pb.collection('savings').create(data);
       await dataCache.invalidatePrefix('savings:');
+      await dataCache.invalidatePrefix('group_summary:');
+      await dataCache.invalidatePrefix('groups:profile:');
       return result;
     } catch (err) {
       console.error('[savingsService] Transaction failed:', err);
@@ -106,6 +108,8 @@ export const savingsService = {
     requireAdminRecordManager();
     const record = await pb.collection('savings').update(id, data);
     await dataCache.invalidatePrefix('savings:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
     return record;
   },
 
@@ -113,6 +117,8 @@ export const savingsService = {
     requireAdminRecordManager();
     await pb.collection('savings').delete(id);
     await dataCache.invalidatePrefix('savings:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
     return true;
   },
   
@@ -124,6 +130,8 @@ export const savingsService = {
       is_reversed: true
     });
     await dataCache.invalidatePrefix('savings:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
     return record;
   },
 

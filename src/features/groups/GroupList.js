@@ -2,7 +2,8 @@ import { groupService } from '../../services/groupService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { debounce } from '../../services/dataCache.js';
 import { pb } from '../../services/api.js';
-import { showDelayedLoading } from '../../core/uiState.js';
+import { setButtonLoading, showDelayedLoading } from '../../core/uiState.js';
+import { authService } from '../../services/authService.js';
 
 export const renderGroupList = async () => {
   const container = document.createElement('div');
@@ -27,6 +28,31 @@ export const renderGroupList = async () => {
         <p class="text-muted">Loading groups…</p>
       </div>
     </div>
+    <style>
+      .group-delete-btn {
+        width: 32px;
+        height: 32px;
+        border: 1px solid rgba(239, 68, 68, 0.24);
+        border-radius: 8px;
+        background: rgba(239, 68, 68, 0.08);
+        color: var(--danger);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+      }
+      .group-delete-btn:hover {
+        background: rgba(239, 68, 68, 0.14);
+        border-color: rgba(239, 68, 68, 0.42);
+        transform: translateY(-1px);
+      }
+      .group-delete-btn:disabled {
+        cursor: wait;
+        opacity: 0.7;
+        transform: none;
+      }
+    </style>
   `;
 
   const grid = container.querySelector('#groups-grid');
@@ -37,6 +63,7 @@ export const renderGroupList = async () => {
   let totalItems = 0;
   let requestId = 0;
   const pageSize = 12; // Good for a 3-column or 4-column grid
+  const canDeleteGroups = authService.hasRole('super_admin', 'admin');
 
   const relationFilter = (field, ids) => ids.map(id => `${field}="${id}"`).join(' || ');
   const moneyTotal = (records) => records.reduce((sum, record) => {
@@ -44,6 +71,13 @@ export const renderGroupList = async () => {
     return record.type === 'deposit' ? sum + amount : sum - amount;
   }, 0);
   const escapeFilterValue = (value) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  }[char]));
   const buildSearchFilter = (term) => {
     const q = escapeFilterValue(term.trim());
     if (!q) return '';
@@ -68,7 +102,19 @@ export const renderGroupList = async () => {
             <h3 style="font-size: 1.125rem;">${g.name}</h3>
             <span class="text-xs text-muted">${g.group_id}</span>
           </div>
-          <span class="badge ${g.status === 'active' ? 'badge-success' : 'badge-danger'}">${(g.status || 'ACTIVE').toUpperCase()}</span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="badge ${g.status === 'active' ? 'badge-success' : 'badge-danger'}">${(g.status || 'ACTIVE').toUpperCase()}</span>
+            ${canDeleteGroups ? `
+              <button type="button" class="group-delete-btn" data-id="${g.id}" data-name="${escapeHtml(g.name || 'this group')}" aria-label="Delete group" title="Delete group">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                  <path d="M3 6h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  <path d="M8 6V4h8v2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M6 6l1 15h10l1-15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+              </button>
+            ` : ''}
+          </div>
         </div>
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px;">
@@ -115,6 +161,47 @@ export const renderGroupList = async () => {
   }, 300);
 
   searchInput.addEventListener('input', debouncedSearch);
+
+  grid.addEventListener('click', async (event) => {
+    const deleteBtn = event.target.closest('.group-delete-btn');
+    if (!deleteBtn) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (!canDeleteGroups) {
+      if (window.notify) window.notify.error('Only admins can delete groups.');
+      return;
+    }
+
+    const groupId = deleteBtn.dataset.id;
+    const groupName = deleteBtn.dataset.name || 'this group';
+    const confirmed = window.confirmDialog ? await window.confirmDialog({
+      title: 'Delete Group',
+      message: `This will permanently remove ${groupName}. If members, savings, loans, or reports still reference this group, PocketBase may block the deletion to protect records.`,
+      confirmText: 'Delete Group',
+      cancelText: 'Cancel',
+      type: 'danger'
+    }) : confirm(`Delete ${groupName}? This cannot be undone.`);
+
+    if (!confirmed) return;
+
+    const restoreButton = setButtonLoading(deleteBtn, '...');
+    try {
+      await groupService.delete(groupId);
+      groups = groups.filter(group => group.id !== groupId);
+      totalItems = Math.max(0, totalItems - 1);
+      if (window.notify) window.notify.success('Group deleted successfully.');
+      renderCards();
+      await loadGroups();
+    } catch (err) {
+      console.error('[GroupList] Delete group failed:', err);
+      const message = err.status === 400 || err.status === 409
+        ? 'PocketBase blocked deletion because this group is still linked to members or financial records.'
+        : (err.message || 'Please try again.');
+      if (window.notify) window.notify.error('Failed to delete group: ' + message);
+      restoreButton();
+    }
+  });
 
   const loadGroups = async () => {
     const thisRequest = ++requestId;

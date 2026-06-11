@@ -82,6 +82,18 @@ async function run() {
       } else {
         console.log('Users collection already has role field.');
       }
+      if (!usersColl.fields.some(f => f.name === 'status')) {
+        usersColl.fields.push({
+          name: 'status',
+          type: 'select',
+          required: false,
+          values: ['active', 'suspended'],
+          maxSelect: 1
+        });
+        console.log('Users collection updated with status field.');
+      } else {
+        console.log('Users collection already has status field.');
+      }
       if (!usersColl.fields.some(f => f.name === 'force_password_change')) {
         usersColl.fields.push({
           name: 'force_password_change',
@@ -120,6 +132,7 @@ async function run() {
 
     // Create Groups Collection
     console.log('Creating groups collection...');
+    const usersForGroupsColl = await fetchPb('collections/users', 'GET', null, token);
     const groupsDef = {
       name: 'groups',
       type: 'base',
@@ -136,7 +149,7 @@ async function run() {
         { name: 'registration_date', type: 'date', required: true },
         { name: 'performance_rating', type: 'number' },
         { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'dissolved'] },
-        { name: 'created_by', type: 'relation', relationOptions: { collectionId: 'users', cascadeDelete: false } }
+        { name: 'created_by', type: 'relation', collectionId: usersForGroupsColl.id, cascadeDelete: false, maxSelect: 1 }
       ],
       listRule: '@request.auth.id != ""',
       viewRule: '@request.auth.id != ""',
@@ -148,7 +161,7 @@ async function run() {
       await fetchPb('collections', 'POST', groupsDef, token);
       console.log('Groups collection created.');
     } catch (e) {
-      if (e.message.includes('autoupdate')) {
+      if (e.message.includes('autoupdate') || e.message.includes('validation_collection_name_exists')) {
          console.log('Groups collection already exists.');
       } else {
          console.error(e.message);
@@ -157,6 +170,8 @@ async function run() {
 
     // Create Members Collection
     console.log('Creating members collection...');
+    const groupsForMembersColl = await fetchPb('collections/groups', 'GET', null, token);
+    const usersForMembersColl = await fetchPb('collections/users', 'GET', null, token);
     const membersDef = {
       name: 'members',
       type: 'base',
@@ -182,8 +197,8 @@ async function run() {
         { name: 'registration_fee', type: 'number' },
         { name: 'registration_date', type: 'date', required: true },
         { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'exited'] },
-        { name: 'group', type: 'relation', relationOptions: { collectionId: 'groups', cascadeDelete: false } },
-        { name: 'registered_by', type: 'relation', relationOptions: { collectionId: 'users', cascadeDelete: false } }
+        { name: 'group', type: 'relation', collectionId: groupsForMembersColl.id, cascadeDelete: false, maxSelect: 1 },
+        { name: 'registered_by', type: 'relation', collectionId: usersForMembersColl.id, cascadeDelete: false, maxSelect: 1 }
       ],
       listRule: '@request.auth.id != ""',
       viewRule: '@request.auth.id != ""',
@@ -195,11 +210,65 @@ async function run() {
       await fetchPb('collections', 'POST', membersDef, token);
       console.log('Members collection created.');
     } catch (e) {
-      if (e.message.includes('autoupdate')) {
+      if (e.message.includes('autoupdate') || e.message.includes('validation_collection_name_exists')) {
          console.log('Members collection already exists.');
       } else {
          console.error(e.message);
       }
+    }
+
+    console.log('Ensuring group summary collection...');
+    try {
+      const groupsColl = await fetchPb('collections/groups', 'GET', null, token);
+      const groupSummaryDef = {
+        name: 'group_summary',
+        type: 'base',
+        fields: [
+          { name: 'group', type: 'relation', required: true, unique: true, collectionId: groupsColl.id, cascadeDelete: true, maxSelect: 1 },
+          { name: 'member_count', type: 'number' },
+          { name: 'total_savings', type: 'number' },
+          { name: 'outstanding_loan', type: 'number' },
+          { name: 'total_arrears', type: 'number' },
+          { name: 'members_in_arrears', type: 'number' },
+          { name: 'inactive_members', type: 'number' },
+          { name: 'last_calculated_at', type: 'date' }
+        ],
+        listRule: '@request.auth.id != ""',
+        viewRule: '@request.auth.id != ""',
+        createRule: '@request.auth.role != "auditor"',
+        updateRule: '@request.auth.role != "auditor"',
+        deleteRule: '@request.auth.role = "super_admin" || @request.auth.role = "admin"'
+      };
+
+      try {
+        await fetchPb('collections', 'POST', groupSummaryDef, token);
+        console.log('Group summary collection created.');
+      } catch (createErr) {
+        if (!createErr.message.includes('validation_collection_name_exists')) throw createErr;
+        const summaryColl = await fetchPb('collections/group_summary', 'GET', null, token);
+        let changed = false;
+        const existingFieldNames = new Set(summaryColl.fields.map(field => field.name));
+        groupSummaryDef.fields.forEach(field => {
+          if (!existingFieldNames.has(field.name)) {
+            summaryColl.fields.push(field);
+            changed = true;
+          }
+        });
+        ['listRule', 'viewRule', 'createRule', 'updateRule', 'deleteRule'].forEach(ruleName => {
+          if (summaryColl[ruleName] !== groupSummaryDef[ruleName]) {
+            summaryColl[ruleName] = groupSummaryDef[ruleName];
+            changed = true;
+          }
+        });
+        if (changed) {
+          await fetchPb('collections/group_summary', 'PATCH', summaryColl, token);
+          console.log('Group summary collection updated.');
+        } else {
+          console.log('Group summary collection already configured.');
+        }
+      }
+    } catch (e) {
+      console.log('Error ensuring group summary collection:', e.message);
     }
 
     console.log('Ensuring members profile fields...');
@@ -274,19 +343,32 @@ async function run() {
     console.log('Ensuring loan approval comment field...');
     try {
       const loansColl = await fetchPb('collections/loans', 'GET', null, token);
+      let changed = false;
       if (!loansColl.fields.some(field => field.name === 'approval_comment')) {
         loansColl.fields.push({
           name: 'approval_comment',
           type: 'text',
           required: false
         });
-        await fetchPb('collections/loans', 'PATCH', loansColl, token);
+        changed = true;
         console.log('Loans collection updated with approval_comment field.');
       } else {
         console.log('Loans collection already has approval_comment field.');
       }
+      if (!loansColl.fields.some(field => field.name === 'processing_fee_rate')) {
+        loansColl.fields.push({
+          name: 'processing_fee_rate',
+          type: 'number',
+          required: false
+        });
+        changed = true;
+        console.log('Loans collection updated with processing_fee_rate field.');
+      } else {
+        console.log('Loans collection already has processing_fee_rate field.');
+      }
+      if (changed) await fetchPb('collections/loans', 'PATCH', loansColl, token);
     } catch (e) {
-      console.log('Error updating loans approval comment field:', e.message);
+      console.log('Error updating loans extra fields:', e.message);
     }
 
     console.log('Ensuring user login activity collection...');

@@ -10,6 +10,7 @@ import { setButtonLoading } from '../../core/uiState.js';
 export const renderMemberRegistration = async () => {
   const container = document.createElement('div');
   const regNo = generateRegNo();
+  const todayInputValue = new Date().toISOString().split('T')[0];
   let regFee = 1000;
 
   container.innerHTML = `
@@ -112,6 +113,11 @@ export const renderMemberRegistration = async () => {
               <span>Registration Fee</span>
               <span id="registration-fee-display" class="font-semibold" style="color: var(--success);">KES ${regFee.toLocaleString()}</span>
             </div>
+
+            <div class="form-group" style="margin-bottom: 16px;">
+              <label class="form-label" style="font-size: 0.75rem;">Registration Date</label>
+              <input type="date" name="registration_date" class="form-control form-control-sm" value="${todayInputValue}" required />
+            </div>
             
             <div class="form-group" style="margin-bottom: 16px;">
               <label class="form-label" style="font-size: 0.75rem;">Payment Method</label>
@@ -141,13 +147,10 @@ export const renderMemberRegistration = async () => {
   // Date of Birth input mask
   initDateMask(container.querySelector('#dob-input'));
 
-  settingsService.get('individual_reg_fee').then(value => {
-    const parsedFee = Number(value);
-    if (!Number.isNaN(parsedFee) && parsedFee > 0) {
-      regFee = parsedFee;
-      const feeDisplay = container.querySelector('#registration-fee-display');
-      if (feeDisplay) feeDisplay.textContent = `KES ${regFee.toLocaleString()}`;
-    }
+  settingsService.getNumber('individual_reg_fee', regFee).then(value => {
+    regFee = Math.max(0, value);
+    const feeDisplay = container.querySelector('#registration-fee-display');
+    if (feeDisplay) feeDisplay.textContent = `KES ${regFee.toLocaleString()}`;
   }).catch(err => console.warn('[MemberRegistration] Registration fee fetch failed:', err));
 
   // Photo Capture logic
@@ -197,6 +200,7 @@ export const renderMemberRegistration = async () => {
     const formData = new FormData(form);
     const memberData = Object.fromEntries(formData.entries());
     const parsedDob = parseInputDate(memberData.dob);
+    const selectedRegistrationDate = memberData.registration_date || todayInputValue;
     const phoneNumber = memberData.phone_number || memberData.phone || '';
     const maritalStatus = memberData.maritalStatus || memberData.marital_status || 'Single';
     const childrenCount = Number(memberData.childrenCount || memberData.children_count || 0);
@@ -212,7 +216,7 @@ export const renderMemberRegistration = async () => {
       childrenCount,
       children_count: childrenCount,
       reg_no: regNo,
-      registration_date: new Date().toISOString(),
+      registration_date: new Date(`${selectedRegistrationDate}T12:00:00`).toISOString(),
       registration_fee: regFee,
       status: 'active',
       registered_by: authService.getUser()?.id || null

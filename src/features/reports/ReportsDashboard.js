@@ -121,6 +121,10 @@ export const renderReportsDashboard = async () => {
       <!-- 2. Individual Performance -->
       <div id="individuals-tab" class="report-section" style="display: none;">
         <h2 style="margin-bottom: 16px;">Individual Reports</h2>
+        <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary); margin-bottom: 16px; max-width: 260px;">
+          <div class="text-xs text-muted">Table Entries</div>
+          <div class="text-xl font-semibold text-primary" id="individuals-entry-count">0</div>
+        </div>
         <div class="table-responsive card" style="padding: 0;">
           <table class="table">
             <thead>
@@ -145,6 +149,10 @@ export const renderReportsDashboard = async () => {
       <!-- 3. Group Performance -->
       <div id="groups-tab" class="report-section" style="display: none;">
         <h2 style="margin-bottom: 16px;">Group Reports</h2>
+        <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary); margin-bottom: 16px; max-width: 260px;">
+          <div class="text-xs text-muted">Table Entries</div>
+          <div class="text-xl font-semibold text-primary" id="groups-entry-count">0</div>
+        </div>
         <div class="table-responsive card" style="padding: 0;">
           <table class="table">
             <thead>
@@ -168,6 +176,10 @@ export const renderReportsDashboard = async () => {
       <!-- 4. Disbursements -->
       <div id="disbursements-tab" class="report-section" style="display: none;">
         <h2 style="margin-bottom: 16px;">Disbursement Report</h2>
+        <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary); margin-bottom: 16px; max-width: 260px;">
+          <div class="text-xs text-muted">Table Entries</div>
+          <div class="text-xl font-semibold text-primary" id="disbursements-entry-count">0</div>
+        </div>
         <div class="table-responsive card" style="padding: 0;">
           <table class="table" style="font-size: 0.75rem;">
             <thead>
@@ -196,6 +208,10 @@ export const renderReportsDashboard = async () => {
       <!-- 5. Registrations -->
       <div id="registrations-tab" class="report-section" style="display: none;">
         <h2 style="margin-bottom: 16px;">Registration Report</h2>
+        <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary); margin-bottom: 16px; max-width: 260px;">
+          <div class="text-xs text-muted">Table Entries</div>
+          <div class="text-xl font-semibold text-primary" id="registrations-entry-count">0</div>
+        </div>
         <div class="table-responsive card" style="padding: 0;">
           <table class="table">
             <thead>
@@ -243,9 +259,15 @@ export const renderReportsDashboard = async () => {
       <!-- 7. Withdrawals -->
       <div id="withdrawals-tab" class="report-section" style="display: none;">
         <h2 style="margin-bottom: 16px;">Withdrawal Report</h2>
-        <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--danger); margin-bottom: 16px;">
-          <div class="text-xs text-muted">Total Withdrawal Amount</div>
-          <div class="text-xl font-semibold text-danger" id="withdrawals-total-amount">KES 0</div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px;">
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--danger);">
+            <div class="text-xs text-muted">Total Withdrawal Amount</div>
+            <div class="text-xl font-semibold text-danger" id="withdrawals-total-amount">KES 0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
+            <div class="text-xs text-muted">Table Entries</div>
+            <div class="text-xl font-semibold text-primary" id="withdrawals-entry-count">0</div>
+          </div>
         </div>
         <div class="table-responsive card" style="padding: 0;">
           <table class="table">
@@ -398,6 +420,8 @@ export const renderReportsDashboard = async () => {
       if (activeFilters.individuals === 'group') return isGroupMember;
       return true;
     });
+    const entriesCountEl = container.querySelector('#individuals-entry-count');
+    if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
 
     const start = (pages.individuals - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
@@ -466,6 +490,17 @@ export const renderReportsDashboard = async () => {
   const updateGroups = () => {
     const isOutstandingLoan = (loan) => ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status);
     const isCollectibleLoan = (loan) => loan.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan.status) && loan.disbursement_date);
+    const dormantCutoff = new Date();
+    dormantCutoff.setMonth(dormantCutoff.getMonth() - 6);
+    const toValidDate = (value) => {
+      if (!value) return null;
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? null : date;
+    };
+    const getMostRecentDate = (values) => values
+      .map(toValidDate)
+      .filter(Boolean)
+      .sort((a, b) => b - a)[0] || null;
     const calculateOutstandingLoanBalance = (groupLoans) => groupLoans
       .filter(isOutstandingLoan)
       .reduce((sum, loan) => {
@@ -485,11 +520,16 @@ export const renderReportsDashboard = async () => {
       let inactiveCount = 0;
       let arrearsCount = 0;
       let arrearsAmount = 0;
-      let gTotalSavings = savings.filter(s => s.group === g.id && !s.member && !s.is_reversed).reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
+      const groupAccountSavings = savings.filter(s => s.group === g.id && !s.member && !s.is_reversed);
+      let gTotalSavings = groupAccountSavings.reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
+      const groupActivityDates = [
+        ...groupAccountSavings.map(s => s.date || s.created)
+      ];
 
       gMembers.forEach(m => {
         const mSavings = savings.filter(s => s.member === m.id && !s.is_reversed);
         gTotalSavings += mSavings.reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
+        groupActivityDates.push(...mSavings.map(s => s.date || s.created));
         const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
         const isInactive = !lastSavingsDate || (new Date() - lastSavingsDate > 90 * 24 * 60 * 60 * 1000);
         
@@ -504,20 +544,25 @@ export const renderReportsDashboard = async () => {
       
       const gl = loans.filter(l => l.group === g.id && !l.member && isCollectibleLoan(l));
       const allGroupRelatedLoans = loans.filter(l => (l.group === g.id && !l.member) || groupMemberIds.has(l.member));
+      groupActivityDates.push(...allGroupRelatedLoans.flatMap(l => [l.application_date, l.disbursement_date, l.created]));
       const gOutstanding = calculateOutstandingLoanBalance(allGroupRelatedLoans);
       arrearsAmount += schedules
         .filter(s => gl.some(loan => loan.id === s.loan) && isScheduleInArrears(s))
         .reduce((sum, s) => sum + getArrearsTotal([s]), 0);
+      const lastActivityDate = getMostRecentDate(groupActivityDates);
+      const isDormant = !lastActivityDate || lastActivityDate < dormantCutoff;
 
-      return { ...g, activeCount, inactiveCount, arrearsCount, arrearsAmount, totalSavings: gTotalSavings, outstandingLoan: Math.max(0, gOutstanding) };
+      return { ...g, activeCount, inactiveCount, arrearsCount, arrearsAmount, totalSavings: gTotalSavings, outstandingLoan: Math.max(0, gOutstanding), lastActivityDate, isDormant };
     });
 
     const filtered = groupData.filter(g => {
       if (activeFilters.groups === 'all') return true;
-      if (activeFilters.groups === 'active') return g.activeCount > 0;
-      if (activeFilters.groups === 'dormant') return g.activeCount === 0;
+      if (activeFilters.groups === 'active') return !g.isDormant;
+      if (activeFilters.groups === 'inactive' || activeFilters.groups === 'dormant') return g.isDormant;
       return true;
     });
+    const entriesCountEl = container.querySelector('#groups-entry-count');
+    if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
 
     const start = (pages.groups - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
@@ -531,6 +576,12 @@ export const renderReportsDashboard = async () => {
             <span class="text-xs font-bold" style="color: var(--success);">🟢 ${g.activeCount}</span>
             <span class="text-xs font-bold" style="color: var(--danger);">🔴 ${g.inactiveCount}</span>
             <span class="text-xs font-bold" style="color: var(--warning);">⚠ ${g.arrearsCount}</span>
+          </div>
+          <div class="text-xs text-muted" style="margin-top: 4px;">
+            ${g.isDormant
+              ? '<span class="badge badge-danger" style="font-size: 0.62rem;">DORMANT GROUP</span>'
+              : '<span class="badge badge-success" style="font-size: 0.62rem;">ACTIVE GROUP</span>'}
+            <span style="margin-left: 4px;">Last activity: ${g.lastActivityDate ? formatDate(g.lastActivityDate) : 'None'}</span>
           </div>
         </td>
         <td>${getGroupPhone(g)}</td>
@@ -586,6 +637,8 @@ export const renderReportsDashboard = async () => {
       if (activeFilters.disbursements === 'group') return isGroupAccount;
       return true;
     });
+    const entriesCountEl = container.querySelector('#disbursements-entry-count');
+    if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
 
     const start = (pages.disbursements - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
@@ -641,6 +694,8 @@ export const renderReportsDashboard = async () => {
       }
       return true;
     });
+    const entriesCountEl = container.querySelector('#registrations-entry-count');
+    if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
 
     const start = (pages.registrations - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
@@ -841,6 +896,8 @@ export const renderReportsDashboard = async () => {
     const totalWithdrawalsAmount = filtered.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
     const totalEl = container.querySelector('#withdrawals-total-amount');
     if (totalEl) totalEl.textContent = `KES ${totalWithdrawalsAmount.toLocaleString()}`;
+    const entriesCountEl = container.querySelector('#withdrawals-entry-count');
+    if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
 
     const start = (pages.withdrawals - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
@@ -1011,13 +1068,14 @@ export const renderReportsDashboard = async () => {
     if (tab === 'individuals') {
       filters = [
         { id: 'all', label: 'All Members' },
-        { id: 'individual', label: 'Independents' },
+        { id: 'individual', label: 'Individual' },
         { id: 'group', label: 'Group Members' }
       ];
     } else if (tab === 'groups') {
       filters = [
         { id: 'all', label: 'All Groups' },
         { id: 'active', label: 'Active Groups' },
+        { id: 'inactive', label: 'Inactive Groups' },
         { id: 'dormant', label: 'Dormant Groups' }
       ];
     } else if (tab === 'disbursements') {

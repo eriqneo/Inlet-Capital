@@ -5,7 +5,13 @@ const getSettingValue = (record) => {
   if (record?.key === 'org_logo' && record.file_value) {
     return pb.files.getURL(record, record.file_value);
   }
-  return record?.value || '';
+  return record?.value ?? '';
+};
+
+const parseNumberSetting = (value, fallback) => {
+  if (value === null || value === undefined || value === '') return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 };
 
 const dataUrlToBlob = async (dataUrl) => {
@@ -48,6 +54,11 @@ export const settingsService = {
     } catch (e) {
       return null;
     }
+  },
+
+  async getNumber(key, fallback = 0) {
+    const value = await this.get(key);
+    return parseNumberSetting(value, fallback);
   },
 
   /**

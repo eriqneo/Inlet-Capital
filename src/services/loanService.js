@@ -39,6 +39,8 @@ export const loanService = {
     });
     const record = await pb.collection('loans').create(data);
     await dataCache.invalidatePrefix('loans:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
     return record;
   },
 
@@ -196,6 +198,8 @@ export const loanService = {
     await dataCache.invalidatePrefix('loans:');
     await dataCache.invalidatePrefix('loans:all:');
     await dataCache.invalidatePrefix('loans:analytics:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
     return record;
   },
 
@@ -205,6 +209,8 @@ export const loanService = {
     await dataCache.invalidatePrefix('loans:');
     await dataCache.invalidatePrefix('loans:all:');
     await dataCache.invalidatePrefix('loans:analytics:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
     return true;
   },
 
@@ -244,6 +250,8 @@ export const loanService = {
     await dataCache.invalidate('loan_schedule');
     await dataCache.invalidatePrefix('loan_schedule:');
     await dataCache.invalidatePrefix('loan_schedule');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
     return record;
   },
 
@@ -252,6 +260,8 @@ export const loanService = {
     await dataCache.invalidate('loan_schedule');
     await dataCache.invalidatePrefix('loan_schedule:');
     await dataCache.invalidatePrefix('loan_schedule');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
     return record;
   },
 
@@ -271,6 +281,8 @@ export const loanService = {
     await dataCache.invalidatePrefix('loan_repayments:');
     await dataCache.invalidatePrefix('loan_repayments');
     await dataCache.invalidatePrefix('loans:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
     return record;
   },
 

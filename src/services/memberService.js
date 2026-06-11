@@ -66,6 +66,8 @@ export const memberService = {
     }
     const record = await pb.collection('members').create(toMemberPayload(data));
     await dataCache.invalidatePrefix('members:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
     return record;
   },
 
@@ -79,6 +81,8 @@ export const memberService = {
     }
     const record = await pb.collection('members').update(id, toMemberPayload(data));
     await dataCache.invalidatePrefix('members:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
     return record;
   },
 

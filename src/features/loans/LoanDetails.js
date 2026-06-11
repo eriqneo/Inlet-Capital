@@ -43,8 +43,8 @@ export const renderLoanDetails = async (params) => {
 
   // PocketBase Settings
   const settings = {
-    penalty_amount: (await settingsService.get('penalty_amount')) || 500,
-    penalty_grace_weeks: (await settingsService.get('penalty_grace_weeks')) || 4
+    penalty_amount: await settingsService.getNumber('penalty_amount', 500),
+    penalty_grace_weeks: await settingsService.getNumber('penalty_grace_weeks', 4)
   };
 
   const clientName = loan.expand?.member?.full_name || loan.expand?.group?.name || 'Unknown Client';

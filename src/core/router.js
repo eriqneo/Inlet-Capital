@@ -85,6 +85,10 @@ const handleRoute = async () => {
       navigate('#/login');
       return;
     }
+    if (authService.isSuspended()) {
+      authService.logout({ reason: 'suspended' });
+      return;
+    }
     if (user.force_password_change && hash !== '#/change-password') {
       navigate('#/change-password');
       return;

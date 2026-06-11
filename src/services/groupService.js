@@ -1,6 +1,13 @@
 import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
 
+const requireAdminRecordManager = () => {
+  const role = pb.authStore.model?.role;
+  if (!['super_admin', 'admin'].includes(role)) {
+    throw new Error('Only admins can delete groups.');
+  }
+};
+
 export const groupService = {
   async list({ page = 1, perPage = 50, filter = '', sort = '-created' } = {}) {
     return await pb.collection('groups').getList(page, perPage, {
@@ -43,6 +50,15 @@ export const groupService = {
     const record = await pb.collection('groups').update(id, data);
     await dataCache.invalidatePrefix('groups:');
     return record;
+  },
+
+  async delete(id) {
+    requireAdminRecordManager();
+    await pb.collection('groups').delete(id);
+    await dataCache.invalidatePrefix('groups:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
+    return true;
   },
 
   subscribeToChanges(callback) {
