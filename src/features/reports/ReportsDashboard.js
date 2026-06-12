@@ -11,6 +11,7 @@ import { renderCardSkeleton, renderInlineSyncStatus, renderTableSkeletonRows, se
 import { settingsService } from '../../services/settingsService.js';
 import { getArrearsTotal, getDaysInArrears, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
 import { withReturnTo } from '../../core/navigation.js';
+import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
 
 export const renderReportsDashboard = async () => {
   const container = document.createElement('div');
@@ -43,6 +44,10 @@ export const renderReportsDashboard = async () => {
     cashflow: 'all',
     withdrawals: 'all'
   };
+  let dateRange = {
+    from: '',
+    to: ''
+  };
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;" class="no-print">
@@ -70,9 +75,18 @@ export const renderReportsDashboard = async () => {
     </div>
 
     <!-- Filter Bar -->
-    <div id="filter-bar" class="no-print" style="margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; background: var(--bg-light); padding: 12px 20px; border-radius: 12px;">
-      <div id="filter-controls" style="display: flex; gap: 8px;">
-        <!-- Filters injected here -->
+    <div id="filter-bar" class="no-print" style="margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; background: var(--bg-light); padding: 12px 20px; border-radius: 12px; flex-wrap: wrap;">
+      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <div id="filter-controls" style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <!-- Filters injected here -->
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border-left: 1px solid var(--border-color); padding-left: 12px;">
+          <label class="text-xs text-muted" for="report-date-from">From</label>
+          <input type="date" id="report-date-from" class="form-control" style="width: 145px; padding: 6px 8px; font-size: 0.75rem;" />
+          <label class="text-xs text-muted" for="report-date-to">To</label>
+          <input type="date" id="report-date-to" class="form-control" style="width: 145px; padding: 6px 8px; font-size: 0.75rem;" />
+          <button type="button" class="btn btn-outline btn-sm" id="report-date-clear" style="font-size: 0.7rem; padding: 5px 10px;">Clear</button>
+        </div>
       </div>
       <div id="filter-count" class="text-xs font-semibold" style="color: var(--secondary);">Showing all records</div>
     </div>
@@ -387,14 +401,42 @@ export const renderReportsDashboard = async () => {
   const getMemberPhone = (member) => member?.phone_number || member?.phone || member?.mobile || '-';
   const getGroupPhone = (group) => group?.phone || group?.phone_number || group?.mobile || '-';
   const getMemberDob = (member) => member?.dob || member?.date_of_birth || member?.dateOfBirth || member?.birth_date || '';
+  const toValidDate = (value) => {
+    if (!value) return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+  const getDateRangeBounds = () => {
+    const fromDate = dateRange.from ? new Date(`${dateRange.from}T00:00:00`) : null;
+    const toDate = dateRange.to ? new Date(`${dateRange.to}T23:59:59.999`) : null;
+    return { fromDate, toDate };
+  };
+  const isWithinDateRange = (value) => {
+    if (!dateRange.from && !dateRange.to) return true;
+    const date = toValidDate(value);
+    if (!date) return false;
+    const { fromDate, toDate } = getDateRangeBounds();
+    if (fromDate && date < fromDate) return false;
+    if (toDate && date > toDate) return false;
+    return true;
+  };
+  const getDateRangeLabel = () => {
+    if (!dateRange.from && !dateRange.to) return 'All Dates';
+    if (dateRange.from && dateRange.to) return `${formatDate(dateRange.from)} to ${formatDate(dateRange.to)}`;
+    if (dateRange.from) return `From ${formatDate(dateRange.from)}`;
+    return `Until ${formatDate(dateRange.to)}`;
+  };
 
   const updatePLSummary = () => {
-    const approvedLoans = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date);
-    const totalExpenses = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+    const approvedLoans = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date && isWithinDateRange(l.disbursement_date));
+    const filteredExpenses = expenses.filter(e => isWithinDateRange(e.date || e.expense_date || e.created));
+    const filteredMembers = members.filter(m => isWithinDateRange(m.registration_date || m.created));
+    const filteredProcessingFeeLoans = loans.filter(l => l.processing_fee_paid && isWithinDateRange(l.processing_fee_details?.date || l.application_date || l.created));
+    const totalExpenses = filteredExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
     const totalCapitalDisbursed = approvedLoans.reduce((sum, l) => sum + (l.approved_amount || 0), 0);
     const expectedInterest = approvedLoans.reduce((sum, l) => sum + (l.interest_amount || 0), 0);
-    const processingFeesCollected = loans.filter(l => l.processing_fee_paid).reduce((sum, l) => sum + (l.processing_fee || 0), 0);
-    const registrationFeesCollected = members.reduce((sum, m) => sum + (m.registration_fee || 0), 0);
+    const processingFeesCollected = filteredProcessingFeeLoans.reduce((sum, l) => sum + (l.processing_fee || 0), 0);
+    const registrationFeesCollected = filteredMembers.reduce((sum, m) => sum + (m.registration_fee || 0), 0);
 
     container.querySelector('#pl-capital-disbursed').textContent = `KES ${totalCapitalDisbursed.toLocaleString()}`;
     container.querySelector('#pl-registration-fees').textContent = `KES ${registrationFeesCollected.toLocaleString()}`;
@@ -414,6 +456,7 @@ export const renderReportsDashboard = async () => {
       return principal + interest;
     };
     const filtered = members.filter(m => {
+      if (!isWithinDateRange(m.registration_date || m.created)) return false;
       if (activeFilters.individuals === 'all') return true;
       const isGroupMember = !!m.group;
       if (activeFilters.individuals === 'individual') return !isGroupMember;
@@ -444,11 +487,11 @@ export const renderReportsDashboard = async () => {
       const onTrack = overdueSchedules.length === 0;
       const totalArrears = getArrearsTotal(overdueSchedules);
 
-      // Active Logic: Savings in last 90 days
+      // Active logic: independent individuals stay active; group members depend on savings in the last 90 days.
       const mSavings = savings.filter(s => s.member === m.id && !s.is_reversed);
       const totalSav = mSavings.reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
-      const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
-      const isInactive = !lastSavingsDate || (new Date() - lastSavingsDate > 90 * 24 * 60 * 60 * 1000);
+      const lastSavingsDate = getLatestSavingsDate(mSavings);
+      const activityStatus = getMemberActivityStatus(m, lastSavingsDate);
 
       const groupName = m.expand?.group?.name || 'Individual';
 
@@ -474,7 +517,7 @@ export const renderReportsDashboard = async () => {
               ${mLoans.length === 0 ? '<span class="badge badge-secondary">NO LOAN</span>' : 
                 (percentRepaid >= 100 ? '<span class="badge badge-success">COMPLETED</span>' :
                 (onTrack ? '<span class="badge badge-primary">ON TRACK</span>' : '<span class="badge badge-danger">ARREARS</span>'))}
-              ${isInactive ? '<span class="badge badge-outline" style="border-color: #ef4444; color: #ef4444; font-size: 0.65rem;">INACTIVE</span>' : ''}
+              ${!activityStatus.isActive ? '<span class="badge badge-outline" style="border-color: #ef4444; color: #ef4444; font-size: 0.65rem;">INACTIVE</span>' : ''}
             </div>
           </td>
         </tr>`;
@@ -556,6 +599,7 @@ export const renderReportsDashboard = async () => {
     });
 
     const filtered = groupData.filter(g => {
+      if (!isWithinDateRange(g.lastActivityDate || g.registration_date || g.created)) return false;
       if (activeFilters.groups === 'all') return true;
       if (activeFilters.groups === 'active') return !g.isDormant;
       if (activeFilters.groups === 'inactive' || activeFilters.groups === 'dormant') return g.isDormant;
@@ -627,6 +671,7 @@ export const renderReportsDashboard = async () => {
 
     const allApproved = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date);
     const filtered = allApproved.filter(l => {
+      if (!isWithinDateRange(l.disbursement_date)) return false;
       const member = l.expand?.member;
       const memberGroup = member?.expand?.group || null;
       const isGroupAccount = Boolean(l.group && !l.member);
@@ -683,6 +728,7 @@ export const renderReportsDashboard = async () => {
 
   const updateRegistrations = () => {
     const filtered = members.filter(m => {
+      if (!isWithinDateRange(m.registration_date || m.created)) return false;
       if (activeFilters.registrations === 'all') return true;
       const regDate = new Date(m.registration_date);
       const now = new Date();
@@ -804,7 +850,7 @@ export const renderReportsDashboard = async () => {
         amount: l.processing_fee,
         method: 'Cash'
       }))
-    ].sort((a, b) => new Date(b.date) - new Date(a.date));
+    ].filter(e => isWithinDateRange(e.date)).sort((a, b) => new Date(b.date) - new Date(a.date));
 
     const filtered = entries.filter(e => {
       if (activeFilters.cashflow === 'all') return true;
@@ -888,6 +934,7 @@ export const renderReportsDashboard = async () => {
       .sort((a, b) => new Date(b.date) - new Date(a.date));
 
     const filtered = withdrawalRows.filter(row => {
+      if (!isWithinDateRange(row.date)) return false;
       if (activeFilters.withdrawals === 'individual') return row.accountScope === 'independent';
       if (activeFilters.withdrawals === 'group_members') return row.accountScope === 'group_member';
       if (activeFilters.withdrawals === 'group') return row.accountScope === 'group_account';
@@ -927,6 +974,7 @@ export const renderReportsDashboard = async () => {
 
     // Find all unpaid schedule items that are overdue or upcoming
     const alertItems = schedules.filter(s => !isSchedulePaid(s)).map(s => {
+      if (!isWithinDateRange(s.due_date)) return null;
       const loan = loans.find(l => l.id === s.loan);
       const isCollectibleLoan = loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
       if (!isCollectibleLoan) return null;
@@ -934,6 +982,8 @@ export const renderReportsDashboard = async () => {
       
       const member = loan.expand?.member;
       const groupName = member?.expand?.group?.name || loan.expand?.group?.name || 'Individual';
+      const guarantor = loan.guarantor || {};
+      const guarantorPhone = guarantor.phone || guarantor.phone_number || guarantor.guarantorPhone || '-';
 
       const dueDate = new Date(s.due_date);
       const diffDays = isScheduleInArrears(s, now)
@@ -950,7 +1000,7 @@ export const renderReportsDashboard = async () => {
       else if (dueDate <= upcomingThreshold) { priority = 'UPCOMING'; color = '#3b82f6'; label = 'DUE IN ' + Math.abs(diffDays) + ' DAYS'; }
       else return null;
 
-      return { ...s, loanObj: loan, member, groupName, diffDays, priority, color, label };
+      return { ...s, loanObj: loan, member, groupName, guarantorPhone, diffDays, priority, color, label };
     }).filter(Boolean).sort((a, b) => b.diffDays - a.diffDays);
 
     const counts = { critical: 0, urgent: 0, today: 0, upcoming: 0 };
@@ -990,7 +1040,7 @@ export const renderReportsDashboard = async () => {
         </div>
         <div style="font-size: 0.8rem; margin-bottom: 16px;">
           <div>📞 <strong>Phone:</strong> ${getMemberPhone(a.member) !== '-' ? getMemberPhone(a.member) : getGroupPhone(a.loanObj?.expand?.group)}</div>
-          <div>👤 <strong>NOK:</strong> ${a.member?.nok_name || 'N/A'} (${a.member?.nok_phone || 'N/A'})</div>
+          <div>👤 <strong>Guarantor Phone:</strong> ${a.guarantorPhone}</div>
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
           <button class="btn btn-outline btn-xs call-reminder-btn" data-loan="${a.loan}" data-member="${a.member?.id}">📞 Mark Called</button>
@@ -1032,6 +1082,9 @@ export const renderReportsDashboard = async () => {
   const tabs = container.querySelectorAll('.tab-btn');
   const sections = container.querySelectorAll('.report-section');
   const filterControls = container.querySelector('#filter-controls');
+  const dateFromInput = container.querySelector('#report-date-from');
+  const dateToInput = container.querySelector('#report-date-to');
+  const dateClearBtn = container.querySelector('#report-date-clear');
   const reportLabels = {
     pl: 'Profit & Loss Overview',
     individuals: 'Individual Performance',
@@ -1055,10 +1108,24 @@ export const renderReportsDashboard = async () => {
     const activeTab = getActiveTab();
     const reportName = reportLabels[activeTab] || activeTab;
     const filterLabel = activeTab === 'pl' || activeTab === 'alerts' ? 'All Records' : getActiveFilterLabel(activeTab);
+    const dateLabel = getDateRangeLabel();
     const reportNameEl = container.querySelector('#print-report-name');
     const reportMetaEl = container.querySelector('#print-report-meta');
     if (reportNameEl) reportNameEl.textContent = reportName;
-    if (reportMetaEl) reportMetaEl.textContent = `${filterLabel} • Generated ${new Date().toLocaleString()}`;
+    if (reportMetaEl) reportMetaEl.textContent = `${filterLabel} • ${dateLabel} • Generated ${new Date().toLocaleString()}`;
+  };
+
+  const refreshActiveReport = () => {
+    const tab = getActiveTab();
+    if (tab === 'pl') updatePLSummary();
+    if (tab === 'individuals') updateIndividuals();
+    if (tab === 'groups') updateGroups();
+    if (tab === 'disbursements') updateDisbursements();
+    if (tab === 'registrations') updateRegistrations();
+    if (tab === 'cashflow') updateCashFlow();
+    if (tab === 'withdrawals') updateWithdrawals();
+    if (tab === 'alerts') updateAlerts();
+    updatePrintHeader();
   };
 
   const updateFiltersUI = (tab) => {
@@ -1107,12 +1174,6 @@ export const renderReportsDashboard = async () => {
       ];
     }
 
-    if (filters.length === 0 && tab !== 'alerts') {
-      container.querySelector('#filter-bar').style.display = 'none';
-      updatePrintHeader();
-      return;
-    }
-
     container.querySelector('#filter-bar').style.display = 'flex';
     filters.forEach(f => {
       const btn = document.createElement('button');
@@ -1128,13 +1189,7 @@ export const renderReportsDashboard = async () => {
         activeFilters[tab] = f.id;
         pages[tab] = 1; // Reset pagination
         updateFiltersUI(tab);
-        if (tab === 'individuals') updateIndividuals();
-        if (tab === 'groups') updateGroups();
-        if (tab === 'disbursements') updateDisbursements();
-        if (tab === 'registrations') updateRegistrations();
-        if (tab === 'cashflow') updateCashFlow();
-        if (tab === 'withdrawals') updateWithdrawals();
-        updatePrintHeader();
+        refreshActiveReport();
       };
       filterControls.appendChild(btn);
     });
@@ -1151,12 +1206,28 @@ export const renderReportsDashboard = async () => {
       activeSection.style.display = 'block';
       activeSection.classList.add('print-active');
       updateFiltersUI(tab.dataset.tab);
-      if (tab.dataset.tab === 'cashflow') updateCashFlow();
-      if (tab.dataset.tab === 'withdrawals') updateWithdrawals();
-      if (tab.dataset.tab === 'alerts') updateAlerts();
-      updatePrintHeader();
+      refreshActiveReport();
     };
   });
+
+  const applyDateRangeChange = () => {
+    dateRange = {
+      from: dateFromInput?.value || '',
+      to: dateToInput?.value || ''
+    };
+    Object.keys(pages).forEach(key => { pages[key] = 1; });
+    refreshActiveReport();
+  };
+
+  if (dateFromInput) dateFromInput.onchange = applyDateRangeChange;
+  if (dateToInput) dateToInput.onchange = applyDateRangeChange;
+  if (dateClearBtn) {
+    dateClearBtn.onclick = () => {
+      if (dateFromInput) dateFromInput.value = '';
+      if (dateToInput) dateToInput.value = '';
+      applyDateRangeChange();
+    };
+  }
 
   container.querySelector('#print-report-btn').onclick = () => {
     updatePrintHeader();
@@ -1174,7 +1245,7 @@ export const renderReportsDashboard = async () => {
 
     const reportName = reportLabels[activeTab] || activeTab;
     const filterLabel = activeTab === 'pl' || activeTab === 'alerts' ? 'All Records' : getActiveFilterLabel(activeTab);
-    let tsv = `${orgName}\n${reportName}\n${filterLabel}\nGenerated ${new Date().toLocaleString()}\n\n`;
+    let tsv = `${orgName}\n${reportName}\n${filterLabel}\n${getDateRangeLabel()}\nGenerated ${new Date().toLocaleString()}\n\n`;
     const rows = table.querySelectorAll('tr');
     rows.forEach(row => {
       const cols = row.querySelectorAll('th, td');

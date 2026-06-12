@@ -5,6 +5,7 @@ import { formatDate } from '../../core/utils.js';
 import { pb } from '../../services/api.js'; // We'll use pb to get all loans for the queue
 import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
 import { getReturnTo, withReturnTo } from '../../core/navigation.js';
+import { addMonthsPreservingDay, getRepaymentScheduleAnchorDate } from '../../core/repaymentSchedule.js';
 
 const QUEUE_FILTER = 'status="pending" || status="approved" || status="partial_approved" || status="expired"';
 
@@ -707,10 +708,9 @@ export const renderLoanApprovalQueue = async (params = {}) => {
   // --- Helper: Generate Repayment Schedule ---
   async function generateSchedule(loan) {
     const installmentAmount = loan.total_liability / loan.period;
-    const startDate = new Date(loan.disbursement_date);
+    const startDate = getRepaymentScheduleAnchorDate(loan);
     for (let i = 1; i <= loan.period; i++) {
-      const dueDate = new Date(startDate);
-      dueDate.setMonth(startDate.getMonth() + i);
+      const dueDate = addMonthsPreservingDay(startDate, i);
       await loanService.createScheduleInstallment({
         loan: loan.id,
         installment_no: i,

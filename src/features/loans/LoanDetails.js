@@ -6,6 +6,7 @@ import { formatDate } from '../../core/utils.js';
 import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
 import { getScheduleRemaining, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
 import { getReturnTo } from '../../core/navigation.js';
+import { addMonthsPreservingDay, getRepaymentScheduleAnchorDate } from '../../core/repaymentSchedule.js';
 
 export const renderLoanDetails = async (params) => {
   const { id: loanNo } = params;
@@ -55,6 +56,14 @@ export const renderLoanDetails = async (params) => {
     '"': '&quot;',
     "'": '&#039;'
   }[char]));
+  const guarantor = loan.guarantor || {};
+  const guarantorName = guarantor.name || guarantor.full_name || '-';
+  const guarantorPhone = guarantor.phone || guarantor.phone_number || guarantor.guarantorPhone || '-';
+  const guarantorId = guarantor.id_number || guarantor.idNo || guarantor.id_no || guarantor.national_id || '-';
+  const guarantorRelationship = guarantor.relationship || guarantor.relation || '-';
+  const guarantorPhoto = String(guarantor.photo || '').startsWith('data:image/')
+    ? guarantor.photo
+    : '';
 
   // Calculate Financials
   const getLoanLiability = (loanRecord) => {
@@ -251,6 +260,41 @@ export const renderLoanDetails = async (params) => {
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Applicant Reference</div>
                 <div class="font-semibold">${loan.member || loan.group || 'N/A'}</div>
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top: 24px; border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden;">
+            <div style="padding: 14px 18px; background: var(--bg-light); border-bottom: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+              <div>
+                <div class="text-xs text-muted" style="font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;">Guarantor Details</div>
+                <div class="text-sm text-muted">Security contact attached to this loan file</div>
+              </div>
+              <span class="badge badge-outline" style="font-size: 0.65rem;">GUARANTOR</span>
+            </div>
+            <div style="padding: 18px; display: grid; grid-template-columns: auto 1fr; gap: 18px; align-items: center;">
+              <div style="width: 72px; height: 72px; border-radius: 50%; background: var(--bg-light); border: 1px solid var(--border-color); overflow: hidden; display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow-sm);">
+                ${guarantorPhoto
+                  ? `<img src="${guarantorPhoto}" alt="Guarantor photo" style="width: 100%; height: 100%; object-fit: cover;" />`
+                  : '<span style="font-size: 1.6rem;">👤</span>'}
+              </div>
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px;">
+                <div>
+                  <div class="text-xs text-muted">Name</div>
+                  <div class="font-semibold">${escapeHtml(guarantorName)}</div>
+                </div>
+                <div>
+                  <div class="text-xs text-muted">Phone Number</div>
+                  <div class="font-semibold">${escapeHtml(guarantorPhone)}</div>
+                </div>
+                <div>
+                  <div class="text-xs text-muted">ID Number</div>
+                  <div class="font-semibold">${escapeHtml(guarantorId)}</div>
+                </div>
+                <div>
+                  <div class="text-xs text-muted">Relationship</div>
+                  <div class="font-semibold">${escapeHtml(guarantorRelationship)}</div>
+                </div>
               </div>
             </div>
           </div>
@@ -644,10 +688,9 @@ export const renderLoanDetails = async (params) => {
   // --- Helper: Generate Repayment Schedule ---
   async function generateSchedule(loanObj) {
     const installmentAmount = getLoanLiability(loanObj) / loanObj.period;
-    const startDate = new Date(loanObj.disbursement_date);
+    const startDate = getRepaymentScheduleAnchorDate(loanObj);
     for (let i = 1; i <= loanObj.period; i++) {
-      const dueDate = new Date(startDate);
-      dueDate.setMonth(startDate.getMonth() + i);
+      const dueDate = addMonthsPreservingDay(startDate, i);
       await loanService.createScheduleInstallment({
         loan: loanObj.id,
         installment_no: i,

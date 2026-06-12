@@ -9,6 +9,7 @@ import { navigate } from '../../core/router.js';
 import { setButtonLoading } from '../../core/uiState.js';
 import { authService } from '../../services/authService.js';
 import { withReturnTo } from '../../core/navigation.js';
+import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
 
 export const renderMemberProfile = async (params) => {
   const { id } = params;
@@ -69,21 +70,10 @@ export const renderMemberProfile = async (params) => {
     return date.toISOString().split('T')[0];
   };
   const totalSavings = calculateSavingsBalance();
-  const inactiveCutoffMs = 90 * 24 * 60 * 60 * 1000;
-  const getValidDate = (value) => {
-    if (!value) return null;
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? null : date;
-  };
-  const lastSavingsDate = memberSavings
-    .map(saving => getValidDate(saving.date || saving.created))
-    .filter(Boolean)
-    .sort((a, b) => b - a)[0] || null;
-  const dbMemberStatus = String(member.status || 'active').toLowerCase();
-  const isAdminStatus = ['suspended', 'exited'].includes(dbMemberStatus);
-  const isSavingsActive = lastSavingsDate && (Date.now() - lastSavingsDate.getTime() <= inactiveCutoffMs);
-  const displayMemberStatus = isAdminStatus ? dbMemberStatus.toUpperCase() : (isSavingsActive ? 'ACTIVE' : 'INACTIVE');
-  const displayMemberStatusClass = displayMemberStatus === 'ACTIVE' ? 'badge-success' : 'badge-danger';
+  const lastSavingsDate = getLatestSavingsDate(memberSavings);
+  const activityStatus = getMemberActivityStatus(member, lastSavingsDate);
+  const displayMemberStatus = activityStatus.label;
+  const displayMemberStatusClass = activityStatus.className;
 
   let loanPage = 1, savingsPage = 1;
   const pageSize = 10;

@@ -6,6 +6,7 @@ import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { getArrearsTotal, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
+import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
 
 export const renderDashboard = async () => {
   const container = document.createElement('div');
@@ -162,7 +163,17 @@ export const renderDashboard = async () => {
       safe('loan schedules', () => dataCache.getLocalFirst('loan_schedule:dashboard:all', () => pb.collection('loan_schedule').getFullList()), [])
     ]);
 
-    const activeMembers = members.filter(m => m.status !== 'inactive').length;
+    const savingsByMember = savings.reduce((map, saving) => {
+      if (!saving.member) return map;
+      const rows = map.get(saving.member) || [];
+      rows.push(saving);
+      map.set(saving.member, rows);
+      return map;
+    }, new Map());
+    const activeMembers = members.filter(member => {
+      const lastSavingsDate = getLatestSavingsDate(savingsByMember.get(member.id) || []);
+      return getMemberActivityStatus(member, lastSavingsDate).isActive;
+    }).length;
     const activeGroups = groups.length;
     const pendingLoans = loans.filter(l => l.status === 'pending').length;
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
