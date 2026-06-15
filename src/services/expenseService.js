@@ -22,9 +22,10 @@ export const expenseService = {
   /**
    * Get all expenses (for reports)
    */
-  async getFullList() {
+  async getFullList({ filter = '', sort = '-date' } = {}) {
     return await pb.collection('expenses').getFullList({
-      sort: '-date',
+      sort,
+      filter,
       expand: 'votehead,recorded_by'
     });
   },

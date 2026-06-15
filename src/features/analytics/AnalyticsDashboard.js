@@ -43,7 +43,7 @@ export const renderAnalyticsDashboard = async () => {
     return true;
   };
 
-  let currentFilter = 'all'; // '30days', 'quarter', 'ytd', 'all'
+  let dateRange = { from: '', to: '' };
   let currentOfficerFilter = 'all';
   let currentCollectionWindow = 'this_month';
   let chartInstances = [];
@@ -57,23 +57,35 @@ export const renderAnalyticsDashboard = async () => {
     const today = new Date();
     const todayStart = new Date(today);
     todayStart.setHours(0, 0, 0, 0);
-    let filterDate = new Date(0); // all time
-
-    if (currentFilter === '30days') {
-      filterDate = new Date();
-      filterDate.setDate(today.getDate() - 30);
-    } else if (currentFilter === 'quarter') {
-      filterDate = new Date();
-      filterDate.setMonth(today.getMonth() - 3);
-    } else if (currentFilter === 'ytd') {
-      filterDate = new Date(today.getFullYear(), 0, 1);
-    }
+    const toValidDate = (value) => {
+      if (!value) return null;
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? null : date;
+    };
+    const fromDate = dateRange.from ? new Date(`${dateRange.from}T00:00:00`) : null;
+    const toDate = dateRange.to ? new Date(`${dateRange.to}T23:59:59.999`) : null;
+    const isWithinDateRange = (value) => {
+      if (!dateRange.from && !dateRange.to) return true;
+      const date = toValidDate(value);
+      if (!date) return false;
+      if (fromDate && date < fromDate) return false;
+      if (toDate && date > toDate) return false;
+      return true;
+    };
+    const formatShortDate = (date) => date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    const analyticsRangeLabel = dateRange.from && dateRange.to
+      ? `${formatShortDate(fromDate)} - ${formatShortDate(toDate)}`
+      : dateRange.from
+        ? `From ${formatShortDate(fromDate)}`
+        : dateRange.to
+          ? `Until ${formatShortDate(toDate)}`
+          : 'All Time';
 
     // Filter datasets
-    const fMembers = members.filter(m => new Date(m.registration_date || m.created) >= filterDate);
-    const fLoans = loans.filter(l => new Date(l.application_date || l.created) >= filterDate);
-    const fRepayments = repayments.filter(r => new Date(r.date || r.created) >= filterDate);
-    const fSavings = savings.filter(s => new Date(s.date || s.created) >= filterDate);
+    const fMembers = members.filter(m => isWithinDateRange(m.registration_date || m.created));
+    const fLoans = loans.filter(l => isWithinDateRange(l.application_date || l.disbursement_date || l.created));
+    const fRepayments = repayments.filter(r => isWithinDateRange(r.date || r.created));
+    const fSavings = savings.filter(s => isWithinDateRange(s.date || s.created));
 
     // Calculations based on filtered data
     const getLoanLiability = (loan) => {
@@ -149,7 +161,6 @@ export const renderAnalyticsDashboard = async () => {
       return false;
     };
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
-    const formatShortDate = (date) => date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
     const getCollectionWindow = () => {
       const startOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1);
       const endOfMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
@@ -195,7 +206,7 @@ export const renderAnalyticsDashboard = async () => {
     const scopedMembers = fMembers.filter(filterMemberByOfficer);
     const scopedSavings = fSavings.filter(filterSavingsByOfficer);
     const totalMembers = scopedMembers.length;
-    const activeLoans = loans.filter(l => isActiveDisbursedLoan(l) && filterByOfficer(l));
+    const activeLoans = fLoans.filter(l => isActiveDisbursedLoan(l) && filterByOfficer(l));
     const scopedLoans = fLoans.filter(filterByOfficer);
     const scopedRepayments = currentOfficerFilter === 'all'
       ? fRepayments
@@ -272,7 +283,7 @@ export const renderAnalyticsDashboard = async () => {
       .reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
     
     const activeLoanIds = new Set(activeLoans.map(loan => loan.id));
-    const activeLoanRepayments = repayments.filter(repayment => activeLoanIds.has(repayment.loan));
+    const activeLoanRepayments = fRepayments.filter(repayment => activeLoanIds.has(repayment.loan));
     const totalRepaid = activeLoanRepayments.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
     const totalLiabilityOverall = activeLoans.reduce((sum, l) => sum + getLoanLiability(l), 0);
     const repaymentRate = totalLiabilityOverall > 0 ? ((totalRepaid / totalLiabilityOverall) * 100).toFixed(1) : 0;
@@ -346,12 +357,13 @@ export const renderAnalyticsDashboard = async () => {
             <option value="all" ${currentOfficerFilter === 'all' ? 'selected' : ''}>All Loan Users</option>
             ${officerOptions.map(o => `<option value="${escapeHtml(o.id)}" ${currentOfficerFilter === o.id ? 'selected' : ''}>${escapeHtml(o.name)}</option>`).join('')}
           </select>
-          <select id="date-filter" class="form-control" style="width: auto;">
-            <option value="30days" ${currentFilter === '30days' ? 'selected' : ''}>Last 30 Days</option>
-            <option value="quarter" ${currentFilter === 'quarter' ? 'selected' : ''}>Last Quarter</option>
-            <option value="ytd" ${currentFilter === 'ytd' ? 'selected' : ''}>Year to Date</option>
-            <option value="all" ${currentFilter === 'all' ? 'selected' : ''}>All Time</option>
-          </select>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <label class="text-xs text-muted" for="analytics-date-from">From</label>
+            <input type="date" id="analytics-date-from" class="form-control" value="${dateRange.from}" style="width: 145px;" />
+            <label class="text-xs text-muted" for="analytics-date-to">To</label>
+            <input type="date" id="analytics-date-to" class="form-control" value="${dateRange.to}" style="width: 145px;" />
+            <button type="button" class="btn btn-outline btn-sm" id="analytics-date-clear" style="font-size: 0.75rem;">Clear</button>
+          </div>
           <select id="collection-window-filter" class="form-control" style="width: auto; min-width: 170px;">
             <option value="this_month" ${currentCollectionWindow === 'this_month' ? 'selected' : ''}>Collections: This Month</option>
             <option value="next_7_days" ${currentCollectionWindow === 'next_7_days' ? 'selected' : ''}>Collections: Next 7 Days</option>
@@ -364,6 +376,10 @@ export const renderAnalyticsDashboard = async () => {
 
       <!-- KPI Row -->
       <div class="analytics-grid">
+        <div class="card" style="grid-column: 1 / -1; padding: 12px 16px; background: var(--bg-light); border-left: 4px solid var(--primary);">
+          <div class="text-xs text-muted">Analytics Period</div>
+          <div class="font-semibold">${analyticsRangeLabel}</div>
+        </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(27, 61, 114, 0.1); color: var(--primary);">👥</div>
           <div class="kpi-label">Total Members</div>
@@ -594,8 +610,17 @@ export const renderAnalyticsDashboard = async () => {
       renderData();
     };
 
-    container.querySelector('#date-filter').onchange = (e) => {
-      currentFilter = e.target.value;
+    const applyAnalyticsDateRange = () => {
+      dateRange = {
+        from: container.querySelector('#analytics-date-from')?.value || '',
+        to: container.querySelector('#analytics-date-to')?.value || ''
+      };
+      renderData();
+    };
+    container.querySelector('#analytics-date-from').onchange = applyAnalyticsDateRange;
+    container.querySelector('#analytics-date-to').onchange = applyAnalyticsDateRange;
+    container.querySelector('#analytics-date-clear').onclick = () => {
+      dateRange = { from: '', to: '' };
       renderData();
     };
     container.querySelector('#collection-window-filter').onchange = (e) => {
@@ -629,7 +654,7 @@ export const renderAnalyticsDashboard = async () => {
     updateArrearsUI();
 
     setTimeout(() => {
-      initCharts(scopedLoans, scopedRepayments, currentOfficerFilter === 'all' ? members : members.filter(filterMemberByOfficer), scopedSavings);
+      initCharts(scopedLoans, scopedRepayments, scopedMembers, scopedSavings);
     }, 100);
   };
 
@@ -667,12 +692,34 @@ export const renderAnalyticsDashboard = async () => {
       }));
     }
 
-    // Setup time axes for last 6 months
+    // Setup time axes from the selected analytics period, defaulting to the last 6 months.
+    const parseDate = (value) => {
+      if (!value) return null;
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? null : date;
+    };
+    const datasetDates = [
+      ...fLoans.map(l => parseDate(l.application_date || l.disbursement_date || l.created)),
+      ...fRepayments.map(r => parseDate(r.date || r.created)),
+      ...allMembers.map(m => parseDate(m.registration_date || m.created)),
+      ...fSavings.map(s => parseDate(s.date || s.created))
+    ].filter(Boolean).sort((a, b) => a - b);
+    let axisStart = dateRange.from ? new Date(`${dateRange.from}T00:00:00`) : null;
+    let axisEnd = dateRange.to ? new Date(`${dateRange.to}T23:59:59.999`) : null;
+    if (!axisStart && datasetDates.length) axisStart = datasetDates[0];
+    if (!axisEnd && datasetDates.length) axisEnd = datasetDates[datasetDates.length - 1];
+    if (!axisStart || !axisEnd || axisEnd < axisStart) {
+      axisEnd = new Date();
+      axisStart = new Date(axisEnd.getFullYear(), axisEnd.getMonth() - 5, 1);
+    }
+    axisStart = new Date(axisStart.getFullYear(), axisStart.getMonth(), 1);
+    axisEnd = new Date(axisEnd.getFullYear(), axisEnd.getMonth(), 1);
+    const monthSpan = ((axisEnd.getFullYear() - axisStart.getFullYear()) * 12) + (axisEnd.getMonth() - axisStart.getMonth());
+    if (monthSpan > 11) axisStart = new Date(axisEnd.getFullYear(), axisEnd.getMonth() - 11, 1);
+
     const months = [];
     const monthKeys = [];
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date();
-      d.setMonth(d.getMonth() - i);
+    for (let d = new Date(axisStart); d <= axisEnd; d.setMonth(d.getMonth() + 1)) {
       months.push(d.toLocaleString('default', { month: 'short' }));
       monthKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
     }

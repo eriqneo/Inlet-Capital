@@ -8,6 +8,18 @@ let inactivityWatchStarted = false;
 const now = () => Date.now();
 const isSuspendedUser = (user) => String(user?.status || '').toLowerCase() === 'suspended';
 
+const formatPocketBaseError = (err, fallback = 'Request failed.') => {
+  const details = err?.data?.data;
+  if (!details || typeof details !== 'object') return err?.message || fallback;
+  const messages = Object.entries(details)
+    .map(([field, value]) => {
+      const message = value?.message || value?.code || 'Invalid value';
+      return `${field}: ${message}`;
+    })
+    .join(' ');
+  return messages || err?.message || fallback;
+};
+
 export const authService = {
   async login(email, password) {
     const authData = await pb.collection('users').authWithPassword(email, password);
@@ -127,7 +139,27 @@ export const authService = {
   },
 
   async updateUser(id, data) {
-    return await pb.collection('users').update(id, data);
+    try {
+      return await pb.collection('users').update(id, data);
+    } catch (err) {
+      throw new Error(formatPocketBaseError(err, 'Could not update user.'));
+    }
+  },
+
+  async adminUpdateUser(id, data) {
+    if (!this.hasRole('super_admin')) {
+      throw new Error('Only super admins can manage users and reset passwords.');
+    }
+    const payload = { ...data };
+    if (payload.password) {
+      if (id === this.getUser()?.id && !payload.oldPassword) {
+        throw new Error('Use the Change Password page to update your own password.');
+      }
+      payload.passwordConfirm = payload.passwordConfirm || payload.password;
+      payload.force_password_change = true;
+      payload.password_changed_at = null;
+    }
+    return await this.updateUser(id, payload);
   },
 
   async deleteUser(id) {

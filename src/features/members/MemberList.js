@@ -12,6 +12,7 @@ export const renderMemberList = async () => {
   const pageSize = 10;
   let currentSearch = '';
   let statusFilter = 'all';
+  let alphaSort = 'default';
   let totalItems = 0;
   let requestId = 0;
 
@@ -28,6 +29,11 @@ export const renderMemberList = async () => {
       <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; gap: 16px; flex-wrap: wrap; align-items: center; justify-content: space-between;">
         <input type="text" id="member-search" class="form-control" placeholder="Search by name, ID or Phone..." style="max-width: 400px;" />
         <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+          <select id="member-alpha-sort" class="form-control" style="width: 145px; padding: 6px 8px; font-size: 0.75rem;">
+            <option value="default">Latest</option>
+            <option value="az">Name A-Z</option>
+            <option value="za">Name Z-A</option>
+          </select>
           <div id="member-status-filter" style="display: flex; gap: 8px; flex-wrap: wrap;">
             <button type="button" class="btn btn-primary btn-sm" data-status-filter="all">All</button>
             <button type="button" class="btn btn-outline btn-sm" data-status-filter="active">Active</button>
@@ -60,6 +66,7 @@ export const renderMemberList = async () => {
   const tableBody = container.querySelector('#member-table-body');
   const paginationWrapper = container.querySelector('#pagination-wrapper');
   const searchInput = container.querySelector('#member-search');
+  const alphaSortSelect = container.querySelector('#member-alpha-sort');
   const statusFilterButtons = Array.from(container.querySelectorAll('[data-status-filter]'));
   const filterCountEl = container.querySelector('#member-filter-count');
 
@@ -174,12 +181,13 @@ export const renderMemberList = async () => {
 
     try {
       const filter = buildSearchFilter(currentSearch);
-      const query = { page: currentPage, perPage: pageSize, filter, sort: '-created' };
+      const sort = alphaSort === 'az' ? 'full_name' : (alphaSort === 'za' ? '-full_name' : '-created');
+      const query = { page: currentPage, perPage: pageSize, filter, sort };
 
       if (statusFilter !== 'all') {
         const allMatchingMembers = await pb.collection('members').getFullList({
           filter,
-          sort: '-created',
+          sort,
           expand: 'group'
         });
         const enrichedMembers = await enrichMembersWithActivity(allMatchingMembers);
@@ -228,6 +236,11 @@ export const renderMemberList = async () => {
   }, 300);
 
   searchInput.addEventListener('input', debouncedSearch);
+  alphaSortSelect.onchange = () => {
+    alphaSort = alphaSortSelect.value;
+    currentPage = 1;
+    loadMembers();
+  };
   statusFilterButtons.forEach(btn => {
     btn.onclick = () => {
       statusFilter = btn.dataset.statusFilter;

@@ -16,6 +16,7 @@ export const renderLoanList = async () => {
   const pageSize = 10;
   let searchTerm = '';
   let statusFilter = 'running';
+  let alphaSort = 'default';
   let requestId = 0;
 
   container.innerHTML = `
@@ -38,7 +39,7 @@ export const renderLoanList = async () => {
 
     <div class="card" style="padding: 0; overflow: hidden;">
       <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; gap: 16px; flex-wrap: wrap;">
-        <input type="text" id="loan-search" class="form-control" placeholder="Search by Loan No..." style="max-width: 400px;" />
+        <input type="text" id="loan-search" class="form-control" placeholder="Search by name, phone, or loan number..." style="max-width: 400px;" />
         <select id="loan-status-filter" class="form-control" style="max-width: 240px;">
           <option value="running" selected>Running Loans</option>
           <option value="pending">Pending Approval</option>
@@ -46,6 +47,11 @@ export const renderLoanList = async () => {
           <option value="declined">Declined</option>
           <option value="completed">Completed</option>
           <option value="all">All Loans</option>
+        </select>
+        <select id="loan-alpha-sort" class="form-control" style="max-width: 160px;">
+          <option value="default">Latest</option>
+          <option value="az">Client A-Z</option>
+          <option value="za">Client Z-A</option>
         </select>
       </div>
       <div class="table-responsive">
@@ -110,6 +116,39 @@ export const renderLoanList = async () => {
 
   const tableBody = container.querySelector('#loan-table-body');
   const paginationWrapper = container.querySelector('#pagination-wrapper');
+  const getLoanClientName = (loan) => {
+    const member = loan.expand?.member;
+    const loanGroup = loan.expand?.group;
+    return member?.full_name || loanGroup?.name || 'Unknown';
+  };
+  const getLoanSearchText = (loan) => {
+    const member = loan.expand?.member || {};
+    const group = loan.expand?.group || member.expand?.group || {};
+    return [
+      loan.loan_no,
+      loan.status,
+      member.full_name,
+      member.reg_no,
+      member.id_number,
+      member.phone_number,
+      member.phone,
+      member.mobile,
+      group.name,
+      group.group_id,
+      group.phone,
+      group.phone_number,
+      group.mobile
+    ].filter(Boolean).join(' ').toLowerCase();
+  };
+  const filterLoansBySearch = (items) => {
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(loan => getLoanSearchText(loan).includes(q));
+  };
+  const sortLoansAlphabetically = (items) => [...items].sort((a, b) => {
+    const comparison = getLoanClientName(a).localeCompare(getLoanClientName(b), undefined, { sensitivity: 'base' });
+    return alphaSort === 'za' ? -comparison : comparison;
+  });
 
   const updateUI = async () => {
     const thisRequest = ++requestId;
@@ -132,9 +171,6 @@ export const renderLoanList = async () => {
       } else if (statusFilter === 'completed') {
         filters.push('status="completed"');
       }
-      if (searchTerm) {
-        filters.push(`(loan_no ~ "${searchTerm}" || status ~ "${searchTerm}")`);
-      }
       const pbFilter = filters.join(' && ');
 
       const renderLoanResult = (result) => {
@@ -149,7 +185,7 @@ export const renderLoanList = async () => {
           const loanGroup = l.expand?.group;
           const memberGroup = member?.expand?.group;
           const isGroupAccountLoan = Boolean(loanGroup && !member);
-          const clientName = member ? member.full_name : (loanGroup ? loanGroup.name : 'Unknown');
+          const clientName = getLoanClientName(l);
           const clientReg = member ? member.reg_no : (loanGroup ? loanGroup.group_id : 'Unknown');
           const applicantBadge = isGroupAccountLoan
             ? `<span class="badge" style="background: var(--surface-dark); color: white; font-size: 0.7rem;">TB</span>`
@@ -229,6 +265,22 @@ export const renderLoanList = async () => {
         });
         if (pagination) paginationWrapper.appendChild(pagination);
       };
+
+      if (alphaSort !== 'default' || searchTerm) {
+        const allLoans = await loanService.getFullListCached({
+          filter: pbFilter,
+          sort: '-application_date',
+          cacheKey: 'loans:list:alpha:expanded:v1'
+        });
+        const searchedLoans = filterLoansBySearch(allLoans);
+        const sortedLoans = alphaSort !== 'default' ? sortLoansAlphabetically(searchedLoans) : searchedLoans;
+        const start = (currentPage - 1) * pageSize;
+        renderLoanResult({
+          items: sortedLoans.slice(start, start + pageSize),
+          totalItems: sortedLoans.length
+        });
+        return;
+      }
 
       const query = { page: currentPage, perPage: pageSize, filter: pbFilter };
       const result = await loanService.getAllCached(query, freshResult => renderLoanResult(freshResult));
@@ -316,6 +368,7 @@ export const renderLoanList = async () => {
 
   const searchInput = container.querySelector('#loan-search');
   const statusSelect = container.querySelector('#loan-status-filter');
+  const alphaSortSelect = container.querySelector('#loan-alpha-sort');
   const debouncedSearch = debounce(() => {
     searchTerm = searchInput.value.trim();
     currentPage = 1;
@@ -324,6 +377,11 @@ export const renderLoanList = async () => {
   searchInput.addEventListener('input', debouncedSearch);
   statusSelect.onchange = () => {
     statusFilter = statusSelect.value;
+    currentPage = 1;
+    updateUI();
+  };
+  alphaSortSelect.onchange = () => {
+    alphaSort = alphaSortSelect.value;
     currentPage = 1;
     updateUI();
   };

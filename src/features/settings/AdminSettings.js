@@ -715,38 +715,44 @@ export const renderAdminSettings = async () => {
       const formData = new FormData(userForm);
       const data = Object.fromEntries(formData.entries());
       const editId = container.querySelector('#user-edit-id').value;
-      data.module_permissions = moduleInputs
+      const password = String(data.password || '').trim();
+      const passwordConfirm = String(data.passwordConfirm || '').trim();
+      const payload = {
+        name: String(data.name || '').trim(),
+        email: String(data.email || '').trim(),
+        role: data.role,
+        module_permissions: moduleInputs
         .filter(input => input.checked)
-        .map(input => input.value);
+          .map(input => input.value),
+        emailVisibility: true
+      };
 
-      if (data.password || data.passwordConfirm) {
-        if (data.password !== data.passwordConfirm) {
+      if (password || passwordConfirm) {
+        if (password !== passwordConfirm) {
           return window.notify?.error('Passwords do not match!');
         }
-      } else {
-        delete data.password;
-        delete data.passwordConfirm;
+        if (password.length < 8) {
+          return window.notify?.error('Password must be at least 8 characters.');
+        }
+        payload.password = password;
+        payload.passwordConfirm = passwordConfirm;
       }
-      
-      data.emailVisibility = true;
+
       const restoreButton = setButtonLoading(userForm.querySelector('button[type="submit"]'), editId ? 'Updating...' : 'Creating...');
 
       try {
         if (editId) {
-          if (data.password) {
-            data.force_password_change = true;
-          }
-          await authService.updateUser(editId, data);
+          await authService.adminUpdateUser(editId, payload);
           if (editId === pb.authStore.model?.id) {
             await authService.refreshSession();
           }
-          await logAudit('user_updated', `User ${data.email} updated`);
-          if (window.notify) window.notify.success('User updated!');
+          await logAudit('user_updated', `User ${payload.email} updated${payload.password ? ' with password reset' : ''}`);
+          if (window.notify) window.notify.success(payload.password ? 'User updated. They must change the new temporary password on next login.' : 'User updated!');
         } else {
-          data.force_password_change = true;
-          data.status = 'active';
-          await pb.collection('users').create(data);
-          await logAudit('user_created', `User ${data.email} created with role ${data.role}`);
+          payload.force_password_change = true;
+          payload.status = 'active';
+          await pb.collection('users').create(payload);
+          await logAudit('user_created', `User ${payload.email} created with role ${payload.role}`);
           if (window.notify) window.notify.success('User created!');
         }
         userModal.style.display = 'none';

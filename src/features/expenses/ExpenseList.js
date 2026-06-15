@@ -12,6 +12,7 @@ export const renderExpenseList = async () => {
   const pageSize = 10;
   let requestId = 0;
   let vMap = {};
+  let dateRange = { from: '', to: '' };
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -26,6 +27,13 @@ export const renderExpenseList = async () => {
     </div>
 
     <div class="card" style="padding: 0; overflow: hidden;">
+      <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap;">
+        <label class="text-xs text-muted" for="expense-date-from">From</label>
+        <input type="date" id="expense-date-from" class="form-control" style="width: 145px; padding: 6px 8px; font-size: 0.75rem;" />
+        <label class="text-xs text-muted" for="expense-date-to">To</label>
+        <input type="date" id="expense-date-to" class="form-control" style="width: 145px; padding: 6px 8px; font-size: 0.75rem;" />
+        <button type="button" class="btn btn-outline btn-sm" id="expense-date-clear" style="font-size: 0.75rem;">Clear</button>
+      </div>
       <div class="table-responsive">
         <table class="table">
           <thead>
@@ -48,6 +56,16 @@ export const renderExpenseList = async () => {
   const tableBody = container.querySelector('#expense-table-body');
   const paginationWrapper = container.querySelector('#pagination-wrapper');
   const exportBtn = container.querySelector('#export-expenses-excel-btn');
+  const dateFromInput = container.querySelector('#expense-date-from');
+  const dateToInput = container.querySelector('#expense-date-to');
+  const dateClearBtn = container.querySelector('#expense-date-clear');
+
+  const buildDateFilter = () => {
+    const filters = [];
+    if (dateRange.from) filters.push(`date >= "${dateRange.from} 00:00:00"`);
+    if (dateRange.to) filters.push(`date <= "${dateRange.to} 23:59:59"`);
+    return filters.join(' && ');
+  };
 
   const sanitizeCell = (value) => String(value ?? '-')
     .replace(/\t/g, ' ')
@@ -59,12 +77,15 @@ export const renderExpenseList = async () => {
     const restoreButton = setButtonLoading(exportBtn, 'Exporting...');
     try {
       const [allExpenses, allVoteheads] = await Promise.all([
-        expenseService.getFullList(),
+        expenseService.getFullList({ filter: buildDateFilter() }),
         voteheads.length > 0 ? Promise.resolve(voteheads) : expenseService.getVoteheads()
       ]);
       const voteheadMap = Object.fromEntries((allVoteheads || []).map(v => [v.id, v.name]));
       const generatedAt = new Date();
-      let tsv = `Inlet Capital\nExpenses Report\nGenerated ${generatedAt.toLocaleString()}\n\n`;
+      const rangeLabel = dateRange.from || dateRange.to
+        ? `Period: ${dateRange.from || 'Start'} to ${dateRange.to || 'Today'}`
+        : 'Period: All Dates';
+      let tsv = `Inlet Capital\nExpenses Report\n${rangeLabel}\nGenerated ${generatedAt.toLocaleString()}\n\n`;
       tsv += ['Date', 'Votehead', 'Description', 'Amount', 'Recorded By'].join('\t') + '\n';
 
       allExpenses.forEach(expense => {
@@ -137,7 +158,7 @@ export const renderExpenseList = async () => {
       };
 
       const [expenseResult, voteheadsResult] = await Promise.all([
-        expenseService.getAllCached({ page: currentPage, perPage: pageSize }, freshResult => {
+        expenseService.getAllCached({ page: currentPage, perPage: pageSize, filter: buildDateFilter() }, freshResult => {
           renderResult(freshResult, voteheads);
         }),
         voteheads.length > 0 ? Promise.resolve(voteheads) : expenseService.getVoteheads()
@@ -150,6 +171,25 @@ export const renderExpenseList = async () => {
       tableBody.innerHTML = `<tr><td colspan="4" class="text-center text-danger" style="padding: 40px;">Failed to load expenses: ${err.message || ''}</td></tr>`;
     }
   };
+
+  const applyDateRange = () => {
+    dateRange = {
+      from: dateFromInput?.value || '',
+      to: dateToInput?.value || ''
+    };
+    currentPage = 1;
+    updateUI();
+  };
+
+  if (dateFromInput) dateFromInput.onchange = applyDateRange;
+  if (dateToInput) dateToInput.onchange = applyDateRange;
+  if (dateClearBtn) {
+    dateClearBtn.onclick = () => {
+      if (dateFromInput) dateFromInput.value = '';
+      if (dateToInput) dateToInput.value = '';
+      applyDateRange();
+    };
+  }
 
   updateUI();
 

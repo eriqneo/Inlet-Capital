@@ -11,6 +11,7 @@ export const renderSavingsList = async () => {
   let currentPage = 1;
   const pageSize = 10;
   let requestId = 0;
+  let alphaSort = 'default';
   
   // We will load the data inside updateUI
 
@@ -25,6 +26,13 @@ export const renderSavingsList = async () => {
     </div>
 
     <div class="card" style="padding: 0; overflow: hidden;">
+      <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 12px; flex-wrap: wrap;">
+        <select id="savings-alpha-sort" class="form-control" style="max-width: 180px;">
+          <option value="default">Latest</option>
+          <option value="az">Name A-Z</option>
+          <option value="za">Name Z-A</option>
+        </select>
+      </div>
       <div class="table-responsive">
         <table class="table">
           <thead>
@@ -47,6 +55,18 @@ export const renderSavingsList = async () => {
 
   const tableBody = container.querySelector('#savings-table-body');
   const paginationWrapper = container.querySelector('#pagination-wrapper');
+  const alphaSortSelect = container.querySelector('#savings-alpha-sort');
+
+  const getTransactionTargetName = (transaction) => (
+    transaction.expand?.member?.full_name
+    || transaction.expand?.group?.name
+    || 'Unknown'
+  );
+
+  const sortTransactionsAlphabetically = (items) => [...items].sort((a, b) => {
+    const comparison = getTransactionTargetName(a).localeCompare(getTransactionTargetName(b), undefined, { sensitivity: 'base' });
+    return alphaSort === 'za' ? -comparison : comparison;
+  });
 
   const renderTransactions = (items) => {
     return items.map(t => {
@@ -60,7 +80,7 @@ export const renderSavingsList = async () => {
       paymentLabel = `${type === 'withdrawal' ? 'Sent via ' : 'Received via '}${methodLabel}${refPart}`;
 
       const memberGroup = t.expand?.member?.expand?.group;
-      const targetName = t.expand?.member ? t.expand.member.full_name : (t.expand?.group ? t.expand.group.name : 'Unknown');
+      const targetName = getTransactionTargetName(t);
       const targetId = t.expand?.member ? t.expand.member.reg_no : (t.expand?.group ? t.expand.group.group_id : (t.member || t.group || 'Unknown'));
       const targetType = t.expand?.member
         ? (memberGroup ? `GROUP: ${memberGroup.name}` : 'INDIVIDUAL')
@@ -111,6 +131,20 @@ export const renderSavingsList = async () => {
         if (pagination) paginationWrapper.appendChild(pagination);
       };
       
+      if (alphaSort !== 'default') {
+        const allTransactions = await savingsService.getFullListCached({
+          sort: '-date',
+          cacheKey: 'savings:list:alpha:expanded:v1'
+        });
+        const sortedTransactions = sortTransactionsAlphabetically(allTransactions);
+        const start = (currentPage - 1) * pageSize;
+        renderResult({
+          items: sortedTransactions.slice(start, start + pageSize),
+          totalItems: sortedTransactions.length
+        });
+        return;
+      }
+
       let result;
       try {
         const query = { page: currentPage, perPage: pageSize };
@@ -127,6 +161,12 @@ export const renderSavingsList = async () => {
       console.error('[SavingsList] Failed to load transactions:', e);
       tableBody.innerHTML = `<tr><td colspan="5" class="text-center text-danger" style="padding: 40px;">Failed to load transactions. ${e.message || ''}</td></tr>`;
     }
+  };
+
+  alphaSortSelect.onchange = () => {
+    alphaSort = alphaSortSelect.value;
+    currentPage = 1;
+    updateUI();
   };
 
   updateUI();
