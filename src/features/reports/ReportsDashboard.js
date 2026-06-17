@@ -48,6 +48,7 @@ export const renderReportsDashboard = async () => {
     from: '',
     to: ''
   };
+  let isFullReportRender = false;
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;" class="no-print">
@@ -426,6 +427,19 @@ export const renderReportsDashboard = async () => {
     if (dateRange.from) return `From ${formatDate(dateRange.from)}`;
     return `Until ${formatDate(dateRange.to)}`;
   };
+  const getReportRowsForView = (tab, rows, size = pageSize) => {
+    if (isFullReportRender) return rows;
+    const start = ((pages[tab] || 1) - 1) * size;
+    return rows.slice(start, start + size);
+  };
+  const renderReportPagination = (elementId, totalItems, size, onPageChange) => {
+    const pag = container.querySelector(elementId);
+    if (!pag) return;
+    pag.innerHTML = '';
+    if (isFullReportRender) return;
+    const ctrl = renderPagination(totalItems, size, pages[elementId.replace('#', '').replace('-pagination', '')] || 1, onPageChange);
+    if (ctrl) pag.appendChild(ctrl);
+  };
 
   const updatePLSummary = () => {
     const approvedLoans = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date && isWithinDateRange(l.disbursement_date));
@@ -466,8 +480,7 @@ export const renderReportsDashboard = async () => {
     const entriesCountEl = container.querySelector('#individuals-entry-count');
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
 
-    const start = (pages.individuals - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
+    const paginated = getReportRowsForView('individuals', filtered);
     const tbody = container.querySelector('#individuals-table-body');
     
     tbody.innerHTML = paginated.map(m => {
@@ -524,14 +537,12 @@ export const renderReportsDashboard = async () => {
     }).join('');
     
     container.querySelector('#filter-count').textContent = `Showing ${filtered.length} of ${members.length} records`;
-    const pag = container.querySelector('#individuals-pagination');
-    pag.innerHTML = '';
-    const ctrl = renderPagination(filtered.length, pageSize, pages.individuals, (p) => { pages.individuals = p; updateIndividuals(); });
-    if (ctrl) pag.appendChild(ctrl);
+    renderReportPagination('#individuals-pagination', filtered.length, pageSize, (p) => { pages.individuals = p; updateIndividuals(); });
   };
 
   const updateGroups = () => {
-    const isOutstandingLoan = (loan) => ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status);
+    const isOutstandingLoan = (loan) => Boolean(loan.disbursement_date)
+      && ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status);
     const isCollectibleLoan = (loan) => loan.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan.status) && loan.disbursement_date);
     const dormantCutoff = new Date();
     dormantCutoff.setMonth(dormantCutoff.getMonth() - 6);
@@ -608,8 +619,7 @@ export const renderReportsDashboard = async () => {
     const entriesCountEl = container.querySelector('#groups-entry-count');
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
 
-    const start = (pages.groups - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
+    const paginated = getReportRowsForView('groups', filtered);
     
     container.querySelector('#groups-table-body').innerHTML = paginated.map(g => `
       <tr>
@@ -638,10 +648,7 @@ export const renderReportsDashboard = async () => {
       </tr>`).join('');
     
     container.querySelector('#filter-count').textContent = `Showing ${filtered.length} of ${groups.length} records`;
-    const pag = container.querySelector('#groups-pagination');
-    pag.innerHTML = '';
-    const ctrl = renderPagination(filtered.length, pageSize, pages.groups, (p) => { pages.groups = p; updateGroups(); });
-    if (ctrl) pag.appendChild(ctrl);
+    renderReportPagination('#groups-pagination', filtered.length, pageSize, (p) => { pages.groups = p; updateGroups(); });
   };
 
   const updateDisbursements = () => {
@@ -685,8 +692,7 @@ export const renderReportsDashboard = async () => {
     const entriesCountEl = container.querySelector('#disbursements-entry-count');
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
 
-    const start = (pages.disbursements - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
+    const paginated = getReportRowsForView('disbursements', filtered);
     
     container.querySelector('#disbursements-table-body').innerHTML = paginated.map(l => {
       const member = l.expand?.member;
@@ -720,10 +726,7 @@ export const renderReportsDashboard = async () => {
     }).join('');
     
     container.querySelector('#filter-count').textContent = `Showing ${filtered.length} of ${allApproved.length} records`;
-    const pag = container.querySelector('#disbursements-pagination');
-    pag.innerHTML = '';
-    const ctrl = renderPagination(filtered.length, pageSize, pages.disbursements, (p) => { pages.disbursements = p; updateDisbursements(); });
-    if (ctrl) pag.appendChild(ctrl);
+    renderReportPagination('#disbursements-pagination', filtered.length, pageSize, (p) => { pages.disbursements = p; updateDisbursements(); });
   };
 
   const updateRegistrations = () => {
@@ -743,8 +746,7 @@ export const renderReportsDashboard = async () => {
     const entriesCountEl = container.querySelector('#registrations-entry-count');
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
 
-    const start = (pages.registrations - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
+    const paginated = getReportRowsForView('registrations', filtered);
     
     container.querySelector('#registrations-table-body').innerHTML = paginated.map(m => {
       const groupName = m.expand?.group?.name || 'Individual';
@@ -765,10 +767,7 @@ export const renderReportsDashboard = async () => {
     }).join('');
     
     container.querySelector('#filter-count').textContent = `Showing ${filtered.length} of ${members.length} records`;
-    const pag = container.querySelector('#registrations-pagination');
-    pag.innerHTML = '';
-    const ctrl = renderPagination(filtered.length, pageSize, pages.registrations, (p) => { pages.registrations = p; updateRegistrations(); });
-    if (ctrl) pag.appendChild(ctrl);
+    renderReportPagination('#registrations-pagination', filtered.length, pageSize, (p) => { pages.registrations = p; updateRegistrations(); });
   };
 
   const updateCashFlow = () => {
@@ -885,8 +884,7 @@ export const renderReportsDashboard = async () => {
       </div>
     `;
 
-    const start = (pages.cashflow - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
+    const paginated = getReportRowsForView('cashflow', filtered);
 
     container.querySelector('#cashflow-table-body').innerHTML = paginated.map(e => {
       return `
@@ -908,10 +906,7 @@ export const renderReportsDashboard = async () => {
     }).join('');
 
     container.querySelector('#filter-count').textContent = `Showing ${filtered.length} of ${entries.length} records`;
-    const pag = container.querySelector('#cashflow-pagination');
-    pag.innerHTML = '';
-    const ctrl = renderPagination(filtered.length, pageSize, pages.cashflow, (p) => { pages.cashflow = p; updateCashFlow(); });
-    if (ctrl) pag.appendChild(ctrl);
+    renderReportPagination('#cashflow-pagination', filtered.length, pageSize, (p) => { pages.cashflow = p; updateCashFlow(); });
   };
 
   const updateWithdrawals = () => {
@@ -946,8 +941,7 @@ export const renderReportsDashboard = async () => {
     const entriesCountEl = container.querySelector('#withdrawals-entry-count');
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
 
-    const start = (pages.withdrawals - 1) * pageSize;
-    const paginated = filtered.slice(start, start + pageSize);
+    const paginated = getReportRowsForView('withdrawals', filtered);
 
     container.querySelector('#withdrawals-table-body').innerHTML = paginated.length === 0
       ? '<tr><td colspan="4" class="text-center text-muted" style="padding: 32px;">No withdrawals found.</td></tr>'
@@ -961,10 +955,7 @@ export const renderReportsDashboard = async () => {
       `).join('');
 
     container.querySelector('#filter-count').textContent = `Showing ${filtered.length} of ${withdrawalRows.length} withdrawals`;
-    const pag = container.querySelector('#withdrawals-pagination');
-    pag.innerHTML = '';
-    const ctrl = renderPagination(filtered.length, pageSize, pages.withdrawals, (p) => { pages.withdrawals = p; updateWithdrawals(); });
-    if (ctrl) pag.appendChild(ctrl);
+    renderReportPagination('#withdrawals-pagination', filtered.length, pageSize, (p) => { pages.withdrawals = p; updateWithdrawals(); });
   };
 
   const updateAlerts = () => {
@@ -1017,8 +1008,7 @@ export const renderReportsDashboard = async () => {
       <span class="badge" style="background: #3b82f6; color: white;">Upcoming: ${counts.upcoming}</span>
     `;
 
-    const start = (pages.alerts - 1) * 6; // 6 cards per page
-    const paginated = alertItems.slice(start, start + 6);
+    const paginated = getReportRowsForView('alerts', alertItems, 6);
 
     container.querySelector('#alerts-container').innerHTML = paginated.map(a => `
       <div class="card" style="border-top: 4px solid ${a.color};">
@@ -1072,10 +1062,7 @@ export const renderReportsDashboard = async () => {
       };
     });
 
-    const pag = container.querySelector('#alerts-pagination');
-    pag.innerHTML = '';
-    const ctrl = renderPagination(alertItems.length, 6, pages.alerts, (p) => { pages.alerts = p; updateAlerts(); });
-    if (ctrl) pag.appendChild(ctrl);
+    renderReportPagination('#alerts-pagination', alertItems.length, 6, (p) => { pages.alerts = p; updateAlerts(); });
   };
 
   // Tab switching and Filter logic
@@ -1126,6 +1113,15 @@ export const renderReportsDashboard = async () => {
     if (tab === 'withdrawals') updateWithdrawals();
     if (tab === 'alerts') updateAlerts();
     updatePrintHeader();
+  };
+  const renderFullActiveReport = () => {
+    isFullReportRender = true;
+    refreshActiveReport();
+  };
+  const restorePaginatedActiveReport = () => {
+    if (!isFullReportRender) return;
+    isFullReportRender = false;
+    refreshActiveReport();
   };
 
   const updateFiltersUI = (tab) => {
@@ -1231,15 +1227,23 @@ export const renderReportsDashboard = async () => {
 
   container.querySelector('#print-report-btn').onclick = () => {
     updatePrintHeader();
-    window.print();
+    renderFullActiveReport();
+    setTimeout(() => window.print(), 50);
   };
+
+  window.addEventListener('afterprint', restorePaginatedActiveReport);
+  container.__subscriptions = [
+    () => window.removeEventListener('afterprint', restorePaginatedActiveReport)
+  ];
 
   // Excel Export Functionality
   container.querySelector('#export-excel-btn').onclick = () => {
     const activeTab = getActiveTab();
+    renderFullActiveReport();
     const table = container.querySelector(`#${activeTab}-tab table`);
     if (!table) {
       if (window.notify) window.notify.error('No data table found to export');
+      restorePaginatedActiveReport();
       return;
     }
 
@@ -1267,6 +1271,7 @@ export const renderReportsDashboard = async () => {
     URL.revokeObjectURL(url);
 
     if (window.notify) window.notify.success(`${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} report exported to Excel!`);
+    restorePaginatedActiveReport();
   };
 
   // Initial state based on URL or default

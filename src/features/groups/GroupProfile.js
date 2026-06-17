@@ -93,10 +93,11 @@ export const renderGroupProfile = async (params) => {
       const amount = Number(s.amount) || 0;
       return s.type === 'deposit' ? sum + amount : sum - amount;
     }, 0);
-  const isOutstandingLoanStatus = (status) => ['disbursed', 'approved', 'partial_approved'].includes(status);
+  const isDisbursedLoanForBalance = (loan) => Boolean(loan?.disbursement_date)
+    && ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status);
   const isCollectibleLoan = (loan) => loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
   const calculateLoanBalance = (loan, repayments) => {
-    if (!isOutstandingLoanStatus(loan.status)) return 0;
+    if (!isDisbursedLoanForBalance(loan)) return 0;
     const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
     const liability = Number(loan.total_liability) || (principal + (Number(loan.interest_amount) || 0));
     const paid = repayments
@@ -105,7 +106,7 @@ export const renderGroupProfile = async (params) => {
     return Math.max(0, liability - paid);
   };
   const calculateOutstandingLoanBalance = (loans, repayments) => loans
-    .filter(l => isOutstandingLoanStatus(l.status))
+    .filter(isDisbursedLoanForBalance)
     .reduce((sum, loan) => sum + calculateLoanBalance(loan, repayments), 0);
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
     '&': '&amp;',
@@ -151,7 +152,7 @@ export const renderGroupProfile = async (params) => {
     ]);
   } catch (e) { console.warn('[GroupProfile] Batch loans/savings fetch:', e.message); }
 
-  const activeLoansForProfile = groupLoans.filter(l => ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(l.status));
+  const activeLoansForProfile = groupLoans.filter(l => isCollectibleLoan(l) || ['completed', 'closed'].includes(l.status));
   const activeLoanIds = new Set(activeLoansForProfile.map(l => l.id));
 
   if (activeLoanIds.size > 0) {
@@ -706,7 +707,7 @@ export const renderGroupProfile = async (params) => {
         <td><span class="badge ${totalArrears > 0 ? 'badge-warning' : 'badge-outline'}" style="font-size: 0.65rem;">${totalArrears > 0 ? 'YES' : 'NO'}</span></td>
         <td><span class="badge ${m.isActive ? 'badge-success' : 'badge-danger'}">${m.isActive ? 'ACTIVE' : 'INACTIVE'}</span></td>
         <td><span class="text-sm ${m.isActive ? 'text-muted' : 'text-danger font-semibold'}">${m.lastSavingsDate ? formatDate(m.lastSavingsDate) : 'Never'}</span></td>
-        <td><button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/members/${m.reg_no}'">View</button></td>
+        <td><button class="btn btn-outline btn-sm" onclick="window.location.hash = '${withReturnTo(`#/members/${m.reg_no}`, groupProfileRoute)}'">View</button></td>
       </tr>
     `;
     }).join('');
@@ -863,7 +864,7 @@ export const renderGroupProfile = async (params) => {
         expand: 'member,member.group,group,processed_by'
       });
       const activeLoanIds = groupLoans
-        .filter(l => ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(l.status))
+        .filter(l => isCollectibleLoan(l) || ['completed', 'closed'].includes(l.status))
         .map(l => l.id);
       allRepayments = activeLoanIds.length > 0
         ? await pb.collection('loan_repayments').getFullList({

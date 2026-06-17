@@ -71,7 +71,8 @@ const calculateSavingsTotal = (records) => records
     return record.type === 'deposit' ? sum + amount : sum - amount;
   }, 0);
 
-const isOutstandingLoanStatus = (status) => ['disbursed', 'approved', 'partial_approved'].includes(status);
+const isDisbursedLoanForBalance = (loan) => Boolean(loan?.disbursement_date)
+  && ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status);
 const isCollectibleLoan = (loan) => loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
 
 const getLoanLiability = (loan) => {
@@ -83,7 +84,7 @@ const getLoanLiability = (loan) => {
 };
 
 const calculateLoanBalance = (loan, repayments) => {
-  if (!isOutstandingLoanStatus(loan.status)) return 0;
+  if (!isDisbursedLoanForBalance(loan)) return 0;
   const paid = repayments
     .filter(repayment => repayment.loan === loan.id)
     .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
@@ -117,7 +118,7 @@ const buildSummaryPayload = (groupId, members, loans, savings, repayments, sched
     member_count: members.length,
     total_savings: calculateSavingsTotal(savings),
     outstanding_loan: loans
-      .filter(loan => isOutstandingLoanStatus(loan.status))
+      .filter(isDisbursedLoanForBalance)
       .reduce((sum, loan) => sum + calculateLoanBalance(loan, repayments), 0),
     total_arrears: totalArrears,
     members_in_arrears: membersInArrears,
@@ -152,7 +153,7 @@ async function run() {
       getFullList('savings', token, encodeFilter(scopedGroupRecordFilter(group.id)))
     ]);
 
-    const hasLoans = loans.some(loan => ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status));
+    const hasLoans = loans.some(loan => isCollectibleLoan(loan) || ['completed', 'closed'].includes(loan.status));
     const [repayments, schedules] = hasLoans
       ? await Promise.all([
           getFullList('loan_repayments', token, encodeFilter(scopedLoanChildFilter(group.id))),

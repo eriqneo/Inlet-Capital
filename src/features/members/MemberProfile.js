@@ -8,11 +8,12 @@ import { openCamera } from '../../components/Camera.js';
 import { navigate } from '../../core/router.js';
 import { setButtonLoading } from '../../core/uiState.js';
 import { authService } from '../../services/authService.js';
-import { withReturnTo } from '../../core/navigation.js';
+import { getReturnTo, withReturnTo } from '../../core/navigation.js';
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
 
 export const renderMemberProfile = async (params) => {
   const { id } = params;
+  const returnTo = getReturnTo(params, '#/members');
   const container = document.createElement('div');
   container.innerHTML = `
     <div class="card text-center" style="padding:60px;">
@@ -26,7 +27,7 @@ export const renderMemberProfile = async (params) => {
   try {
     member = await memberService.getByRegNo(id);
   } catch (err) {
-    container.innerHTML = `<div class="card text-center"><h2>Member Not Found</h2><button class="btn btn-primary" onclick="window.location.hash = '#/members'">Back to List</button></div>`;
+    container.innerHTML = `<div class="card text-center"><h2>Member Not Found</h2><button class="btn btn-primary" onclick="window.location.hash = '${returnTo}'">Back</button></div>`;
     return;
   }
 
@@ -77,12 +78,13 @@ export const renderMemberProfile = async (params) => {
 
   let loanPage = 1, savingsPage = 1;
   const pageSize = 10;
-  const memberProfileRoute = `#/members/${legacyRegNo}`;
+  const memberProfileRoute = withReturnTo(`#/members/${legacyRegNo}`, returnTo);
+  const withRefresh = (route) => `${route}${route.includes('?') ? '&' : '?'}refresh=${Date.now()}`;
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
       <div style="display: flex; align-items: center; gap: 16px;">
-        <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/members'">← Back</button>
+        <button class="btn btn-outline btn-sm" onclick="window.location.hash = '${returnTo}'">← Back</button>
         <h1 class="text-xl">Member Profile</h1>
       </div>
       <div style="display: flex; gap: 12px;">
@@ -885,7 +887,7 @@ export const renderMemberProfile = async (params) => {
         }
         assignGroupModal.style.display = 'none';
         restoreButton();
-        navigate(`#/members/${legacyRegNo}?refresh=${Date.now()}`);
+        navigate(withRefresh(memberProfileRoute));
       } catch (err) {
         if (window.notify) window.notify.error('Failed to update member group: ' + (err.message || 'Please try again.'));
         restoreButton();
@@ -986,7 +988,7 @@ export const renderMemberProfile = async (params) => {
       restoreButton();
       toggleModal(false);
       const refreshedRegNo = savedMember.reg_no || legacyRegNo;
-      navigate(`#/members/${refreshedRegNo}?refresh=${Date.now()}`);
+      navigate(withRefresh(withReturnTo(`#/members/${refreshedRegNo}`, returnTo)));
     } catch (err) {
       if (window.notify) window.notify.error('Error updating profile: ' + err.message);
       restoreButton();
