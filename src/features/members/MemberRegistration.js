@@ -201,6 +201,7 @@ export const renderMemberRegistration = async () => {
     const memberData = Object.fromEntries(formData.entries());
     const parsedDob = parseInputDate(memberData.dob);
     const selectedRegistrationDate = memberData.registration_date || todayInputValue;
+    const capturedAt = new Date().toISOString();
     const phoneNumber = memberData.phone_number || memberData.phone || '';
     const maritalStatus = memberData.maritalStatus || memberData.marital_status || 'Single';
     const childrenCount = Number(memberData.childrenCount || memberData.children_count || 0);
@@ -218,6 +219,12 @@ export const renderMemberRegistration = async () => {
       reg_no: regNo,
       registration_date: new Date(`${selectedRegistrationDate}T12:00:00`).toISOString(),
       registration_fee: regFee,
+      registration_fee_details: {
+        method: memberData.paymentMethod || 'cash',
+        reference: memberData.paymentReference || '',
+        date: capturedAt,
+        captured_at: capturedAt
+      },
       status: 'active',
       registered_by: authService.getUser()?.id || null
     };

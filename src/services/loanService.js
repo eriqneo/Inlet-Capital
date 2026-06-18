@@ -13,6 +13,7 @@ const normalizeGuarantorId = (value) => String(value || '').replace(/\D/g, '').t
 const activeGuarantorStatuses = ['pending', 'approved', 'partial_approved', 'disbursed'];
 const normalLoanRestrictedStatuses = ['pending', 'approved', 'partial_approved', 'disbursed'];
 const repeatLoanAllowedTypes = ['emergency', 'school_fees'];
+const disbursedLikeStatuses = ['disbursed', 'completed', 'closed'];
 
 const getLoanOwnerLabel = (loan) => {
   const member = loan.expand?.member;
@@ -194,7 +195,12 @@ export const loanService = {
    * Update a loan (approve, disburse, reject, etc.)
    */
   async update(id, data) {
-    const record = await pb.collection('loans').update(id, data);
+    const payload = { ...data };
+    if (disbursedLikeStatuses.includes(payload.status) && !payload.disbursement_date) {
+      const existing = await pb.collection('loans').getOne(id).catch(() => null);
+      payload.disbursement_date = existing?.disbursement_date || new Date().toISOString();
+    }
+    const record = await pb.collection('loans').update(id, payload);
     await dataCache.invalidatePrefix('loans:');
     await dataCache.invalidatePrefix('loans:all:');
     await dataCache.invalidatePrefix('loans:analytics:');

@@ -80,6 +80,13 @@ export const renderMemberProfile = async (params) => {
   const pageSize = 10;
   const memberProfileRoute = withReturnTo(`#/members/${legacyRegNo}`, returnTo);
   const withRefresh = (route) => `${route}${route.includes('?') ? '&' : '?'}refresh=${Date.now()}`;
+  const isRepayableLoan = (loan) => loan?.status === 'disbursed'
+    || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
+  const getRepaymentRoute = (loan) => withReturnTo(`#/loans/${loan.loan_no}?tab=record`, memberProfileRoute);
+  const getPrimaryRepaymentLoan = () => memberLoans
+    .filter(isRepayableLoan)
+    .sort((a, b) => new Date(b.disbursement_date || b.application_date || b.created) - new Date(a.disbursement_date || a.application_date || a.created))[0];
+  const primaryRepaymentLoan = getPrimaryRepaymentLoan();
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -90,6 +97,7 @@ export const renderMemberProfile = async (params) => {
       <div style="display: flex; gap: 12px;">
         ${canManageRecords ? `<button class="btn btn-outline btn-sm" id="edit-profile-btn">Edit Profile</button>` : ''}
         ${canAssignGroup ? `<button class="btn btn-outline btn-sm" id="assign-group-btn">${currentGroupName ? 'Change Group' : '+ Add to Group'}</button>` : ''}
+        ${primaryRepaymentLoan ? `<button class="btn btn-outline btn-sm" onclick="window.location.hash = '${getRepaymentRoute(primaryRepaymentLoan)}'" title="Record repayment for ${escapeHtml(primaryRepaymentLoan.loan_no)}">+ Repayment</button>` : ''}
         <button class="btn btn-primary btn-sm" id="member-context-action-btn" style="display: none;">+</button>
       </div>
     </div>
@@ -348,6 +356,7 @@ export const renderMemberProfile = async (params) => {
         <div class="detail-tile"><div class="detail-label">Total Liability</div><div class="detail-value">KES ${(Number(loan.total_liability) || 0).toLocaleString()}</div></div>
         <div class="detail-tile"><div class="detail-label">Status</div><div class="detail-value">${escapeHtml((loan.status || '').toUpperCase())}</div></div>
         <div class="detail-tile"><div class="detail-label">Application Date</div><div class="detail-value">${formatDate(loan.application_date)}</div></div>
+        <div class="detail-tile"><div class="detail-label">Disbursement Date</div><div class="detail-value">${loan.disbursement_date ? formatDate(loan.disbursement_date) : 'Not disbursed'}</div></div>
       </div>
       <div class="detail-tile" style="margin-top: 14px;">
         <div class="detail-label">Securities</div>
@@ -391,6 +400,11 @@ export const renderMemberProfile = async (params) => {
             <input type="date" name="application_date" class="form-control" value="${toDateInputValue(loan.application_date)}" required />
           </div>
           <div class="form-group">
+            <label class="form-label">Disbursement Date</label>
+            <input type="date" name="disbursement_date" class="form-control" value="${toDateInputValue(loan.disbursement_date)}" />
+            <div class="text-xs text-muted" style="margin-top: 6px;">Use this only after funds have actually been released.</div>
+          </div>
+          <div class="form-group">
             <label class="form-label">Status</label>
             <select name="status" class="form-control" required>
               ${['pending','approved','partial_approved','disbursed','completed','closed','rejected','expired'].map(status => `<option value="${status}" ${loan.status === status ? 'selected' : ''}>${status.replace('_', ' ').toUpperCase()}</option>`).join('')}
@@ -419,6 +433,9 @@ export const renderMemberProfile = async (params) => {
         status: data.status,
         purpose: data.purpose || ''
       };
+      if (data.disbursement_date) {
+        payload.disbursement_date = new Date(`${data.disbursement_date}T12:00:00`).toISOString();
+      }
       const restoreButton = setButtonLoading(editLoanForm.querySelector('button[type="submit"]'), 'Saving...');
       try {
         await loanService.update(loan.id, payload);
@@ -470,6 +487,7 @@ export const renderMemberProfile = async (params) => {
         <td class="text-xs text-muted">${escapeHtml(getLoanRemarks(l) || '-')}</td>
         <td style="white-space: nowrap;">
           <button type="button" class="icon-action-btn loan-action" data-action="view" data-id="${l.id}" title="View loan" aria-label="View loan">⊙</button>
+          ${isRepayableLoan(l) ? `<button type="button" class="icon-action-btn loan-action" data-action="repay" data-id="${l.id}" title="Record repayment" aria-label="Record repayment">+</button>` : ''}
           ${canManageRecords ? `
             <button type="button" class="icon-action-btn loan-action" data-action="edit" data-id="${l.id}" title="Edit loan" aria-label="Edit loan">✎</button>
             <button type="button" class="icon-action-btn danger loan-action" data-action="delete" data-id="${l.id}" title="Delete loan" aria-label="Delete loan">×</button>
@@ -702,6 +720,7 @@ export const renderMemberProfile = async (params) => {
 
     if (actionButton.dataset.action === 'view') openLoanView(loan);
     if (actionButton.dataset.action === 'edit') openLoanEdit(loan);
+    if (actionButton.dataset.action === 'repay') window.location.hash = getRepaymentRoute(loan);
     if (actionButton.dataset.action === 'delete') await deleteLoan(loan);
   };
 
@@ -903,8 +922,8 @@ export const renderMemberProfile = async (params) => {
   let activeProfileTab = 'overview';
   const contextActions = {
     loans: {
-      label: '+ Apply for Loan',
-      route: withReturnTo(`#/loans/new?memberId=${legacyRegNo}`, memberProfileRoute),
+      label: primaryRepaymentLoan ? '+ Repayment' : '+ Apply for Loan',
+      route: primaryRepaymentLoan ? getRepaymentRoute(primaryRepaymentLoan) : withReturnTo(`#/loans/new?memberId=${legacyRegNo}`, memberProfileRoute),
       visible: true
     },
     savings: {

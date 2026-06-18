@@ -258,6 +258,14 @@ export const renderLoanDetails = async (params) => {
                 <div class="font-semibold">${loan.period} Months</div>
               </div>
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
+                <div class="text-xs text-muted">Application Date</div>
+                <div class="font-semibold">${formatDate(loan.application_date)}</div>
+              </div>
+              <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
+                <div class="text-xs text-muted">Disbursement Date</div>
+                <div class="font-semibold">${loan.disbursement_date ? formatDate(loan.disbursement_date) : 'Pending release'}</div>
+              </div>
+              <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Applicant Reference</div>
                 <div class="font-semibold">${loan.member || loan.group || 'N/A'}</div>
               </div>
@@ -529,6 +537,9 @@ export const renderLoanDetails = async (params) => {
       contents[tab.dataset.tab].style.display = 'block';
     };
   });
+  const initialTab = contents[params.tab] ? params.tab : 'overview';
+  const initialTabBtn = Array.from(tabs).find(tab => tab.dataset.tab === initialTab);
+  if (initialTabBtn) initialTabBtn.click();
 
   // Dynamic Payment Method Logic
   const repaymentMethod = container.querySelector('#repayment-method');

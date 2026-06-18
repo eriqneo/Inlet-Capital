@@ -442,10 +442,12 @@ export const renderReportsDashboard = async () => {
   };
 
   const updatePLSummary = () => {
+    const getRegistrationFeeDate = (member) => member.registration_fee_details?.date || member.registration_fee_details?.captured_at || member.registration_date || member.created;
+    const getProcessingFeeDate = (loan) => loan.processing_fee_details?.date || loan.processing_fee_details?.captured_at || loan.created;
     const approvedLoans = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date && isWithinDateRange(l.disbursement_date));
     const filteredExpenses = expenses.filter(e => isWithinDateRange(e.date || e.expense_date || e.created));
-    const filteredMembers = members.filter(m => isWithinDateRange(m.registration_date || m.created));
-    const filteredProcessingFeeLoans = loans.filter(l => l.processing_fee_paid && isWithinDateRange(l.processing_fee_details?.date || l.application_date || l.created));
+    const filteredMembers = members.filter(m => isWithinDateRange(getRegistrationFeeDate(m)));
+    const filteredProcessingFeeLoans = loans.filter(l => l.processing_fee_paid && isWithinDateRange(getProcessingFeeDate(l)));
     const totalExpenses = filteredExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
     const totalCapitalDisbursed = approvedLoans.reduce((sum, l) => sum + (l.approved_amount || 0), 0);
     const expectedInterest = approvedLoans.reduce((sum, l) => sum + (l.interest_amount || 0), 0);
@@ -834,20 +836,20 @@ export const renderReportsDashboard = async () => {
         };
       }),
       ...members.map(m => ({
-        date: m.registration_date,
+        date: m.registration_fee_details?.date || m.registration_fee_details?.captured_at || m.registration_date,
         type: 'Registration Fee',
         ...resolveMemberOwner(m),
-        ref: 'REG-FEE',
+        ref: m.registration_fee_details?.reference || 'REG-FEE',
         amount: m.registration_fee,
-        method: 'Cash'
+        method: m.registration_fee_details?.method || 'Cash'
       })),
       ...loans.filter(l => l.processing_fee_paid).map(l => ({
-        date: l.application_date, // approximation for now
+        date: l.processing_fee_details?.date || l.processing_fee_details?.captured_at || l.created,
         type: 'Processing Fee',
         ...resolveLoanOwner(l),
-        ref: 'PROC-FEE',
+        ref: l.processing_fee_details?.reference || 'PROC-FEE',
         amount: l.processing_fee,
-        method: 'Cash'
+        method: l.processing_fee_details?.method || 'Cash'
       }))
     ].filter(e => isWithinDateRange(e.date)).sort((a, b) => new Date(b.date) - new Date(a.date));
 
@@ -969,7 +971,8 @@ export const renderReportsDashboard = async () => {
       const loan = loans.find(l => l.id === s.loan);
       const isCollectibleLoan = loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
       if (!isCollectibleLoan) return null;
-      if (getScheduleRemaining(s) <= 0) return null;
+      const remainingAmount = getScheduleRemaining(s);
+      if (remainingAmount <= 0) return null;
       
       const member = loan.expand?.member;
       const groupName = member?.expand?.group?.name || loan.expand?.group?.name || 'Individual';
@@ -991,7 +994,7 @@ export const renderReportsDashboard = async () => {
       else if (dueDate <= upcomingThreshold) { priority = 'UPCOMING'; color = '#3b82f6'; label = 'DUE IN ' + Math.abs(diffDays) + ' DAYS'; }
       else return null;
 
-      return { ...s, loanObj: loan, member, groupName, guarantorPhone, diffDays, priority, color, label };
+      return { ...s, loanObj: loan, member, groupName, guarantorPhone, remainingAmount, diffDays, priority, color, label };
     }).filter(Boolean).sort((a, b) => b.diffDays - a.diffDays);
 
     const counts = { critical: 0, urgent: 0, today: 0, upcoming: 0 };
@@ -1020,13 +1023,15 @@ export const renderReportsDashboard = async () => {
           </div>
           <div class="text-right">
             <div class="text-xs text-muted">Amount Due</div>
-            <div class="font-bold text-danger">KES ${(a.amount || 0).toLocaleString()}</div>
+            <div class="font-bold text-danger">KES ${Number(a.remainingAmount || 0).toLocaleString()}</div>
           </div>
         </div>
         <div style="font-size: 0.8rem; margin-bottom: 16px; background: var(--bg-light); padding: 8px; border-radius: 6px;">
           <div style="display: flex; justify-content: space-between;"><span>Loan No:</span> <strong>${a.loanObj?.loan_no}</strong></div>
           <div style="display: flex; justify-content: space-between;"><span>Installment:</span> <strong>#${a.installment_no}</strong></div>
           <div style="display: flex; justify-content: space-between;"><span>Due Date:</span> <strong>${formatDate(a.due_date)}</strong></div>
+          <div style="display: flex; justify-content: space-between;"><span>Installment Amount:</span> <strong>${Number(a.amount || 0).toLocaleString()}</strong></div>
+          <div style="display: flex; justify-content: space-between;"><span>Paid This Installment:</span> <strong>${Number(a.paid || 0).toLocaleString()}</strong></div>
         </div>
         <div style="font-size: 0.8rem; margin-bottom: 16px;">
           <div>📞 <strong>Phone:</strong> ${getMemberPhone(a.member) !== '-' ? getMemberPhone(a.member) : getGroupPhone(a.loanObj?.expand?.group)}</div>

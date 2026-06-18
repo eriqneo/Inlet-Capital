@@ -344,12 +344,14 @@ export const renderLoanList = async () => {
     const restoreButton = setButtonLoading(form.querySelector('button[type="submit"]'), 'Recording...');
 
     try {
+      const capturedAt = new Date().toISOString();
       await loanService.update(activeFeeRecordId, {
         processing_fee_paid: true,
         processing_fee_details: {
           method: methodSelect.value,
           reference: refInput.value,
-          date: new Date().toISOString()
+          date: capturedAt,
+          captured_at: capturedAt
         }
       });
       

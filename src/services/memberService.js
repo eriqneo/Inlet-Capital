@@ -25,6 +25,13 @@ const toMemberPayload = (data = {}) => {
   return formData;
 };
 
+const stripOptionalRegistrationFeeDetails = (data) => {
+  if (!data || !Object.prototype.hasOwnProperty.call(data, 'registration_fee_details')) return data;
+  const clone = { ...data };
+  delete clone.registration_fee_details;
+  return clone;
+};
+
 export const memberService = {
   async list({ page = 1, perPage = 20, filter = '', sort = '-created' } = {}) {
     return await pb.collection('members').getList(page, perPage, {
@@ -64,7 +71,13 @@ export const memberService = {
     if (duplicate) {
       throw new Error(`${duplicate.field} already belongs to ${duplicate.memberName}. A principal member cannot be registered twice.`);
     }
-    const record = await pb.collection('members').create(toMemberPayload(data));
+    let record;
+    try {
+      record = await pb.collection('members').create(toMemberPayload(data));
+    } catch (err) {
+      if (!String(err.message || '').toLowerCase().includes('registration_fee_details')) throw err;
+      record = await pb.collection('members').create(toMemberPayload(stripOptionalRegistrationFeeDetails(data)));
+    }
     await dataCache.invalidatePrefix('members:');
     await dataCache.invalidatePrefix('group_summary:');
     await dataCache.invalidatePrefix('groups:profile:');

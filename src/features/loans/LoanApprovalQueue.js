@@ -490,12 +490,14 @@ export const renderLoanApprovalQueue = async (params = {}) => {
     const restoreButton = setButtonLoading(feeForm.querySelector('button[type="submit"]'), 'Recording...');
 
     try {
+      const capturedAt = new Date().toISOString();
       await loanService.update(currentFeeLoanId, {
         processing_fee_paid: true,
         processing_fee_details: {
           method: feeMethod.value,
           reference: feeRef.value,
-          date: new Date().toISOString()
+          date: capturedAt,
+          captured_at: capturedAt
         }
       });
 

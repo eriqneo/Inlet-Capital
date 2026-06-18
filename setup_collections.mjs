@@ -195,6 +195,7 @@ async function run() {
         { name: 'nok_phone', type: 'text' },
         { name: 'nok_relationship', type: 'text' },
         { name: 'registration_fee', type: 'number' },
+        { name: 'registration_fee_details', type: 'json' },
         { name: 'registration_date', type: 'date', required: true },
         { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'exited'] },
         { name: 'group', type: 'relation', collectionId: groupsForMembersColl.id, cascadeDelete: false, maxSelect: 1 },
@@ -284,7 +285,8 @@ async function run() {
         { name: 'children_count', type: 'number' },
         { name: 'kraPin', type: 'text' },
         { name: 'passportPhoto', type: 'text' },
-        { name: 'passport_photo', type: 'file', maxSelect: 1, maxSize: 524288, mimeTypes: ['image/jpeg', 'image/png', 'image/webp'] }
+        { name: 'passport_photo', type: 'file', maxSelect: 1, maxSize: 524288, mimeTypes: ['image/jpeg', 'image/png', 'image/webp'] },
+        { name: 'registration_fee_details', type: 'json' }
       ];
       const existingFieldNames = new Set(membersColl.fields.map(field => field.name));
       const missingFields = profileFields.filter(field => !existingFieldNames.has(field.name));
