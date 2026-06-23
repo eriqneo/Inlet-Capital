@@ -204,6 +204,8 @@ export const renderReportsDashboard = async () => {
                 <th>PHONE NO</th>
                 <th>GROUP</th>
                 <th>DISBURSED</th>
+                <th>APPLICATION DATE</th>
+                <th>APPROVAL DATE</th>
                 <th>DISBURSED DATE</th>
                 <th>PERIOD</th>
                 <th>END DATE</th>
@@ -716,6 +718,8 @@ export const renderReportsDashboard = async () => {
         <td>${clientPhone}</td>
         <td><span class="badge badge-outline" style="font-size: 0.65rem;">${groupName}</span></td>
         <td class="text-success font-semibold">${(l.approved_amount || 0).toLocaleString()}</td>
+        <td>${formatDate(l.application_date)}</td>
+        <td>${l.approved_date ? formatDate(l.approved_date) : '-'}</td>
         <td>${formatDate(l.disbursement_date)}</td>
         <td>${l.period} Months</td>
         <td>${formatDate(endDate)}</td>

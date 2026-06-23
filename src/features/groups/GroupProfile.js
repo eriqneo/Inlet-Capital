@@ -70,6 +70,8 @@ export const renderGroupProfile = async (params) => {
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px;">
         <div class="card" style="padding: 16px; border-left: 3px solid var(--success);"><div class="text-xs text-muted">Total Savings</div><div class="text-lg font-semibold text-success">KES ${totalSavings.toLocaleString()}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);"><div class="text-xs text-muted">Outstanding Loan</div><div class="text-lg font-semibold text-danger">KES ${outstandingLoan.toLocaleString()}</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--secondary);"><div class="text-xs text-muted">Total Repayments</div><div class="text-lg font-semibold" style="color: var(--secondary);">Syncing...</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);"><div class="text-xs text-muted">Total Fees</div><div class="text-lg font-semibold" style="color: var(--warning);">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">Total Members</div><div class="text-lg font-semibold text-primary">${memberCount}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid ${totalArrears > 0 ? 'var(--danger)' : 'var(--border-color)'};"><div class="text-xs text-muted">Total Arrears</div><div class="text-lg font-semibold" style="color: ${totalArrears > 0 ? 'var(--danger)' : 'inherit'};">KES ${totalArrears.toLocaleString()}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid ${membersInArrears > 0 ? 'var(--warning)' : 'var(--border-color)'};"><div class="text-xs text-muted">Members in Arrears</div><div class="text-lg font-semibold" style="color: ${membersInArrears > 0 ? 'var(--warning)' : 'inherit'};">${membersInArrears}</div></div>
@@ -87,6 +89,7 @@ export const renderGroupProfile = async (params) => {
   renderQuickShell(quickSummary);
 
   const scopedGroupRecordFilter = `group="${id}" || member.group="${id}"`;
+  let currentStartDate = null, currentEndDate = null;
   const calculateSavingsTotal = (records) => records
     .filter(s => !s.is_reversed)
     .reduce((sum, s) => {
@@ -108,6 +111,32 @@ export const renderGroupProfile = async (params) => {
   const calculateOutstandingLoanBalance = (loans, repayments) => loans
     .filter(isDisbursedLoanForBalance)
     .reduce((sum, loan) => sum + calculateLoanBalance(loan, repayments), 0);
+  const calculateRepaymentsTotal = (repayments) => repayments
+    .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
+  const getRegistrationFeeDate = (member) => member.registration_fee_details?.date
+    || member.registration_fee_details?.captured_at
+    || member.registration_date
+    || member.created;
+  const getProcessingFeeDate = (loan) => loan.processing_fee_details?.date
+    || loan.processing_fee_details?.captured_at
+    || loan.application_date
+    || loan.created;
+  const isDateWithinCurrentFilter = (value) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return false;
+    if (currentStartDate && date < currentStartDate) return false;
+    if (currentEndDate && date > currentEndDate) return false;
+    return true;
+  };
+  const calculateFeesTotal = (members, loans) => {
+    const registrationFees = members
+      .filter(member => isDateWithinCurrentFilter(getRegistrationFeeDate(member)))
+      .reduce((sum, member) => sum + (Number(member.registration_fee) || 0), 0);
+    const processingFees = loans
+      .filter(loan => loan.processing_fee_paid && isDateWithinCurrentFilter(getProcessingFeeDate(loan)))
+      .reduce((sum, loan) => sum + (Number(loan.processing_fee) || 0), 0);
+    return registrationFees + processingFees;
+  };
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
     '&': '&amp;',
     '<': '&lt;',
@@ -276,6 +305,14 @@ export const renderGroupProfile = async (params) => {
           <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);">
             <div class="text-xs text-muted">Outstanding Loan</div>
             <div class="text-lg font-semibold text-danger" id="group-outstanding-loan-kpi">KES ${totalOutstandingLoan.toLocaleString()}</div>
+          </div>
+          <div class="card" style="padding: 16px; border-left: 3px solid var(--secondary);">
+            <div class="text-xs text-muted">Total Repayments</div>
+            <div class="text-lg font-semibold" id="group-total-repayments-kpi" style="color: var(--secondary);">KES ${calculateRepaymentsTotal(allRepayments).toLocaleString()}</div>
+          </div>
+          <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);">
+            <div class="text-xs text-muted">Total Fees</div>
+            <div class="text-lg font-semibold" id="group-total-fees-kpi" style="color: var(--warning);">KES ${calculateFeesTotal(allGroupMembers, groupLoans).toLocaleString()}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);">
             <div class="text-xs text-muted">Total Members</div>
@@ -569,7 +606,6 @@ export const renderGroupProfile = async (params) => {
   const dateEndInput = container.querySelector('#global-date-end');
   const filterSummary = container.querySelector('#group-filter-summary');
   let currentMemberStatusFilter = 'all';
-  let currentStartDate = null, currentEndDate = null;
   let loanPage = 1, savingsPage = 1;
   const pageSize = 10;
 
@@ -595,6 +631,13 @@ export const renderGroupProfile = async (params) => {
     const scope = accountScopeSelect?.value || 'all';
     return enrichedMembers.filter(m => {
       if (scope === 'groups') return false;
+      if (currentStartDate || currentEndDate) {
+        if (!m.lastSavingsDate) return false;
+        const lastSaved = new Date(m.lastSavingsDate);
+        if (Number.isNaN(lastSaved.getTime())) return false;
+        if (currentStartDate && lastSaved < currentStartDate) return false;
+        if (currentEndDate && lastSaved > currentEndDate) return false;
+      }
       if (currentMemberStatusFilter === 'arrears' && getMemberArrears(m) <= 0) return false;
       if (currentMemberStatusFilter === 'inactive' && m.isActive) return false;
       if (!query) return true;
@@ -647,23 +690,39 @@ export const renderGroupProfile = async (params) => {
     const allowedMemberIds = new Set(getFilteredMembers().map(m => m.id));
     return allowedMemberIds.has(record.member);
   };
+  const loanMatchesCurrentScope = (loan) => {
+    if (!loan) return false;
+    return recordMatchesScope(loan);
+  };
 
   const getFilteredLoans = () => applyDateFilters(allFinancialLoansSorted.filter(recordMatchesScope), 'application_date');
   const getFilteredSavings = () => applyDateFilters(allFinancialSavingsSorted.filter(recordMatchesScope), 'date');
+  const getFilteredRepayments = () => {
+    const loansById = new Map(groupLoans.map(loan => [loan.id, loan]));
+    return applyDateFilters(
+      allRepayments.filter(repayment => loanMatchesCurrentScope(loansById.get(repayment.loan))),
+      'date'
+    );
+  };
 
   const updateFilteredKpis = () => {
     const filteredMembers = getFilteredMembers();
     const filteredLoans = getFilteredLoans();
     const filteredSavings = getFilteredSavings();
+    const filteredRepayments = getFilteredRepayments();
     const includeGroupAccount = scopeIncludesGroupAccount();
     const arrearsAmount = filteredMembers.reduce((sum, m) => sum + getMemberArrears(m), 0) + (includeGroupAccount ? getGroupLevelArrears() : 0);
     const arrearsCount = filteredMembers.filter(m => getMemberArrears(m) > 0).length;
     const inactiveCount = filteredMembers.filter(m => !m.isActive).length;
     const savingsTotal = calculateSavingsTotal(filteredSavings);
     const outstandingLoan = calculateOutstandingLoanBalance(filteredLoans, allRepayments);
+    const repaymentsTotal = calculateRepaymentsTotal(filteredRepayments);
+    const feesTotal = calculateFeesTotal(filteredMembers, filteredLoans);
 
     container.querySelector('#group-total-savings-kpi').textContent = `KES ${savingsTotal.toLocaleString()}`;
     container.querySelector('#group-outstanding-loan-kpi').textContent = `KES ${outstandingLoan.toLocaleString()}`;
+    container.querySelector('#group-total-repayments-kpi').textContent = `KES ${repaymentsTotal.toLocaleString()}`;
+    container.querySelector('#group-total-fees-kpi').textContent = `KES ${feesTotal.toLocaleString()}`;
     container.querySelector('#group-total-members-kpi').textContent = filteredMembers.length;
     const totalArrearsKpi = container.querySelector('#group-total-arrears-kpi');
     totalArrearsKpi.textContent = `KES ${arrearsAmount.toLocaleString()}`;

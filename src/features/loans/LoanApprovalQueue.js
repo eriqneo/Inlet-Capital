@@ -12,6 +12,14 @@ const QUEUE_FILTER = 'status="pending" || status="approved" || status="partial_a
 export const renderLoanApprovalQueue = async (params = {}) => {
   const container = document.createElement('div');
   const returnTo = getReturnTo(params, '#/loans');
+  const todayInputValue = new Date().toISOString().split('T')[0];
+  const dateInputToIso = (value) => new Date(`${value || todayInputValue}T12:00:00`).toISOString();
+  const toDateInputValue = (value) => {
+    if (!value) return todayInputValue;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return todayInputValue;
+    return date.toISOString().split('T')[0];
+  };
 
   // Show loading shell immediately so router never appends an empty element
   container.innerHTML = `
@@ -268,7 +276,11 @@ export const renderLoanApprovalQueue = async (params = {}) => {
             ` : ''}
 
             <!-- Action buttons -->
-            <div style="display: flex; justify-content: flex-end; gap: 12px; border-top: 1px solid var(--border-color); padding-top: 16px;">
+            <div style="display: flex; justify-content: flex-end; align-items: end; gap: 12px; border-top: 1px solid var(--border-color); padding-top: 16px; flex-wrap: wrap;">
+              <div class="form-group" style="margin: 0; min-width: 180px;">
+                <label class="form-label" style="font-size: 0.72rem;">Disbursement Date</label>
+                <input type="date" class="form-control form-control-sm" data-disbursement-date="${l.id}" value="${todayInputValue}" />
+              </div>
               <button class="btn btn-outline btn-sm text-danger" data-action="cancel" data-id="${l.id}">Cancel Approval</button>
               <button class="btn btn-primary btn-sm" data-action="disburse" data-id="${l.id}" style="background: var(--success); border: none;">
                 Disburse Funds Now 💸
@@ -323,6 +335,10 @@ export const renderLoanApprovalQueue = async (params = {}) => {
         <h3>Approve Full Loan</h3>
         <p class="text-sm text-muted" id="full-approval-context" style="margin-bottom: 20px;">Confirm the full approved amount and add a decision comment.</p>
         <div class="form-group">
+          <label class="form-label">Approval Date</label>
+          <input type="date" id="full-approval-date" class="form-control" value="${todayInputValue}" required />
+        </div>
+        <div class="form-group">
           <label class="form-label">Approval Comment</label>
           <textarea id="full-approval-comment" class="form-control" rows="3" placeholder="e.g. Client meets all approval requirements and fee is cleared."></textarea>
         </div>
@@ -341,6 +357,10 @@ export const renderLoanApprovalQueue = async (params = {}) => {
         <div class="form-group">
           <label class="form-label">Approved Amount (KES)</label>
           <input type="number" id="partial-amount" class="form-control" placeholder="e.g. 50000" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Approval Date</label>
+          <input type="date" id="partial-approval-date" class="form-control" value="${todayInputValue}" required />
         </div>
         <div class="form-group">
           <label class="form-label">Reason / Remark</label>
@@ -517,6 +537,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
 
   const fullApprovalModal = container.querySelector('#full-approval-modal');
   const fullApprovalContext = container.querySelector('#full-approval-context');
+  const fullApprovalDate = container.querySelector('#full-approval-date');
   const fullApprovalComment = container.querySelector('#full-approval-comment');
   const confirmFullApprovalBtn = container.querySelector('#confirm-full-approval-btn');
   let activeFullApprovalLoanId = null;
@@ -524,6 +545,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
   const closeFullApprovalModal = () => {
     fullApprovalModal.style.display = 'none';
     activeFullApprovalLoanId = null;
+    fullApprovalDate.value = todayInputValue;
     fullApprovalComment.value = '';
   };
   container.querySelector('#cancel-full-approval-btn').onclick = closeFullApprovalModal;
@@ -542,7 +564,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
       await loanService.update(activeFullApprovalLoanId, {
         status: 'approved',
         approved_amount: loan.amount_applied,
-        approved_date: new Date().toISOString(),
+        approved_date: dateInputToIso(fullApprovalDate.value),
         approval_comment: fullApprovalComment.value.trim()
       });
 
@@ -556,6 +578,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
   };
 
   const partialModal = container.querySelector('#partial-modal');
+  const partialApprovalDate = container.querySelector('#partial-approval-date');
   let activePartialLoanId = null;
 
   container.querySelector('#confirm-partial-btn').onclick = async () => {
@@ -573,7 +596,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
       await loanService.update(activePartialLoanId, {
         status: 'partial_approved',
         approved_amount: amount,
-        approved_date: new Date().toISOString(),
+        approved_date: dateInputToIso(partialApprovalDate.value),
         interest_amount: interestAmount,
         total_liability: amount + interestAmount,
         approval_comment: reason.trim()
@@ -606,6 +629,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
         }
         activeFullApprovalLoanId = id;
         fullApprovalContext.textContent = `Approve ${loan.loan_no} for the full amount of KES ${loan.amount_applied.toLocaleString()}.`;
+        fullApprovalDate.value = toDateInputValue(loan.approved_date);
         fullApprovalComment.value = loan.approval_comment || '';
         fullApprovalModal.style.display = 'flex';
       } 
@@ -630,6 +654,8 @@ export const renderLoanApprovalQueue = async (params = {}) => {
       }
       else if (action === 'partial') {
         activePartialLoanId = id;
+        const loan = await loanService.getById(id);
+        partialApprovalDate.value = toDateInputValue(loan.approved_date);
         partialModal.style.display = 'flex';
       }
       else if (action === 'disburse') {
@@ -649,9 +675,10 @@ export const renderLoanApprovalQueue = async (params = {}) => {
         
         if (!confirmed) return;
         
+        const disbursementDateInput = container.querySelector(`[data-disbursement-date="${id}"]`);
         const updatedLoan = await loanService.update(id, {
           status: 'disbursed',
-          disbursement_date: new Date().toISOString()
+          disbursement_date: dateInputToIso(disbursementDateInput?.value)
         });
         
         await generateSchedule(updatedLoan);

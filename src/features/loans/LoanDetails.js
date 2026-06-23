@@ -11,6 +11,8 @@ import { addMonthsPreservingDay, getRepaymentScheduleAnchorDate } from '../../co
 export const renderLoanDetails = async (params) => {
   const { id: loanNo } = params;
   const returnTo = getReturnTo(params, '#/loans');
+  const todayInputValue = new Date().toISOString().split('T')[0];
+  const dateInputToIso = (value) => new Date(`${value || todayInputValue}T12:00:00`).toISOString();
   const container = document.createElement('div');
   container.innerHTML = `
     ${renderCardSkeleton({ title: 'Loading loan file from PocketHost...', rows: 5 })}
@@ -202,7 +204,11 @@ export const renderLoanDetails = async (params) => {
                 ⏰ Expiry: Approved on ${formatDate(loan.approved_date)} — Must be disbursed within 14 days.
               </div>
             </div>
-            <div>
+            <div style="display: grid; gap: 10px; min-width: 220px;">
+              <div class="form-group" style="margin: 0;">
+                <label class="form-label" style="font-size: 0.72rem;">Disbursement Date</label>
+                <input type="date" class="form-control form-control-sm" id="details-disbursement-date" value="${todayInputValue}" />
+              </div>
               <button class="btn btn-primary" id="details-disburse-btn" style="background: var(--success); border: none; padding: 12px 24px; font-weight: bold; display: flex; align-items: center; gap: 8px; box-shadow: 0 4px 12px rgba(16,185,129,0.2);">
                 Disburse Funds Now 💸
               </button>
@@ -260,6 +266,10 @@ export const renderLoanDetails = async (params) => {
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Application Date</div>
                 <div class="font-semibold">${formatDate(loan.application_date)}</div>
+              </div>
+              <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
+                <div class="text-xs text-muted">Approval Date</div>
+                <div class="font-semibold">${loan.approved_date ? formatDate(loan.approved_date) : 'Pending approval'}</div>
               </div>
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Disbursement Date</div>
@@ -649,7 +659,7 @@ export const renderLoanDetails = async (params) => {
       if (!confirmed) return;
       
       const restoreButton = setButtonLoading(disburseBtn, 'Disbursing...');
-      const disbursementDate = new Date().toISOString();
+      const disbursementDate = dateInputToIso(container.querySelector('#details-disbursement-date')?.value);
       try {
         const updatedLoan = await loanService.update(loan.id, {
           status: 'disbursed',
