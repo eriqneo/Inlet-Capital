@@ -99,6 +99,22 @@ export const memberService = {
     return record;
   },
 
+  async suspend(id) {
+    const record = await pb.collection('members').update(id, { status: 'suspended' });
+    await dataCache.invalidatePrefix('members:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
+    return record;
+  },
+
+  async revive(id) {
+    const record = await pb.collection('members').update(id, { status: 'active' });
+    await dataCache.invalidatePrefix('members:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
+    return record;
+  },
+
   getPhotoUrl(member = {}) {
     if (member.passport_photo) return pb.files.getURL(member, member.passport_photo);
     return member.passportPhoto || '';

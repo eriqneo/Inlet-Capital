@@ -29,25 +29,38 @@ export const renderGroupList = async () => {
       </div>
     </div>
     <style>
-      .group-delete-btn {
+      .group-card-action {
         width: 32px;
         height: 32px;
-        border: 1px solid rgba(239, 68, 68, 0.24);
         border-radius: 8px;
-        background: rgba(239, 68, 68, 0.08);
-        color: var(--danger);
         display: inline-flex;
         align-items: center;
         justify-content: center;
         cursor: pointer;
         transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
       }
-      .group-delete-btn:hover {
-        background: rgba(239, 68, 68, 0.14);
-        border-color: rgba(239, 68, 68, 0.42);
+      .group-edit-btn {
+        border: 1px solid rgba(27, 61, 114, 0.24);
+        background: rgba(27, 61, 114, 0.08);
+        color: var(--primary);
+      }
+      .group-suspend-btn {
+        border: 1px solid rgba(245, 158, 11, 0.28);
+        background: rgba(245, 158, 11, 0.1);
+        color: var(--warning);
+      }
+      .group-edit-btn:hover {
+        background: rgba(27, 61, 114, 0.14);
+        border-color: rgba(27, 61, 114, 0.42);
         transform: translateY(-1px);
       }
-      .group-delete-btn:disabled {
+      .group-suspend-btn:hover {
+        background: rgba(239, 68, 68, 0.14);
+        border-color: rgba(239, 68, 68, 0.42);
+        color: var(--danger);
+        transform: translateY(-1px);
+      }
+      .group-card-action:disabled {
         cursor: wait;
         opacity: 0.7;
         transform: none;
@@ -63,7 +76,7 @@ export const renderGroupList = async () => {
   let totalItems = 0;
   let requestId = 0;
   const pageSize = 12; // Good for a 3-column or 4-column grid
-  const canDeleteGroups = authService.hasRole('super_admin', 'admin');
+  const canManageGroups = authService.hasRole('super_admin', 'admin');
 
   const relationFilter = (field, ids) => ids.map(id => `${field}="${id}"`).join(' || ');
   const moneyTotal = (records) => records.reduce((sum, record) => {
@@ -96,23 +109,35 @@ export const renderGroupList = async () => {
     }
 
     grid.innerHTML = groups.map(g => `
-      <div class="card" style="cursor: pointer;" onclick="window.location.hash = '#/groups/${g.id}'">
+      <div class="card" style="cursor: pointer; opacity: ${g.status === 'suspended' ? '0.72' : '1'};" onclick="window.location.hash = '#/groups/${g.id}'">
         <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
           <div>
             <h3 style="font-size: 1.125rem;">${g.name}</h3>
             <span class="text-xs text-muted">${g.group_id}</span>
           </div>
           <div style="display: flex; align-items: center; gap: 8px;">
-            <span class="badge ${g.status === 'active' ? 'badge-success' : 'badge-danger'}">${(g.status || 'ACTIVE').toUpperCase()}</span>
-            ${canDeleteGroups ? `
-              <button type="button" class="group-delete-btn" data-id="${g.id}" data-name="${escapeHtml(g.name || 'this group')}" aria-label="Delete group" title="Delete group">
+            <span class="badge ${g.status === 'active' ? 'badge-success' : g.status === 'suspended' ? 'badge-danger' : 'badge-warning'}">${(g.status || 'ACTIVE').toUpperCase()}</span>
+            ${canManageGroups ? `
+              <button type="button" class="group-card-action group-edit-btn" data-id="${g.id}" aria-label="Edit group" title="Edit group">
                 <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-                  <path d="M3 6h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                  <path d="M8 6V4h8v2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                  <path d="M6 6l1 15h10l1-15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                  <path d="M10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  <path d="M12 20h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
               </button>
+              ${g.status !== 'suspended' ? `
+                <button type="button" class="group-card-action group-suspend-btn" data-id="${g.id}" data-name="${escapeHtml(g.name || 'this group')}" aria-label="Suspend group" title="Suspend group">
+                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>
+                    <path d="M8 8l8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  </svg>
+                </button>
+              ` : `
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" style="color: var(--danger); opacity: 0.6;">
+                  <path d="M12 9v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  <path d="M12 17h.01" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+                  <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                </svg>
+              `}
             ` : ''}
           </div>
         </div>
@@ -163,42 +188,49 @@ export const renderGroupList = async () => {
   searchInput.addEventListener('input', debouncedSearch);
 
   grid.addEventListener('click', async (event) => {
-    const deleteBtn = event.target.closest('.group-delete-btn');
-    if (!deleteBtn) return;
-    event.preventDefault();
-    event.stopPropagation();
-
-    if (!canDeleteGroups) {
-      if (window.notify) window.notify.error('Only admins can delete groups.');
+    const editBtn = event.target.closest('.group-edit-btn');
+    if (editBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      window.location.hash = `#/groups/${editBtn.dataset.id}/edit`;
       return;
     }
 
-    const groupId = deleteBtn.dataset.id;
-    const groupName = deleteBtn.dataset.name || 'this group';
+    const suspendBtn = event.target.closest('.group-suspend-btn');
+    if (!suspendBtn) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (!canManageGroups) {
+      if (window.notify) window.notify.error('Only admins can suspend groups.');
+      return;
+    }
+
+    const groupId = suspendBtn.dataset.id;
+    const groupName = suspendBtn.dataset.name || 'this group';
     const confirmed = window.confirmDialog ? await window.confirmDialog({
-      title: 'Delete Group',
-      message: `This will permanently remove ${groupName}. If members, savings, loans, or reports still reference this group, PocketBase may block the deletion to protect records.`,
-      confirmText: 'Delete Group',
+      title: 'Suspend Group',
+      message: `Suspend ${groupName}? The group, members, savings, loans, and reports will remain intact. Admins can revive it later from the Lifecycle report.`,
+      confirmText: 'Suspend Group',
       cancelText: 'Cancel',
-      type: 'danger'
-    }) : confirm(`Delete ${groupName}? This cannot be undone.`);
+      type: 'warning'
+    }) : confirm(`Suspend ${groupName}? Records will remain intact.`);
 
     if (!confirmed) return;
 
-    const restoreButton = setButtonLoading(deleteBtn, '...');
+    const restoreButton = setButtonLoading(suspendBtn, '...');
     try {
-      await groupService.delete(groupId);
-      groups = groups.filter(group => group.id !== groupId);
-      totalItems = Math.max(0, totalItems - 1);
-      if (window.notify) window.notify.success('Group deleted successfully.');
+      await groupService.suspend(groupId);
+      groups = groups.map(group => group.id === groupId ? { ...group, status: 'suspended' } : group);
+      if (window.notify) window.notify.success('Group suspended. It can be revived from Reports > Lifecycle.');
       renderCards();
       await loadGroups();
     } catch (err) {
-      console.error('[GroupList] Delete group failed:', err);
-      const message = err.status === 400 || err.status === 409
-        ? 'PocketBase blocked deletion because this group is still linked to members or financial records.'
+      console.error('[GroupList] Suspend group failed:', err);
+      const message = err.status === 400
+        ? 'PocketBase rejected the suspended status. Run the updated setup_collections script or add "suspended" to the groups status field.'
         : (err.message || 'Please try again.');
-      if (window.notify) window.notify.error('Failed to delete group: ' + message);
+      if (window.notify) window.notify.error('Failed to suspend group: ' + message);
       restoreButton();
     }
   });

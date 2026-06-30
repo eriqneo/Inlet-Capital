@@ -4,7 +4,7 @@ import { dataCache } from './dataCache.js';
 const requireAdminRecordManager = () => {
   const role = pb.authStore.model?.role;
   if (!['super_admin', 'admin'].includes(role)) {
-    throw new Error('Only admins can delete groups.');
+    throw new Error('Only admins can manage group lifecycle.');
   }
 };
 
@@ -49,16 +49,31 @@ export const groupService = {
   async update(id, data) {
     const record = await pb.collection('groups').update(id, data);
     await dataCache.invalidatePrefix('groups:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
+    return record;
+  },
+
+  async suspend(id) {
+    requireAdminRecordManager();
+    const record = await pb.collection('groups').update(id, { status: 'suspended' });
+    await dataCache.invalidatePrefix('groups:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
+    return record;
+  },
+
+  async revive(id) {
+    requireAdminRecordManager();
+    const record = await pb.collection('groups').update(id, { status: 'active' });
+    await dataCache.invalidatePrefix('groups:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
     return record;
   },
 
   async delete(id) {
-    requireAdminRecordManager();
-    await pb.collection('groups').delete(id);
-    await dataCache.invalidatePrefix('groups:');
-    await dataCache.invalidatePrefix('group_summary:');
-    await dataCache.invalidatePrefix('groups:profile:');
-    return true;
+    return await this.suspend(id);
   },
 
   subscribeToChanges(callback) {

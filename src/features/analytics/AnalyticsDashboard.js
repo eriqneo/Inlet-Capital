@@ -214,6 +214,58 @@ export const renderAnalyticsDashboard = async () => {
     const scopedSchedules = currentOfficerFilter === 'all'
       ? schedules
       : schedules.filter(s => loans.some(l => l.id === s.loan && filterByOfficer(l)));
+    const buildEffectiveSchedulePaidMap = () => {
+      const schedulesByLoan = new Map();
+      schedules.forEach(schedule => {
+        if (!schedule.loan) return;
+        if (!schedulesByLoan.has(schedule.loan)) schedulesByLoan.set(schedule.loan, []);
+        schedulesByLoan.get(schedule.loan).push(schedule);
+      });
+      schedulesByLoan.forEach(loanSchedules => {
+        loanSchedules.sort((a, b) => {
+          const installmentDiff = (Number(a.installment_no) || 0) - (Number(b.installment_no) || 0);
+          if (installmentDiff !== 0) return installmentDiff;
+          return new Date(a.due_date || 0) - new Date(b.due_date || 0);
+        });
+      });
+
+      const repaymentsByLoan = new Map();
+      repayments.forEach(repayment => {
+        if (!repayment.loan) return;
+        if (!repaymentsByLoan.has(repayment.loan)) repaymentsByLoan.set(repayment.loan, []);
+        repaymentsByLoan.get(repayment.loan).push(repayment);
+      });
+      repaymentsByLoan.forEach(loanRepayments => {
+        loanRepayments.sort((a, b) => new Date(a.date || a.created || 0) - new Date(b.date || b.created || 0));
+      });
+
+      const paidMap = new Map();
+      schedulesByLoan.forEach((loanSchedules, loanId) => {
+        const allocated = new Map(loanSchedules.map(schedule => [schedule.id, 0]));
+        (repaymentsByLoan.get(loanId) || []).forEach(repayment => {
+          let remainingPayment = Number(repayment.amount) || 0;
+          for (const schedule of loanSchedules) {
+            if (remainingPayment <= 0) break;
+            const scheduleAmount = Number(schedule.amount) || 0;
+            const currentPaid = allocated.get(schedule.id) || 0;
+            const openAmount = Math.max(0, scheduleAmount - currentPaid);
+            if (openAmount <= 0) continue;
+            const applied = Math.min(openAmount, remainingPayment);
+            allocated.set(schedule.id, currentPaid + applied);
+            remainingPayment -= applied;
+          }
+        });
+        loanSchedules.forEach(schedule => {
+          const recordedPaid = Number(schedule.paid) || 0;
+          const allocatedPaid = allocated.get(schedule.id) || 0;
+          paidMap.set(schedule.id, Math.min(Number(schedule.amount) || 0, Math.max(recordedPaid, allocatedPaid)));
+        });
+      });
+      return paidMap;
+    };
+    const effectiveSchedulePaidMap = buildEffectiveSchedulePaidMap();
+    const getEffectiveSchedulePaid = (schedule) => effectiveSchedulePaidMap.get(schedule.id) ?? Math.min(Number(schedule.amount) || 0, Math.max(0, Number(schedule.paid) || 0));
+    const getEffectiveScheduleRemaining = (schedule) => Math.max(0, (Number(schedule.amount) || 0) - getEffectiveSchedulePaid(schedule));
     const loanPortfolio = activeLoans.reduce((sum, l) => sum + getLoanLiability(l), 0);
     const totalDisbursedLoans = activeLoans.reduce((sum, l) => sum + getLoanPrincipal(l), 0);
     const officerTargetsMap = {};
@@ -236,24 +288,28 @@ export const renderAnalyticsDashboard = async () => {
     const officerAssignedExpected = officerTargets
       .filter(o => o.id !== 'unassigned')
       .reduce((sum, o) => sum + o.expected, 0);
-    const collectionSchedules = scopedSchedules
+    const forecastSchedules = scopedSchedules
       .filter(schedule => {
         const loan = loansById.get(schedule.loan);
         if (!loan || !filterByOfficer(loan)) return false;
-        if (!isActiveDisbursedLoan(loan)) return false;
-        if (getScheduleRemaining(schedule) <= 0) return false;
+        if (!isGivenLoan(loan)) return false;
         return scheduleMatchesCollectionWindow(schedule);
       });
-    const expectedCollection = collectionSchedules.reduce((sum, schedule) => sum + getScheduleRemaining(schedule), 0);
-    const scheduledGrossCollection = collectionSchedules.reduce((sum, schedule) => sum + (Number(schedule.amount) || 0), 0);
-    const scheduledPaidCollection = collectionSchedules.reduce((sum, schedule) => sum + (Number(schedule.paid) || 0), 0);
-    const expectedCollectionLoans = new Set(collectionSchedules.map(schedule => schedule.loan)).size;
-    const expectedCollectionClients = new Set(collectionSchedules.map(schedule => {
+    const outstandingForecastSchedules = forecastSchedules.filter(schedule => getEffectiveScheduleRemaining(schedule) > 0);
+    const expectedCollection = forecastSchedules.reduce((sum, schedule) => sum + getEffectiveScheduleRemaining(schedule), 0);
+    const scheduledGrossCollection = forecastSchedules.reduce((sum, schedule) => sum + (Number(schedule.amount) || 0), 0);
+    const scheduledPaidCollection = forecastSchedules.reduce((sum, schedule) => sum + getEffectiveSchedulePaid(schedule), 0);
+    const windowRepaymentRateNumber = scheduledGrossCollection > 0
+      ? Math.min(100, (scheduledPaidCollection / scheduledGrossCollection) * 100)
+      : 0;
+    const windowRepaymentRate = windowRepaymentRateNumber.toFixed(1);
+    const expectedCollectionLoans = new Set(outstandingForecastSchedules.map(schedule => schedule.loan)).size;
+    const expectedCollectionClients = new Set(outstandingForecastSchedules.map(schedule => {
       const loan = loansById.get(schedule.loan);
       return loan?.member || loan?.group || schedule.loan;
     })).size;
     const collectionOfficerMap = {};
-    collectionSchedules.forEach(schedule => {
+    forecastSchedules.forEach(schedule => {
       const loan = loansById.get(schedule.loan);
       const officerKey = loan?.processed_by || 'unassigned';
       if (!collectionOfficerMap[officerKey]) {
@@ -270,8 +326,8 @@ export const renderAnalyticsDashboard = async () => {
       collectionOfficerMap[officerKey].installments += 1;
       collectionOfficerMap[officerKey].clients.add(loan?.member || loan?.group || schedule.loan);
       collectionOfficerMap[officerKey].gross += Number(schedule.amount) || 0;
-      collectionOfficerMap[officerKey].paid += Number(schedule.paid) || 0;
-      collectionOfficerMap[officerKey].expected += getScheduleRemaining(schedule);
+      collectionOfficerMap[officerKey].paid += getEffectiveSchedulePaid(schedule);
+      collectionOfficerMap[officerKey].expected += getEffectiveScheduleRemaining(schedule);
     });
     const collectionOfficerRows = Object.values(collectionOfficerMap)
       .map(row => ({ ...row, clients: row.clients.size }))
@@ -293,6 +349,13 @@ export const renderAnalyticsDashboard = async () => {
       : repaymentRateNumber <= 70
         ? { label: 'Average Portfolio', color: 'var(--warning)' }
         : { label: 'Healthy Portfolio', color: 'var(--success)' };
+    const windowRepaymentHealth = scheduledGrossCollection <= 0
+      ? { label: 'No scheduled target', color: 'var(--text-muted)' }
+      : windowRepaymentRateNumber <= 50
+        ? { label: 'Action Required', color: 'var(--danger)' }
+        : windowRepaymentRateNumber <= 70
+          ? { label: 'Average Target', color: 'var(--warning)' }
+          : { label: 'On Track', color: 'var(--success)' };
 
     // Real Trend logic (Members registered in current month vs total)
     const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
@@ -408,7 +471,13 @@ export const renderAnalyticsDashboard = async () => {
           <div class="kpi-icon" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">📅</div>
           <div class="kpi-label">${collectionWindow.label} Collections Expected</div>
           <div class="kpi-value">KES ${expectedCollection.toLocaleString()}</div>
-          <div class="kpi-trend ${expectedCollection > 0 ? 'trend-up' : 'trend-down'}">${expectedCollectionClients} clients · ${collectionSchedules.length} installments</div>
+          <div class="kpi-trend ${expectedCollection > 0 ? 'trend-up' : 'trend-down'}">${expectedCollectionClients} clients · ${outstandingForecastSchedules.length} outstanding of ${forecastSchedules.length} due</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background: rgba(16, 185, 129, 0.1); color: var(--success);">🎯</div>
+          <div class="kpi-label">${collectionWindow.label} Repayment Rate</div>
+          <div class="kpi-value">${windowRepaymentRate}%</div>
+          <div class="kpi-trend" style="color: ${windowRepaymentHealth.color};">${windowRepaymentHealth.label} · Paid KES ${scheduledPaidCollection.toLocaleString()} of KES ${scheduledGrossCollection.toLocaleString()}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(16, 185, 129, 0.1); color: var(--success);">🏦</div>
@@ -474,7 +543,7 @@ export const renderAnalyticsDashboard = async () => {
           </table>
         </div>
         <div class="text-xs text-muted" style="margin-top: 10px;">
-          Expected collection is calculated from unpaid repayment schedule balances: installment amount minus amount already paid.
+          Due and paid are calculated from all installments due in the selected window. Expected collection is the remaining balance: installment amount minus amount already paid.
         </div>
       </div>
 

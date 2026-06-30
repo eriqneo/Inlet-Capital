@@ -4,16 +4,33 @@ import { generateGroupId } from '../../core/numberGen.js';
 import { navigate } from '../../core/router.js';
 import { setButtonLoading } from '../../core/uiState.js';
 
-export const renderGroupRegistration = async () => {
+export const renderGroupRegistration = async (params = {}) => {
   const container = document.createElement('div');
-  const groupId = generateGroupId();
+  const isEditMode = Boolean(params.id);
+  let existingGroup = null;
+  if (isEditMode) {
+    existingGroup = await groupService.getById(params.id);
+  }
+  const groupId = existingGroup?.group_id || generateGroupId();
+  const toDateInput = (value) => {
+    if (!value) return new Date().toISOString().split('T')[0];
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? new Date().toISOString().split('T')[0] : date.toISOString().split('T')[0];
+  };
+  const escapeAttr = (value = '') => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  }[char]));
   
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
       <div>
-        <h1 class="text-xl">Register New Group</h1>
-        <p class="text-muted">Create a new group for table banking and joint loans.</p>
+        <h1 class="text-xl">${isEditMode ? 'Edit Group' : 'Register New Group'}</h1>
+        <p class="text-muted">${isEditMode ? 'Update group details without touching its history.' : 'Create a new group for table banking and joint loans.'}</p>
       </div>
       <div class="badge badge-primary" style="font-size: 1rem; padding: 8px 16px;">
         ID: ${groupId}
@@ -23,43 +40,39 @@ export const renderGroupRegistration = async () => {
     <form id="group-reg-form" class="card" style="max-width: 600px; margin: 0 auto;">
       <div class="form-group">
         <label class="form-label">Group Name</label>
-        <input type="text" name="name" class="form-control" required placeholder="e.g. Unity Success Group" />
+        <input type="text" name="name" class="form-control" required placeholder="e.g. Unity Success Group" value="${escapeAttr(existingGroup?.name || '')}" />
       </div>
 
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
         <div class="form-group">
           <label class="form-label">Registration Date</label>
-          <input type="date" name="registration_date" class="form-control" value="${new Date().toISOString().split('T')[0]}" required />
+          <input type="date" name="registration_date" class="form-control" value="${toDateInput(existingGroup?.registration_date)}" required />
         </div>
         <div class="form-group">
           <label class="form-label">Meeting Day</label>
           <select name="meeting_day" class="form-control">
-            <option value="Monday">Monday</option>
-            <option value="Tuesday">Tuesday</option>
-            <option value="Wednesday">Wednesday</option>
-            <option value="Thursday">Thursday</option>
-            <option value="Friday">Friday</option>
-            <option value="Saturday">Saturday</option>
-            <option value="Sunday">Sunday</option>
+            ${['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(day => `
+              <option value="${day}" ${(existingGroup?.meeting_day || 'Monday') === day ? 'selected' : ''}>${day}</option>
+            `).join('')}
           </select>
         </div>
       </div>
 
       <div class="form-group">
         <label class="form-label">Location / Area</label>
-        <input type="text" name="location" class="form-control" required placeholder="e.g. Nakuru East" />
+        <input type="text" name="location" class="form-control" required placeholder="e.g. Nakuru East" value="${escapeAttr(existingGroup?.location || '')}" />
       </div>
 
       <div class="form-group">
         <label class="form-label">Group Phone Number</label>
-        <input type="tel" name="phone" class="form-control" required />
+        <input type="tel" name="phone" class="form-control" required value="${escapeAttr(existingGroup?.phone || existingGroup?.phone_number || '')}" />
       </div>
 
 
 
       <div style="margin-top: 32px; display: flex; justify-content: flex-end; gap: 16px;">
         <button type="button" class="btn btn-outline" onclick="window.location.hash = '#/groups'">Cancel</button>
-        <button type="submit" class="btn btn-primary">Register Group</button>
+        <button type="submit" class="btn btn-primary">${isEditMode ? 'Save Changes' : 'Register Group'}</button>
       </div>
     </form>
   `;
@@ -77,26 +90,32 @@ export const renderGroupRegistration = async () => {
       location: groupData.location,
       phone: groupData.phone,
       group_id: groupId,
-      status: 'active',
-      member_count: 0,
-      total_savings: 0,
-      outstanding_loan: 0
+      status: existingGroup?.status || 'active'
     };
 
-    const userId = authService.getUser()?.id;
-    if (userId) {
-      group.created_by = userId;
+    if (!isEditMode) {
+      group.member_count = 0;
+      group.total_savings = 0;
+      group.outstanding_loan = 0;
+      const userId = authService.getUser()?.id;
+      if (userId) {
+        group.created_by = userId;
+      }
     }
 
-    const restoreButton = setButtonLoading(form.querySelector('button[type="submit"]'), 'Registering...');
+    const restoreButton = setButtonLoading(form.querySelector('button[type="submit"]'), isEditMode ? 'Saving...' : 'Registering...');
 
     try {
-      await groupService.create(group);
+      if (isEditMode) {
+        await groupService.update(existingGroup.id, group);
+      } else {
+        await groupService.create(group);
+      }
 
-      if (window.notify) window.notify.success('Group registered successfully!');
-      setTimeout(() => navigate('#/groups'), 1200);
+      if (window.notify) window.notify.success(isEditMode ? 'Group updated successfully!' : 'Group registered successfully!');
+      setTimeout(() => navigate(isEditMode ? `#/groups/${existingGroup.id}` : '#/groups'), 800);
     } catch (err) {
-      if (window.notify) window.notify.error('Error registering group: ' + (err.message || 'Unknown error'));
+      if (window.notify) window.notify.error(`Error ${isEditMode ? 'updating' : 'registering'} group: ` + (err.message || 'Unknown error'));
       console.error(err);
       restoreButton();
     }

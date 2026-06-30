@@ -72,6 +72,11 @@ const initApp = async () => {
     return await renderGroupRegistration();
   }, { protect: true, roles: ['super_admin', 'admin', 'manager', 'loan_officer', 'group_officer'], module: 'groups' });
 
+  addRoute('#/groups/:id/edit', async (params) => {
+    const { renderGroupRegistration } = await import('./features/groups/GroupRegistration.js');
+    return await renderGroupRegistration(params);
+  }, { protect: true, roles: ['super_admin', 'admin'], module: 'groups' });
+
   addRoute('#/groups/:id', async (params) => {
     const { renderGroupProfile } = await import('./features/groups/GroupProfile.js');
     return await renderGroupProfile(params);

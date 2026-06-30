@@ -129,10 +129,12 @@ export const renderGroupProfile = async (params) => {
     return true;
   };
   const calculateFeesTotal = (members, loans) => {
+    const memberIds = new Set(members.map(member => member.id).filter(Boolean));
     const registrationFees = members
       .filter(member => isDateWithinCurrentFilter(getRegistrationFeeDate(member)))
       .reduce((sum, member) => sum + (Number(member.registration_fee) || 0), 0);
     const processingFees = loans
+      .filter(loan => loan.member && memberIds.has(loan.member))
       .filter(loan => loan.processing_fee_paid && isDateWithinCurrentFilter(getProcessingFeeDate(loan)))
       .reduce((sum, loan) => sum + (Number(loan.processing_fee) || 0), 0);
     return registrationFees + processingFees;
@@ -213,6 +215,34 @@ export const renderGroupProfile = async (params) => {
   let totalGroupArrears = 0;
   let membersInArrearsCount = 0;
   let inactiveMembersCount = 0;
+  const getMeetingCycleStart = () => {
+    const dayIndex = {
+      Sunday: 0,
+      Monday: 1,
+      Tuesday: 2,
+      Wednesday: 3,
+      Thursday: 4,
+      Friday: 5,
+      Saturday: 6
+    }[group.meeting_day];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (dayIndex === undefined) {
+      const fallback = new Date(today);
+      fallback.setDate(fallback.getDate() - 7);
+      return fallback;
+    }
+    const daysSinceMeeting = (today.getDay() - dayIndex + 7) % 7;
+    const cycleStart = new Date(today);
+    cycleStart.setDate(today.getDate() - daysSinceMeeting);
+    return cycleStart;
+  };
+  const meetingCycleStart = getMeetingCycleStart();
+  const hasSavedInMeetingCycle = (memberId) => groupSavings.some(record => {
+    if (record.member !== memberId || record.is_reversed || record.type !== 'deposit') return false;
+    const date = new Date(record.date || record.created);
+    return !Number.isNaN(date.getTime()) && date >= meetingCycleStart;
+  });
 
   const enrichedMembers = allGroupMembers.map((m) => {
     const mSavings = groupSavings.filter(s => s.member === m.id);
@@ -229,7 +259,9 @@ export const renderGroupProfile = async (params) => {
     const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
     const isActive = lastSavingsDate && (new Date() - lastSavingsDate <= 90 * 24 * 60 * 60 * 1000);
 
-    return { ...m, totalSavings, olBalance, totalArrears, isActive, lastSavingsDate };
+    const savedThisCycle = hasSavedInMeetingCycle(m.id);
+
+    return { ...m, totalSavings, olBalance, totalArrears, isActive, lastSavingsDate, savedThisCycle };
   });
 
   // Aggregate group savings
@@ -252,6 +284,31 @@ export const renderGroupProfile = async (params) => {
     if (!m.isActive) inactiveMembersCount++;
   }
   let totalOutstandingLoan = calculateOutstandingLoanBalance(groupLoans, allRepayments);
+  const savedThisCycleCount = enrichedMembers.filter(member => member.savedThisCycle).length;
+  const savingsParticipationRate = enrichedMembers.length > 0
+    ? (savedThisCycleCount / enrichedMembers.length) * 100
+    : 0;
+  const autoPerformanceRating = enrichedMembers.length === 0 ? 0
+    : savingsParticipationRate === 100 ? 5
+      : savingsParticipationRate >= 80 ? 4
+        : savingsParticipationRate >= 60 ? 3
+          : savingsParticipationRate >= 40 ? 2
+            : 1;
+  const performanceLabels = {
+    0: 'No Members',
+    1: 'Very Poor',
+    2: 'Poor',
+    3: 'Fair',
+    4: 'Very Good',
+    5: 'Excellent'
+  };
+  const performanceColor = autoPerformanceRating === 5
+    ? 'var(--success)'
+    : autoPerformanceRating >= 3
+      ? 'var(--warning)'
+      : autoPerformanceRating > 0
+        ? 'var(--danger)'
+        : 'var(--text-muted)';
   const computedSummarySnapshot = {
     member_count: allGroupMembers.length,
     total_savings: totalGroupSavings,
@@ -646,6 +703,19 @@ export const renderGroupProfile = async (params) => {
         .some(value => String(value).toLowerCase().includes(query));
     });
   };
+  const getFeeKpiMembers = () => {
+    const query = (memberSearchInput?.value || '').trim().toLowerCase();
+    const scope = accountScopeSelect?.value || 'all';
+    if (scope === 'groups') return [];
+    return enrichedMembers.filter(m => {
+      if (currentMemberStatusFilter === 'arrears' && getMemberArrears(m) <= 0) return false;
+      if (currentMemberStatusFilter === 'inactive' && m.isActive) return false;
+      if (!query) return true;
+      return [m.full_name, m.reg_no, m.phone_number, m.phone]
+        .filter(Boolean)
+        .some(value => String(value).toLowerCase().includes(query));
+    });
+  };
 
   const scopeIncludesGroupAccount = () => {
     const scope = accountScopeSelect?.value || 'all';
@@ -710,6 +780,7 @@ export const renderGroupProfile = async (params) => {
     const filteredLoans = getFilteredLoans();
     const filteredSavings = getFilteredSavings();
     const filteredRepayments = getFilteredRepayments();
+    const feeKpiMembers = getFeeKpiMembers();
     const includeGroupAccount = scopeIncludesGroupAccount();
     const arrearsAmount = filteredMembers.reduce((sum, m) => sum + getMemberArrears(m), 0) + (includeGroupAccount ? getGroupLevelArrears() : 0);
     const arrearsCount = filteredMembers.filter(m => getMemberArrears(m) > 0).length;
@@ -717,7 +788,7 @@ export const renderGroupProfile = async (params) => {
     const savingsTotal = calculateSavingsTotal(filteredSavings);
     const outstandingLoan = calculateOutstandingLoanBalance(filteredLoans, allRepayments);
     const repaymentsTotal = calculateRepaymentsTotal(filteredRepayments);
-    const feesTotal = calculateFeesTotal(filteredMembers, filteredLoans);
+    const feesTotal = calculateFeesTotal(feeKpiMembers, groupLoans);
 
     container.querySelector('#group-total-savings-kpi').textContent = `KES ${savingsTotal.toLocaleString()}`;
     container.querySelector('#group-outstanding-loan-kpi').textContent = `KES ${outstandingLoan.toLocaleString()}`;
@@ -785,53 +856,24 @@ export const renderGroupProfile = async (params) => {
     filterBtns.inactive.onclick = () => { currentMemberStatusFilter = 'inactive'; updateActiveFilterBtn('inactive'); refreshFilteredViews(); };
   }
 
-  // Rating logic
-  const isAdmin = canManageRecords;
+  // Auto rating logic: tied to savings participation since the latest meeting day.
   const ratingContainer = container.querySelector('#group-rating-container');
-  const ratingLabels = { 1: 'Very Poor', 2: 'Poor', 3: 'Fair', 4: 'Very Good', 5: 'Excellent' };
-
   ratingContainer.innerHTML = `
-    <div id="stars-wrapper" style="display: flex; gap: 4px; font-size: 1.25rem;">
-      ${[1, 2, 3, 4, 5].map(i => `<span class="rating-star" data-val="${i}" style="transition: color 0.2s; cursor: ${isAdmin ? 'pointer' : 'default'};"></span>`).join('')}
+    <div style="display: flex; gap: 4px; font-size: 1.25rem; color: ${performanceColor};">
+      ${[1, 2, 3, 4, 5].map(i => `<span>${i <= autoPerformanceRating ? '★' : '☆'}</span>`).join('')}
     </div>
-    <div id="rating-label-wrapper"></div>
+    <div class="text-xs" style="margin-top: 4px; color: ${performanceColor}; font-weight: 700;">
+      ${autoPerformanceRating}/5 — ${performanceLabels[autoPerformanceRating]}
+    </div>
+    <div class="text-xs text-muted" style="margin-top: 4px; line-height: 1.45;">
+      ${savedThisCycleCount}/${enrichedMembers.length} members saved since ${formatDate(meetingCycleStart)}.
+      Excellent requires every member to save in the current meeting cycle.
+    </div>
   `;
-
-  const starsWrapper = ratingContainer.querySelector('#stars-wrapper');
-  const labelWrapper = ratingContainer.querySelector('#rating-label-wrapper');
-  const stars = starsWrapper.querySelectorAll('.rating-star');
-
-  const updateRatingUI = (currentHover = 0) => {
-    const ratingValue = group.performance_rating || 0;
-    const activeRating = currentHover > 0 ? currentHover : ratingValue;
-    stars.forEach(star => {
-      const val = parseInt(star.dataset.val);
-      star.style.color = val <= activeRating ? 'var(--primary)' : 'var(--secondary)';
-      star.textContent = val <= activeRating ? '★' : '☆';
-    });
-    let labelHtml = ratingValue > 0
-      ? `<div class="text-xs" style="margin-top: 4px; color: var(--text-color); font-weight: 500;">${ratingValue}/5 — ${ratingLabels[ratingValue]}</div>`
-      : `<div class="text-xs text-muted" style="margin-top: 4px; font-style: italic;">Not yet rated</div>`;
-    if (isAdmin && ratingValue === 0 && currentHover === 0) labelHtml += `<div class="text-xs text-muted" style="margin-top: 2px;">(Click to rate)</div>`;
-    labelWrapper.innerHTML = labelHtml;
-  };
-
-  if (isAdmin) {
-    stars.forEach(star => {
-      const val = parseInt(star.dataset.val);
-      star.onmouseenter = () => updateRatingUI(val);
-      star.onmouseleave = () => updateRatingUI(0);
-      star.onclick = async () => {
-        group.performance_rating = val;
-        starsWrapper.style.pointerEvents = 'none';
-        labelWrapper.innerHTML = `<div class="text-xs text-muted" style="margin-top: 4px;">Saving rating...</div>`;
-        try { await groupService.update(group.id, { performance_rating: val }); if (window.notify) window.notify.success('Group rating updated!'); updateRatingUI(0); }
-        catch (err) { if (window.notify) window.notify.error('Error saving rating'); updateRatingUI(0); }
-        finally { starsWrapper.style.pointerEvents = 'auto'; }
-      };
-    });
+  if (canManageRecords && group.performance_rating !== autoPerformanceRating) {
+    groupService.update(group.id, { performance_rating: autoPerformanceRating })
+      .catch(err => console.warn('[GroupProfile] Auto performance rating save failed:', err.message));
   }
-  updateRatingUI();
 
   const updateGroupLoansUI = () => {
     const filtered = getFilteredLoans();

@@ -33,6 +33,9 @@ export const renderReportsDashboard = async () => {
     registrations: 1,
     cashflow: 1,
     withdrawals: 1,
+    repayments: 1,
+    arrears: 1,
+    lifecycle: 1,
     alerts: 1
   };
 
@@ -42,7 +45,10 @@ export const renderReportsDashboard = async () => {
     disbursements: 'all',
     registrations: 'all',
     cashflow: 'all',
-    withdrawals: 'all'
+    withdrawals: 'all',
+    repayments: 'all',
+    arrears: 'all',
+    lifecycle: 'all'
   };
   let dateRange = {
     from: '',
@@ -71,6 +77,9 @@ export const renderReportsDashboard = async () => {
         <button class="tab-btn" data-tab="registrations">Registrations</button>
         <button class="tab-btn" data-tab="cashflow">Cash Flow</button>
         <button class="tab-btn" data-tab="withdrawals">Withdrawals</button>
+        <button class="tab-btn" data-tab="repayments">Repayments</button>
+        <button class="tab-btn" data-tab="arrears">Arrears Aging</button>
+        <button class="tab-btn" data-tab="lifecycle">Lifecycle</button>
         <button class="tab-btn" data-tab="alerts">Alerts & Reminders</button>
       </div>
     </div>
@@ -136,9 +145,23 @@ export const renderReportsDashboard = async () => {
       <!-- 2. Individual Performance -->
       <div id="individuals-tab" class="report-section" style="display: none;">
         <h2 style="margin-bottom: 16px;">Individual Reports</h2>
-        <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary); margin-bottom: 16px; max-width: 260px;">
-          <div class="text-xs text-muted">Table Entries</div>
-          <div class="text-xl font-semibold text-primary" id="individuals-entry-count">0</div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 16px;">
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--success);">
+            <div class="text-xs text-muted">Savings</div>
+            <div class="text-xl font-semibold text-success" id="individuals-total-savings">KES 0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--danger);">
+            <div class="text-xs text-muted">OLB</div>
+            <div class="text-xl font-semibold text-danger" id="individuals-total-olb">KES 0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--warning);">
+            <div class="text-xs text-muted">Arrears</div>
+            <div class="text-xl font-semibold text-warning" id="individuals-total-arrears">KES 0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
+            <div class="text-xs text-muted">Table Entries</div>
+            <div class="text-xl font-semibold text-primary" id="individuals-entry-count">0</div>
+          </div>
         </div>
         <div class="table-responsive card" style="padding: 0;">
           <table class="table">
@@ -191,9 +214,15 @@ export const renderReportsDashboard = async () => {
       <!-- 4. Disbursements -->
       <div id="disbursements-tab" class="report-section" style="display: none;">
         <h2 style="margin-bottom: 16px;">Disbursement Report</h2>
-        <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary); margin-bottom: 16px; max-width: 260px;">
-          <div class="text-xs text-muted">Table Entries</div>
-          <div class="text-xl font-semibold text-primary" id="disbursements-entry-count">0</div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px;">
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--success);">
+            <div class="text-xs text-muted">Total Disbursed</div>
+            <div class="text-xl font-semibold text-success" id="disbursements-total-amount">KES 0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
+            <div class="text-xs text-muted">Table Entries</div>
+            <div class="text-xl font-semibold text-primary" id="disbursements-entry-count">0</div>
+          </div>
         </div>
         <div class="table-responsive card" style="padding: 0;">
           <table class="table" style="font-size: 0.75rem;">
@@ -225,9 +254,15 @@ export const renderReportsDashboard = async () => {
       <!-- 5. Registrations -->
       <div id="registrations-tab" class="report-section" style="display: none;">
         <h2 style="margin-bottom: 16px;">Registration Report</h2>
-        <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary); margin-bottom: 16px; max-width: 260px;">
-          <div class="text-xs text-muted">Table Entries</div>
-          <div class="text-xl font-semibold text-primary" id="registrations-entry-count">0</div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px;">
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--success);">
+            <div class="text-xs text-muted">Amount Received</div>
+            <div class="text-xl font-semibold text-success" id="registrations-amount-received">KES 0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
+            <div class="text-xs text-muted">Table Entries</div>
+            <div class="text-xl font-semibold text-primary" id="registrations-entry-count">0</div>
+          </div>
         </div>
         <div class="table-responsive card" style="padding: 0;">
           <table class="table">
@@ -302,7 +337,127 @@ export const renderReportsDashboard = async () => {
         </div>
       </div>
 
-      <!-- 7. Alerts & Reminders -->
+      <!-- 8. Repayments -->
+      <div id="repayments-tab" class="report-section" style="display: none;">
+        <h2 style="margin-bottom: 16px;">Repayments Report</h2>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px;">
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--success);">
+            <div class="text-xs text-muted">Amount Paid</div>
+            <div class="text-xl font-semibold text-success" id="repayments-total-paid">KES 0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--danger);">
+            <div class="text-xs text-muted">Outstanding OLB</div>
+            <div class="text-xl font-semibold text-danger" id="repayments-total-olb">KES 0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
+            <div class="text-xs text-muted">Table Entries</div>
+            <div class="text-xl font-semibold text-primary" id="repayments-entry-count">0</div>
+          </div>
+        </div>
+        <div class="table-responsive card" style="padding: 0;">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Ln Number</th>
+                <th>Client Name</th>
+                <th>Group</th>
+                <th>OLB</th>
+                <th>Status</th>
+                <th>Due Date</th>
+                <th>Amount Paid</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="repayments-table-body"></tbody>
+          </table>
+          <div id="repayments-pagination"></div>
+        </div>
+      </div>
+
+      <!-- 9. Arrears Aging -->
+      <div id="arrears-tab" class="report-section" style="display: none;">
+        <h2 style="margin-bottom: 16px;">Arrears Aging Report</h2>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px;">
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--danger);">
+            <div class="text-xs text-muted">Total Arrears</div>
+            <div class="text-xl font-semibold text-danger" id="arrears-total-amount">KES 0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid #10b981;">
+            <div class="text-xs text-muted">1-30 Days</div>
+            <div class="text-xl font-semibold" style="color: #10b981;" id="arrears-1-30-count">0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid #f59e0b;">
+            <div class="text-xs text-muted">31-60 Days</div>
+            <div class="text-xl font-semibold" style="color: #f59e0b;" id="arrears-31-60-count">0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid #ef4444;">
+            <div class="text-xs text-muted">61+ Days</div>
+            <div class="text-xl font-semibold" style="color: #ef4444;" id="arrears-61-plus-count">0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
+            <div class="text-xs text-muted">Table Entries</div>
+            <div class="text-xl font-semibold text-primary" id="arrears-entry-count">0</div>
+          </div>
+        </div>
+        <div class="table-responsive card" style="padding: 0;">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Ln Number</th>
+                <th>Client Name</th>
+                <th>Phone</th>
+                <th>Group</th>
+                <th>Due Date</th>
+                <th>Days Late</th>
+                <th>Age Band</th>
+                <th>Arrears Amount</th>
+                <th>OLB</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="arrears-table-body"></tbody>
+          </table>
+          <div id="arrears-pagination"></div>
+        </div>
+      </div>
+
+      <!-- 10. Lifecycle -->
+      <div id="lifecycle-tab" class="report-section" style="display: none;">
+        <h2 style="margin-bottom: 16px;">Lifecycle Report</h2>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px;">
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--danger);">
+            <div class="text-xs text-muted">Suspended Groups</div>
+            <div class="text-xl font-semibold text-danger" id="lifecycle-suspended-groups">0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--warning);">
+            <div class="text-xs text-muted">Suspended Members</div>
+            <div class="text-xl font-semibold text-warning" id="lifecycle-suspended-members">0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
+            <div class="text-xs text-muted">Table Entries</div>
+            <div class="text-xl font-semibold text-primary" id="lifecycle-entry-count">0</div>
+          </div>
+        </div>
+        <div class="table-responsive card" style="padding: 0;">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Record</th>
+                <th>Type</th>
+                <th>Group</th>
+                <th>Phone</th>
+                <th>Status</th>
+                <th>Last Updated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="lifecycle-table-body"></tbody>
+          </table>
+          <div id="lifecycle-pagination"></div>
+        </div>
+      </div>
+
+      <!-- 11. Alerts & Reminders -->
       <div id="alerts-tab" class="report-section" style="display: none;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
           <h2 style="margin: 0;">Repayment Alerts & Reminders</h2>
@@ -388,7 +543,7 @@ export const renderReportsDashboard = async () => {
   `;
 
   const setReportLoadingRows = () => {
-    ['individuals', 'groups', 'disbursements', 'registrations', 'cashflow', 'withdrawals'].forEach(tab => {
+    ['individuals', 'groups', 'disbursements', 'registrations', 'cashflow', 'withdrawals', 'repayments', 'arrears', 'lifecycle'].forEach(tab => {
       const tbody = container.querySelector(`#${tab}-table-body`);
       if (tbody) tbody.innerHTML = renderTableSkeletonRows(tab === 'cashflow' ? 7 : 9, 6);
     });
@@ -481,13 +636,7 @@ export const renderReportsDashboard = async () => {
       if (activeFilters.individuals === 'group') return isGroupMember;
       return true;
     });
-    const entriesCountEl = container.querySelector('#individuals-entry-count');
-    if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
-
-    const paginated = getReportRowsForView('individuals', filtered);
-    const tbody = container.querySelector('#individuals-table-body');
-    
-    tbody.innerHTML = paginated.map(m => {
+    const individualRows = filtered.map(m => {
       const allMemberLoans = loans.filter(l => (l.member === m.id) && l.disbursement_date);
       const runningLoans = allMemberLoans.filter(l => l.status === 'disbursed' || (['approved', 'partial_approved'].includes(l.status) && l.disbursement_date));
       const completedLoans = allMemberLoans.filter(l => ['completed', 'closed'].includes(l.status));
@@ -503,14 +652,53 @@ export const renderReportsDashboard = async () => {
       const overdueSchedules = schedules.filter(s => collectibleLoans.some(ml => ml.id === s.loan) && isScheduleInArrears(s));
       const onTrack = overdueSchedules.length === 0;
       const totalArrears = getArrearsTotal(overdueSchedules);
-
-      // Active logic: independent individuals stay active; group members depend on savings in the last 90 days.
       const mSavings = savings.filter(s => s.member === m.id && !s.is_reversed);
       const totalSav = mSavings.reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
       const lastSavingsDate = getLatestSavingsDate(mSavings);
       const activityStatus = getMemberActivityStatus(m, lastSavingsDate);
-
       const groupName = m.expand?.group?.name || 'Individual';
+
+      return {
+        member: m,
+        groupName,
+        mLoans,
+        totalSav,
+        olBalance,
+        totalRepaid,
+        totalArrears,
+        percentRepaid,
+        onTrack,
+        activityStatus
+      };
+    });
+    const totalIndividualSavings = individualRows.reduce((sum, row) => sum + (Number(row.totalSav) || 0), 0);
+    const totalIndividualOlb = individualRows.reduce((sum, row) => sum + (Number(row.olBalance) || 0), 0);
+    const totalIndividualArrears = individualRows.reduce((sum, row) => sum + (Number(row.totalArrears) || 0), 0);
+    const savingsKpiEl = container.querySelector('#individuals-total-savings');
+    const olbKpiEl = container.querySelector('#individuals-total-olb');
+    const arrearsKpiEl = container.querySelector('#individuals-total-arrears');
+    if (savingsKpiEl) savingsKpiEl.textContent = `KES ${totalIndividualSavings.toLocaleString()}`;
+    if (olbKpiEl) olbKpiEl.textContent = `KES ${totalIndividualOlb.toLocaleString()}`;
+    if (arrearsKpiEl) arrearsKpiEl.textContent = `KES ${totalIndividualArrears.toLocaleString()}`;
+    const entriesCountEl = container.querySelector('#individuals-entry-count');
+    if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
+
+    const paginated = getReportRowsForView('individuals', individualRows);
+    const tbody = container.querySelector('#individuals-table-body');
+    
+    tbody.innerHTML = paginated.map(row => {
+      const {
+        member: m,
+        groupName,
+        mLoans,
+        totalSav,
+        olBalance,
+        totalRepaid,
+        totalArrears,
+        percentRepaid,
+        onTrack,
+        activityStatus
+      } = row;
 
       return `
         <tr>
@@ -695,6 +883,9 @@ export const renderReportsDashboard = async () => {
     });
     const entriesCountEl = container.querySelector('#disbursements-entry-count');
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
+    const totalDisbursed = filtered.reduce((sum, loan) => sum + (Number(loan.approved_amount || loan.amount_applied) || 0), 0);
+    const totalDisbursedEl = container.querySelector('#disbursements-total-amount');
+    if (totalDisbursedEl) totalDisbursedEl.textContent = `KES ${totalDisbursed.toLocaleString()}`;
 
     const paginated = getReportRowsForView('disbursements', filtered);
     
@@ -751,6 +942,9 @@ export const renderReportsDashboard = async () => {
     });
     const entriesCountEl = container.querySelector('#registrations-entry-count');
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
+    const amountReceived = filtered.reduce((sum, member) => sum + (Number(member.registration_fee) || 0), 0);
+    const amountReceivedEl = container.querySelector('#registrations-amount-received');
+    if (amountReceivedEl) amountReceivedEl.textContent = `KES ${amountReceived.toLocaleString()}`;
 
     const paginated = getReportRowsForView('registrations', filtered);
     
@@ -964,6 +1158,311 @@ export const renderReportsDashboard = async () => {
     renderReportPagination('#withdrawals-pagination', filtered.length, pageSize, (p) => { pages.withdrawals = p; updateWithdrawals(); });
   };
 
+  const updateRepayments = () => {
+    const membersById = new Map(members.map(member => [member.id, member]));
+    const groupsById = new Map(groups.map(group => [group.id, group]));
+    const loansById = new Map(loans.map(loan => [loan.id, loan]));
+    const getLoanLiability = (loan) => {
+      const storedLiability = Number(loan?.total_liability) || 0;
+      if (storedLiability > 0) return storedLiability;
+      const principal = Number(loan?.approved_amount || loan?.amount_applied) || 0;
+      return principal + (Number(loan?.interest_amount) || 0);
+    };
+    const repaymentsByLoan = repayments.reduce((map, repayment) => {
+      if (!repayment.loan) return map;
+      map.set(repayment.loan, (map.get(repayment.loan) || 0) + (Number(repayment.amount) || 0));
+      return map;
+    }, new Map());
+    const isCollectibleLoan = (loan) => loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
+    const getLoanOwner = (loan) => {
+      const member = loan?.expand?.member || membersById.get(loan?.member);
+      const group = loan?.expand?.group || groupsById.get(loan?.group) || member?.expand?.group || groupsById.get(member?.group);
+      return {
+        clientName: member?.full_name || group?.name || 'Unknown',
+        groupName: group?.name || (member ? 'Individual' : '-')
+      };
+    };
+
+    const repaymentRows = schedules
+      .map(schedule => {
+        const loan = loansById.get(schedule.loan);
+        if (!loan || !isCollectibleLoan(loan)) return null;
+        const paid = Number(schedule.paid) || 0;
+        const olb = Math.max(0, getLoanLiability(loan) - (repaymentsByLoan.get(loan.id) || 0));
+        const isArrears = isScheduleInArrears(schedule);
+        const isPaid = isSchedulePaid(schedule);
+        const owner = getLoanOwner(loan);
+        return {
+          schedule,
+          loan,
+          ...owner,
+          olb,
+          paid,
+          status: isArrears ? 'Arrears' : 'Not in Arrears',
+          statusClass: isArrears ? 'badge-danger' : (isPaid ? 'badge-success' : 'badge-primary'),
+          isArrears,
+          isPaid,
+          dueDate: schedule.due_date
+        };
+      })
+      .filter(Boolean)
+      .filter(row => {
+        if (!isWithinDateRange(row.dueDate)) return false;
+        if (activeFilters.repayments === 'arrears') return row.isArrears;
+        if (activeFilters.repayments === 'not_arrears') return !row.isArrears;
+        if (activeFilters.repayments === 'paid') return row.isPaid;
+        return true;
+      })
+      .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+
+    const totalPaid = repaymentRows.reduce((sum, row) => sum + row.paid, 0);
+    const uniqueLoanOlb = new Map();
+    repaymentRows.forEach(row => {
+      if (!uniqueLoanOlb.has(row.loan.id)) uniqueLoanOlb.set(row.loan.id, row.olb);
+    });
+    const totalOlb = Array.from(uniqueLoanOlb.values()).reduce((sum, value) => sum + value, 0);
+
+    const totalPaidEl = container.querySelector('#repayments-total-paid');
+    const totalOlbEl = container.querySelector('#repayments-total-olb');
+    const entriesCountEl = container.querySelector('#repayments-entry-count');
+    if (totalPaidEl) totalPaidEl.textContent = `KES ${totalPaid.toLocaleString()}`;
+    if (totalOlbEl) totalOlbEl.textContent = `KES ${totalOlb.toLocaleString()}`;
+    if (entriesCountEl) entriesCountEl.textContent = repaymentRows.length.toLocaleString();
+
+    const paginated = getReportRowsForView('repayments', repaymentRows);
+    const tbody = container.querySelector('#repayments-table-body');
+    tbody.innerHTML = paginated.length === 0
+      ? '<tr><td colspan="8" class="text-center text-muted" style="padding: 32px;">No repayment schedule rows found.</td></tr>'
+      : paginated.map(row => `
+        <tr>
+          <td class="font-semibold">${row.loan.loan_no || '-'}</td>
+          <td class="font-semibold">${row.clientName}</td>
+          <td><span class="badge badge-outline" style="font-size: 0.65rem;">${row.groupName}</span></td>
+          <td class="font-bold text-danger">${row.olb.toLocaleString()}</td>
+          <td><span class="badge ${row.statusClass}" style="font-size: 0.65rem;">${row.status}</span></td>
+          <td>${formatDate(row.dueDate)}</td>
+          <td class="font-bold text-success">${row.paid.toLocaleString()}</td>
+          <td>
+            <button class="btn btn-primary btn-xs" onclick="window.location.hash = '${withReturnTo(`#/loans/${row.loan.loan_no}`, '#/reports?tab=repayments')}'">View Profile</button>
+          </td>
+        </tr>
+      `).join('');
+
+    const totalSchedules = schedules.filter(schedule => isCollectibleLoan(loansById.get(schedule.loan))).length;
+    container.querySelector('#filter-count').textContent = `Showing ${repaymentRows.length} of ${totalSchedules} repayment schedules`;
+    renderReportPagination('#repayments-pagination', repaymentRows.length, pageSize, (p) => { pages.repayments = p; updateRepayments(); });
+  };
+
+  const updateArrears = () => {
+    const membersById = new Map(members.map(member => [member.id, member]));
+    const groupsById = new Map(groups.map(group => [group.id, group]));
+    const loansById = new Map(loans.map(loan => [loan.id, loan]));
+    const getLoanLiability = (loan) => {
+      const storedLiability = Number(loan?.total_liability) || 0;
+      if (storedLiability > 0) return storedLiability;
+      const principal = Number(loan?.approved_amount || loan?.amount_applied) || 0;
+      return principal + (Number(loan?.interest_amount) || 0);
+    };
+    const repaymentsByLoan = repayments.reduce((map, repayment) => {
+      if (!repayment.loan) return map;
+      map.set(repayment.loan, (map.get(repayment.loan) || 0) + (Number(repayment.amount) || 0));
+      return map;
+    }, new Map());
+    const isCollectibleLoan = (loan) => loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
+    const getLoanOwner = (loan) => {
+      const member = loan?.expand?.member || membersById.get(loan?.member);
+      const group = loan?.expand?.group || groupsById.get(loan?.group) || member?.expand?.group || groupsById.get(member?.group);
+      return {
+        clientName: member?.full_name || group?.name || 'Unknown',
+        phone: member ? getMemberPhone(member) : getGroupPhone(group),
+        groupName: group?.name || (member ? 'Individual' : '-')
+      };
+    };
+    const getAgeBand = (daysLate) => {
+      if (daysLate >= 61) {
+        return { id: '61_plus', label: '61+ days', color: '#ef4444', badgeClass: 'badge-danger' };
+      }
+      if (daysLate >= 31) {
+        return { id: '31_60', label: '31-60 days', color: '#f59e0b', badgeClass: 'badge-warning' };
+      }
+      return { id: '1_30', label: '1-30 days', color: '#10b981', badgeClass: 'badge-success' };
+    };
+
+    const arrearsRows = schedules
+      .map(schedule => {
+        const loan = loansById.get(schedule.loan);
+        if (!loan || !isCollectibleLoan(loan) || !isScheduleInArrears(schedule)) return null;
+        const daysLate = getDaysInArrears(schedule);
+        const ageBand = getAgeBand(daysLate);
+        const arrearsAmount = getScheduleRemaining(schedule);
+        if (arrearsAmount <= 0) return null;
+        const owner = getLoanOwner(loan);
+        const olb = Math.max(0, getLoanLiability(loan) - (repaymentsByLoan.get(loan.id) || 0));
+        return {
+          schedule,
+          loan,
+          ...owner,
+          dueDate: schedule.due_date,
+          daysLate,
+          ageBand,
+          arrearsAmount,
+          olb
+        };
+      })
+      .filter(Boolean)
+      .filter(row => {
+        if (!isWithinDateRange(row.dueDate)) return false;
+        if (activeFilters.arrears === '1_30') return row.ageBand.id === '1_30';
+        if (activeFilters.arrears === '31_60') return row.ageBand.id === '31_60';
+        if (activeFilters.arrears === '61_plus') return row.ageBand.id === '61_plus';
+        return true;
+      })
+      .sort((a, b) => b.daysLate - a.daysLate);
+
+    const totalArrearsAmount = arrearsRows.reduce((sum, row) => sum + row.arrearsAmount, 0);
+    const count1To30 = arrearsRows.filter(row => row.ageBand.id === '1_30').length;
+    const count31To60 = arrearsRows.filter(row => row.ageBand.id === '31_60').length;
+    const count61Plus = arrearsRows.filter(row => row.ageBand.id === '61_plus').length;
+    const totalAmountEl = container.querySelector('#arrears-total-amount');
+    const count1To30El = container.querySelector('#arrears-1-30-count');
+    const count31To60El = container.querySelector('#arrears-31-60-count');
+    const count61PlusEl = container.querySelector('#arrears-61-plus-count');
+    const entriesCountEl = container.querySelector('#arrears-entry-count');
+    if (totalAmountEl) totalAmountEl.textContent = `KES ${totalArrearsAmount.toLocaleString()}`;
+    if (count1To30El) count1To30El.textContent = count1To30.toLocaleString();
+    if (count31To60El) count31To60El.textContent = count31To60.toLocaleString();
+    if (count61PlusEl) count61PlusEl.textContent = count61Plus.toLocaleString();
+    if (entriesCountEl) entriesCountEl.textContent = arrearsRows.length.toLocaleString();
+
+    const paginated = getReportRowsForView('arrears', arrearsRows);
+    const tbody = container.querySelector('#arrears-table-body');
+    tbody.innerHTML = paginated.length === 0
+      ? '<tr><td colspan="10" class="text-center text-muted" style="padding: 32px;">No arrears found for the selected filter.</td></tr>'
+      : paginated.map(row => `
+        <tr style="border-left: 4px solid ${row.ageBand.color};">
+          <td class="font-semibold">${row.loan.loan_no || '-'}</td>
+          <td class="font-semibold">${row.clientName}</td>
+          <td>${row.phone}</td>
+          <td><span class="badge badge-outline" style="font-size: 0.65rem;">${row.groupName}</span></td>
+          <td>${formatDate(row.dueDate)}</td>
+          <td class="font-bold" style="color: ${row.ageBand.color};">${row.daysLate}</td>
+          <td><span class="badge ${row.ageBand.badgeClass}" style="font-size: 0.65rem;">${row.ageBand.label}</span></td>
+          <td class="font-bold text-danger">${row.arrearsAmount.toLocaleString()}</td>
+          <td class="font-bold text-danger">${row.olb.toLocaleString()}</td>
+          <td>
+            <button class="btn btn-primary btn-xs" onclick="window.location.hash = '${withReturnTo(`#/loans/${row.loan.loan_no}`, '#/reports?tab=arrears')}'">View Profile</button>
+          </td>
+        </tr>
+      `).join('');
+
+    const totalArrearsSchedules = schedules.filter(schedule => {
+      const loan = loansById.get(schedule.loan);
+      return isCollectibleLoan(loan) && isScheduleInArrears(schedule);
+    }).length;
+    container.querySelector('#filter-count').textContent = `Showing ${arrearsRows.length} of ${totalArrearsSchedules} overdue schedules`;
+    renderReportPagination('#arrears-pagination', arrearsRows.length, pageSize, (p) => { pages.arrears = p; updateArrears(); });
+  };
+
+  const updateLifecycle = () => {
+    const canRevive = ['super_admin', 'admin'].includes(pb.authStore.model?.role);
+    const groupRows = groups
+      .filter(group => ['suspended', 'dissolved'].includes(String(group.status || '').toLowerCase()))
+      .map(group => ({
+        id: group.id,
+        type: 'group',
+        name: group.name || 'Unknown Group',
+        ref: group.group_id || '-',
+        groupName: group.name || '-',
+        phone: getGroupPhone(group),
+        status: group.status || 'suspended',
+        updated: group.updated || group.created
+      }));
+    const memberRows = members
+      .filter(member => ['suspended', 'exited'].includes(String(member.status || '').toLowerCase()))
+      .map(member => ({
+        id: member.id,
+        type: 'member',
+        name: member.full_name || 'Unknown Member',
+        ref: member.reg_no || member.id_number || '-',
+        groupName: member.expand?.group?.name || 'Individual',
+        phone: getMemberPhone(member),
+        status: member.status || 'suspended',
+        updated: member.updated || member.created
+      }));
+    const rows = [...groupRows, ...memberRows]
+      .filter(row => {
+        if (!isWithinDateRange(row.updated)) return false;
+        if (activeFilters.lifecycle === 'groups') return row.type === 'group';
+        if (activeFilters.lifecycle === 'members') return row.type === 'member';
+        return true;
+      })
+      .sort((a, b) => new Date(b.updated || 0) - new Date(a.updated || 0));
+
+    const groupsEl = container.querySelector('#lifecycle-suspended-groups');
+    const membersEl = container.querySelector('#lifecycle-suspended-members');
+    const entriesEl = container.querySelector('#lifecycle-entry-count');
+    if (groupsEl) groupsEl.textContent = groupRows.length.toLocaleString();
+    if (membersEl) membersEl.textContent = memberRows.length.toLocaleString();
+    if (entriesEl) entriesEl.textContent = rows.length.toLocaleString();
+
+    const paginated = getReportRowsForView('lifecycle', rows);
+    const tbody = container.querySelector('#lifecycle-table-body');
+    tbody.innerHTML = paginated.length === 0
+      ? '<tr><td colspan="7" class="text-center text-muted" style="padding: 32px;">No suspended records found.</td></tr>'
+      : paginated.map(row => `
+        <tr>
+          <td>
+            <div class="font-semibold">${row.name}</div>
+            <div class="text-xs text-muted">${row.ref}</div>
+          </td>
+          <td><span class="badge badge-outline" style="font-size: 0.65rem;">${row.type.toUpperCase()}</span></td>
+          <td>${row.groupName}</td>
+          <td>${row.phone}</td>
+          <td><span class="badge badge-danger" style="font-size: 0.65rem;">${String(row.status).toUpperCase()}</span></td>
+          <td>${row.updated ? formatDate(row.updated) : '-'}</td>
+          <td>
+            ${canRevive ? `
+              <button class="btn btn-primary btn-xs lifecycle-revive-btn" data-id="${row.id}" data-type="${row.type}">Revive</button>
+            ` : '<span class="text-xs text-muted">Admin only</span>'}
+          </td>
+        </tr>
+      `).join('');
+
+    container.querySelectorAll('.lifecycle-revive-btn').forEach(btn => {
+      btn.onclick = async () => {
+        const recordType = btn.dataset.type;
+        const recordId = btn.dataset.id;
+        const confirmed = window.confirmDialog ? await window.confirmDialog({
+          title: `Revive ${recordType}`,
+          message: `This will return the ${recordType} to active status. Historical financial data remains unchanged.`,
+          confirmText: 'Revive',
+          cancelText: 'Cancel',
+          type: 'info'
+        }) : confirm(`Revive this ${recordType}?`);
+        if (!confirmed) return;
+
+        const restoreButton = setButtonLoading(btn, 'Reviving...');
+        try {
+          if (recordType === 'group') {
+            await groupService.revive(recordId);
+            groups = groups.map(group => group.id === recordId ? { ...group, status: 'active' } : group);
+          } else {
+            await memberService.revive(recordId);
+            members = members.map(member => member.id === recordId ? { ...member, status: 'active' } : member);
+          }
+          if (window.notify) window.notify.success(`${recordType === 'group' ? 'Group' : 'Member'} revived.`);
+          updateLifecycle();
+        } catch (err) {
+          restoreButton();
+          if (window.notify) window.notify.error('Revive failed: ' + (err.message || 'Unknown error'));
+        }
+      };
+    });
+
+    container.querySelector('#filter-count').textContent = `Showing ${rows.length} lifecycle records`;
+    renderReportPagination('#lifecycle-pagination', rows.length, pageSize, (p) => { pages.lifecycle = p; updateLifecycle(); });
+  };
+
   const updateAlerts = () => {
     const now = new Date();
     const upcomingThreshold = new Date();
@@ -1089,6 +1588,9 @@ export const renderReportsDashboard = async () => {
     registrations: 'Registrations',
     cashflow: 'Cash Flow',
     withdrawals: 'Withdrawals',
+    repayments: 'Repayments',
+    arrears: 'Arrears Aging',
+    lifecycle: 'Lifecycle',
     alerts: 'Alerts & Reminders'
   };
   const getActiveTab = () => Array.from(tabs).find(t => t.classList.contains('active'))?.dataset.tab || 'pl';
@@ -1120,6 +1622,9 @@ export const renderReportsDashboard = async () => {
     if (tab === 'registrations') updateRegistrations();
     if (tab === 'cashflow') updateCashFlow();
     if (tab === 'withdrawals') updateWithdrawals();
+    if (tab === 'repayments') updateRepayments();
+    if (tab === 'arrears') updateArrears();
+    if (tab === 'lifecycle') updateLifecycle();
     if (tab === 'alerts') updateAlerts();
     updatePrintHeader();
   };
@@ -1176,6 +1681,26 @@ export const renderReportsDashboard = async () => {
         { id: 'individual', label: 'Independent Individuals' },
         { id: 'group_members', label: 'Individuals in Groups' },
         { id: 'group', label: 'Group Accounts' }
+      ];
+    } else if (tab === 'repayments') {
+      filters = [
+        { id: 'all', label: 'All Repayments' },
+        { id: 'arrears', label: 'In Arrears' },
+        { id: 'not_arrears', label: 'Not in Arrears' },
+        { id: 'paid', label: 'Paid' }
+      ];
+    } else if (tab === 'arrears') {
+      filters = [
+        { id: 'all', label: 'All Arrears' },
+        { id: '1_30', label: '1-30 Days' },
+        { id: '31_60', label: '31-60 Days' },
+        { id: '61_plus', label: '61+ Days' }
+      ];
+    } else if (tab === 'lifecycle') {
+      filters = [
+        { id: 'all', label: 'All Suspended' },
+        { id: 'groups', label: 'Groups' },
+        { id: 'members', label: 'Members' }
       ];
     }
 
@@ -1322,6 +1847,9 @@ export const renderReportsDashboard = async () => {
       const activeTab = Array.from(tabs).find(t => t.classList.contains('active'))?.dataset.tab;
       if (activeTab === 'cashflow') updateCashFlow();
       if (activeTab === 'withdrawals') updateWithdrawals();
+      if (activeTab === 'repayments') updateRepayments();
+      if (activeTab === 'arrears') updateArrears();
+      if (activeTab === 'lifecycle') updateLifecycle();
       if (activeTab === 'alerts') updateAlerts();
     } catch (err) {
       console.error('Error loading report data:', err);

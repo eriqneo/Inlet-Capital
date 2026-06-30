@@ -148,7 +148,7 @@ async function run() {
         { name: 'registration_fee', type: 'number' },
         { name: 'registration_date', type: 'date', required: true },
         { name: 'performance_rating', type: 'number' },
-        { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'dissolved'] },
+        { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'suspended', 'dissolved'] },
         { name: 'created_by', type: 'relation', collectionId: usersForGroupsColl.id, cascadeDelete: false, maxSelect: 1 }
       ],
       listRule: '@request.auth.id != ""',
@@ -163,6 +163,17 @@ async function run() {
     } catch (e) {
       if (e.message.includes('autoupdate') || e.message.includes('validation_collection_name_exists')) {
          console.log('Groups collection already exists.');
+         try {
+           const groupsColl = await fetchPb('collections/groups', 'GET', null, token);
+           const statusField = groupsColl.fields.find(f => f.name === 'status');
+           if (statusField && !statusField.values.includes('suspended')) {
+             statusField.values = Array.from(new Set([...(statusField.values || []), 'suspended']));
+             await fetchPb('collections/groups', 'PATCH', groupsColl, token);
+             console.log('Groups collection updated with suspended status.');
+           }
+         } catch (updateErr) {
+           console.log('Could not update groups status values:', updateErr.message);
+         }
       } else {
          console.error(e.message);
       }
@@ -197,7 +208,7 @@ async function run() {
         { name: 'registration_fee', type: 'number' },
         { name: 'registration_fee_details', type: 'json' },
         { name: 'registration_date', type: 'date', required: true },
-        { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'exited'] },
+        { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'suspended', 'exited'] },
         { name: 'group', type: 'relation', collectionId: groupsForMembersColl.id, cascadeDelete: false, maxSelect: 1 },
         { name: 'registered_by', type: 'relation', collectionId: usersForMembersColl.id, cascadeDelete: false, maxSelect: 1 }
       ],
@@ -213,6 +224,17 @@ async function run() {
     } catch (e) {
       if (e.message.includes('autoupdate') || e.message.includes('validation_collection_name_exists')) {
          console.log('Members collection already exists.');
+         try {
+           const membersColl = await fetchPb('collections/members', 'GET', null, token);
+           const statusField = membersColl.fields.find(f => f.name === 'status');
+           if (statusField && !statusField.values.includes('suspended')) {
+             statusField.values = Array.from(new Set([...(statusField.values || []), 'suspended']));
+             await fetchPb('collections/members', 'PATCH', membersColl, token);
+             console.log('Members collection updated with suspended status.');
+           }
+         } catch (updateErr) {
+           console.log('Could not update members status values:', updateErr.message);
+         }
       } else {
          console.error(e.message);
       }

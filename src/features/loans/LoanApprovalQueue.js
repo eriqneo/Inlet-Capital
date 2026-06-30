@@ -13,12 +13,22 @@ export const renderLoanApprovalQueue = async (params = {}) => {
   const container = document.createElement('div');
   const returnTo = getReturnTo(params, '#/loans');
   const todayInputValue = new Date().toISOString().split('T')[0];
+  const dateInputToDate = (value) => new Date(`${value || todayInputValue}T12:00:00`);
   const dateInputToIso = (value) => new Date(`${value || todayInputValue}T12:00:00`).toISOString();
   const toDateInputValue = (value) => {
     if (!value) return todayInputValue;
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return todayInputValue;
     return date.toISOString().split('T')[0];
+  };
+  const isInputDateBeforeRecordDate = (inputValue, recordValue) => {
+    if (!recordValue) return false;
+    const inputDate = dateInputToDate(inputValue);
+    const recordDate = new Date(recordValue);
+    if (Number.isNaN(inputDate.getTime()) || Number.isNaN(recordDate.getTime())) return false;
+    inputDate.setHours(0, 0, 0, 0);
+    recordDate.setHours(0, 0, 0, 0);
+    return inputDate < recordDate;
   };
 
   // Show loading shell immediately so router never appends an empty element
@@ -560,6 +570,11 @@ export const renderLoanApprovalQueue = async (params = {}) => {
         restoreButton();
         return;
       }
+      if (isInputDateBeforeRecordDate(fullApprovalDate.value, loan.application_date)) {
+        if (window.notify) window.notify.error('Approval date cannot be before the application date.');
+        restoreButton();
+        return;
+      }
 
       await loanService.update(activeFullApprovalLoanId, {
         status: 'approved',
@@ -592,6 +607,11 @@ export const renderLoanApprovalQueue = async (params = {}) => {
       const loan = await loanService.getById(activePartialLoanId);
       const interestRate = await settingsService.getNumber('interest_rate_percent', 20);
       const interestAmount = amount * (interestRate / 100);
+      if (isInputDateBeforeRecordDate(partialApprovalDate.value, loan.application_date)) {
+        if (window.notify) window.notify.error('Approval date cannot be before the application date.');
+        restoreButton();
+        return;
+      }
 
       await loanService.update(activePartialLoanId, {
         status: 'partial_approved',
@@ -676,6 +696,14 @@ export const renderLoanApprovalQueue = async (params = {}) => {
         if (!confirmed) return;
         
         const disbursementDateInput = container.querySelector(`[data-disbursement-date="${id}"]`);
+        if (isInputDateBeforeRecordDate(disbursementDateInput?.value, loan.application_date)) {
+          if (window.notify) window.notify.error('Disbursement date cannot be before the application date.');
+          return;
+        }
+        if (isInputDateBeforeRecordDate(disbursementDateInput?.value, loan.approved_date)) {
+          if (window.notify) window.notify.error('Disbursement date cannot be before the approval date.');
+          return;
+        }
         const updatedLoan = await loanService.update(id, {
           status: 'disbursed',
           disbursement_date: dateInputToIso(disbursementDateInput?.value)

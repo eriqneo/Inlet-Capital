@@ -5,8 +5,8 @@ const toValidDate = (value) => {
 };
 
 export const getRepaymentScheduleAnchorDate = (loan) => (
-  toValidDate(loan?.application_date)
-  || toValidDate(loan?.disbursement_date)
+  toValidDate(loan?.disbursement_date)
+  || toValidDate(loan?.application_date)
   || toValidDate(loan?.created)
   || new Date()
 );

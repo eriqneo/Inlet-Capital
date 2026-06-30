@@ -12,7 +12,17 @@ export const renderLoanDetails = async (params) => {
   const { id: loanNo } = params;
   const returnTo = getReturnTo(params, '#/loans');
   const todayInputValue = new Date().toISOString().split('T')[0];
-  const dateInputToIso = (value) => new Date(`${value || todayInputValue}T12:00:00`).toISOString();
+  const dateInputToDate = (value) => new Date(`${value || todayInputValue}T12:00:00`);
+  const dateInputToIso = (value) => dateInputToDate(value).toISOString();
+  const isInputDateBeforeRecordDate = (inputValue, recordValue) => {
+    if (!recordValue) return false;
+    const inputDate = dateInputToDate(inputValue);
+    const recordDate = new Date(recordValue);
+    if (Number.isNaN(inputDate.getTime()) || Number.isNaN(recordDate.getTime())) return false;
+    inputDate.setHours(0, 0, 0, 0);
+    recordDate.setHours(0, 0, 0, 0);
+    return inputDate < recordDate;
+  };
   const container = document.createElement('div');
   container.innerHTML = `
     ${renderCardSkeleton({ title: 'Loading loan file from PocketHost...', rows: 5 })}
@@ -659,7 +669,18 @@ export const renderLoanDetails = async (params) => {
       if (!confirmed) return;
       
       const restoreButton = setButtonLoading(disburseBtn, 'Disbursing...');
-      const disbursementDate = dateInputToIso(container.querySelector('#details-disbursement-date')?.value);
+      const selectedDisbursementDate = container.querySelector('#details-disbursement-date')?.value;
+      if (isInputDateBeforeRecordDate(selectedDisbursementDate, loan.application_date)) {
+        if (window.notify) window.notify.error('Disbursement date cannot be before the application date.');
+        restoreButton();
+        return;
+      }
+      if (isInputDateBeforeRecordDate(selectedDisbursementDate, loan.approved_date)) {
+        if (window.notify) window.notify.error('Disbursement date cannot be before the approval date.');
+        restoreButton();
+        return;
+      }
+      const disbursementDate = dateInputToIso(selectedDisbursementDate);
       try {
         const updatedLoan = await loanService.update(loan.id, {
           status: 'disbursed',

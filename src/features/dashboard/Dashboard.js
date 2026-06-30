@@ -140,7 +140,7 @@ export const renderDashboard = async () => {
   
   const refresh = async () => {
     try {
-    let members, groups, loans, savings, schedules;
+    let members, groups, loans, savings, schedules, repayments;
     const today = new Date();
     const upcomingThreshold = new Date();
     upcomingThreshold.setDate(upcomingThreshold.getDate() + 7);
@@ -150,7 +150,8 @@ export const renderDashboard = async () => {
       groups,
       loans,
       savings,
-      schedules
+      schedules,
+      repayments
     ] = await Promise.all([
       safe('members', () => memberService.getAll(), []),
       safe('groups', () => groupService.getAll(), []),
@@ -160,7 +161,8 @@ export const renderDashboard = async () => {
         expand: 'member,group',
         cacheKey: 'savings:dashboard:active:v1'
       }), []),
-      safe('loan schedules', () => dataCache.getLocalFirst('loan_schedule:dashboard:all', () => pb.collection('loan_schedule').getFullList()), [])
+      safe('loan schedules', () => dataCache.getLocalFirst('loan_schedule:dashboard:all', () => pb.collection('loan_schedule').getFullList()), []),
+      safe('loan repayments', () => dataCache.getLocalFirst('loan_repayments:dashboard:all', () => pb.collection('loan_repayments').getFullList()), [])
     ]);
 
     const savingsByMember = savings.reduce((map, saving) => {
@@ -178,6 +180,21 @@ export const renderDashboard = async () => {
     const pendingLoans = loans.filter(l => l.status === 'pending').length;
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
     const isCollectibleLoan = (loan) => loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
+    const getLoanLiability = (loan) => {
+      const storedLiability = Number(loan?.total_liability) || 0;
+      if (storedLiability > 0) return storedLiability;
+      const principal = Number(loan?.approved_amount || loan?.amount_applied) || 0;
+      return principal + (Number(loan?.interest_amount) || 0);
+    };
+    const repaymentsByLoan = repayments.reduce((map, repayment) => {
+      if (!repayment.loan) return map;
+      map.set(repayment.loan, (map.get(repayment.loan) || 0) + (Number(repayment.amount) || 0));
+      return map;
+    }, new Map());
+    const getLoanOutstandingBalance = (loan) => Math.max(
+      0,
+      getLoanLiability(loan) - (repaymentsByLoan.get(loan?.id) || 0)
+    );
     const overdueSchedules = schedules.filter(s => isCollectibleLoan(loansById.get(s.loan)) && isScheduleInArrears(s, today));
     const alertSchedules = schedules.filter(s => !isSchedulePaid(s) && new Date(s.due_date) <= upcomingThreshold);
 
@@ -186,6 +203,38 @@ export const renderDashboard = async () => {
     .reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
 
   const totalArrears = getArrearsTotal(overdueSchedules, today);
+  const activeLoanPortfolio = loans
+    .filter(isCollectibleLoan)
+    .reduce((sum, loan) => sum + getLoanLiability(loan), 0);
+  const activeOutstandingLoanPortfolio = loans
+    .filter(isCollectibleLoan)
+    .reduce((sum, loan) => sum + getLoanOutstandingBalance(loan), 0);
+  const parRateNumber = activeLoanPortfolio > 0 ? (totalArrears / activeLoanPortfolio) * 100 : 0;
+  const parRate = parRateNumber.toFixed(1);
+  const parHealth = parRateNumber >= 16
+    ? { label: 'High Risk', color: 'var(--danger)', accent: 'var(--danger)' }
+    : parRateNumber >= 11
+      ? { label: 'Needs Attention', color: 'var(--warning)', accent: 'var(--warning)' }
+      : parRateNumber >= 6
+        ? { label: 'Good', color: 'var(--primary)', accent: 'var(--primary)' }
+        : { label: 'Excellent', color: 'var(--success)', accent: 'var(--success)' };
+  const overdueLoanIds = new Set(overdueSchedules.map(schedule => schedule.loan));
+  const totalOverdueOutstandingLoans = loans
+    .filter(loan => overdueLoanIds.has(loan.id))
+    .reduce((sum, loan) => sum + getLoanOutstandingBalance(loan), 0);
+  const gparRateNumber = activeOutstandingLoanPortfolio > 0
+    ? (totalOverdueOutstandingLoans / activeOutstandingLoanPortfolio) * 100
+    : 0;
+  const gparRate = gparRateNumber.toFixed(1);
+  const gparHealth = gparRateNumber >= 41
+    ? { label: 'High Risk / Danger', color: 'var(--danger)', accent: 'var(--danger)' }
+    : gparRateNumber >= 31
+      ? { label: 'Poor', color: 'var(--danger)', accent: 'var(--danger)' }
+      : gparRateNumber >= 21
+        ? { label: 'Needs Attention', color: 'var(--warning)', accent: 'var(--warning)' }
+        : gparRateNumber >= 11
+          ? { label: 'Good', color: 'var(--primary)', accent: 'var(--primary)' }
+          : { label: 'Excellent', color: 'var(--success)', accent: 'var(--success)' };
 
   const totalAlerts = alertSchedules.map(s => {
     const loan = loans.find(l => l.id === s.loan);
@@ -286,6 +335,18 @@ export const renderDashboard = async () => {
       <div class="card">
         <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Total Arrears (KES)</h3>
         <p style="font-size: 2.5rem; font-weight: 700; color: var(--danger);">${totalArrears.toLocaleString()}</p>
+      </div>
+      <div class="card" style="border-left: 4px solid ${parHealth.accent};">
+        <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Portfolio at Risk (PAR)</h3>
+        <p style="font-size: 2.5rem; font-weight: 700; color: ${parHealth.color};">${parRate}%</p>
+        <p class="text-xs" style="margin-top: 8px; color: ${parHealth.color}; font-weight: 700;">${parHealth.label}</p>
+        <p class="text-xs text-muted" style="margin-top: 4px;">Arrears / Active Loan Portfolio</p>
+      </div>
+      <div class="card" style="border-left: 4px solid ${gparHealth.accent};">
+        <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Global Portfolio at Risk (GPAR)</h3>
+        <p style="font-size: 2.5rem; font-weight: 700; color: ${gparHealth.color};">${gparRate}%</p>
+        <p class="text-xs" style="margin-top: 8px; color: ${gparHealth.color}; font-weight: 700;">${gparHealth.label}</p>
+        <p class="text-xs text-muted" style="margin-top: 4px;">Overdue Outstanding / Loan Portfolio</p>
       </div>
       <div class="card" onclick="window.location.hash = '#/reports?tab=alerts'" style="cursor: pointer; border-left: 4px solid var(--warning); background: rgba(245, 158, 11, 0.05); transition: transform 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='var(--shadow-md)';" onmouseout="this.style.transform='none'; this.style.boxShadow='var(--shadow-sm)';">
         <h3 class="text-sm" style="margin-bottom: 8px; color: var(--warning); font-weight: 600;">Active Alerts & Reminders ⚠️</h3>
