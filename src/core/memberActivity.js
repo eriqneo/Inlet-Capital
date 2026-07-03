@@ -18,7 +18,7 @@ export const isGroupedMemberActive = (lastSavingsDate, referenceDate = new Date(
 
 export const getMemberActivityStatus = (member, lastSavingsDate, referenceDate = new Date()) => {
   const dbStatus = String(member?.status || 'active').toLowerCase();
-  if (['suspended', 'exited'].includes(dbStatus)) {
+  if (['suspended', 'closed', 'exited'].includes(dbStatus)) {
     return { label: dbStatus.toUpperCase(), className: 'badge-danger', isActive: false };
   }
 

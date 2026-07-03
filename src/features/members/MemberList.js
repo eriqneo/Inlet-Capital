@@ -4,6 +4,7 @@ import { debounce } from '../../services/dataCache.js';
 import { renderTableSkeletonRows, showDelayedLoading } from '../../core/uiState.js';
 import { pb } from '../../services/api.js';
 import { getMemberActivityStatus, getValidActivityDate } from '../../core/memberActivity.js';
+import { authService } from '../../services/authService.js';
 
 export const renderMemberList = async () => {
   const container = document.createElement('div');
@@ -15,6 +16,7 @@ export const renderMemberList = async () => {
   let alphaSort = 'default';
   let totalItems = 0;
   let requestId = 0;
+  const canManageLifecycle = authService.hasRole('super_admin');
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -61,6 +63,15 @@ export const renderMemberList = async () => {
       </div>
       <div id="pagination-wrapper"></div>
     </div>
+    <style>
+      .member-action-group { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+      .member-icon-action { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; border: 1px solid var(--border-color); background: #fff; color: var(--primary); cursor: pointer; font-size: 0.9rem; transition: all 0.18s ease; }
+      .member-icon-action:hover { transform: translateY(-1px); box-shadow: 0 6px 12px rgba(15, 37, 69, 0.08); border-color: var(--primary); }
+      .member-icon-action.warning { color: var(--warning); }
+      .member-icon-action.warning:hover { border-color: var(--warning); background: rgba(245, 158, 11, 0.08); }
+      .member-icon-action.danger { color: var(--danger); }
+      .member-icon-action.danger:hover { border-color: var(--danger); background: rgba(239, 68, 68, 0.06); }
+    </style>
   `;
 
   const tableBody = container.querySelector('#member-table-body');
@@ -139,11 +150,36 @@ export const renderMemberList = async () => {
           <div class="text-xs text-muted" style="margin-top: 4px;">${m.group ? `Last saved: ${m.__lastSavingsDate ? m.__lastSavingsDate.toLocaleDateString() : 'Never'}` : 'Savings rule: Individual'}</div>
         </td>
         <td>
-          <button class="btn btn-outline btn-sm" onclick="window.location.hash = '#/members/${m.reg_no || m.regNo}'">View Profile</button>
+          <div class="member-action-group">
+            <button type="button" class="btn btn-outline btn-sm member-row-action" data-action="view" data-id="${m.id}">View Profile</button>
+            ${canManageLifecycle ? `
+              <button type="button" class="member-icon-action warning member-row-action" data-action="suspend" data-id="${m.id}" title="Suspend member" aria-label="Suspend member">!</button>
+              <button type="button" class="member-icon-action danger member-row-action" data-action="close" data-id="${m.id}" title="Close member account" aria-label="Close member account">×</button>
+              <button type="button" class="member-icon-action danger member-row-action" data-action="delete" data-id="${m.id}" title="Delete mistaken/duplicate member" aria-label="Delete mistaken or duplicate member">
+                <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+                  <path d="M3 6h18M8 6V4h8v2M9 10v8M15 10v8M6 6l1 15h10l1-15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+            ` : ''}
+          </div>
         </td>
       </tr>
     `;
     }).join('');
+
+    tableBody.querySelectorAll('.member-row-action').forEach(btn => {
+      btn.onclick = async () => {
+        const member = members.find(item => item.id === btn.dataset.id);
+        if (!member) return;
+        if (btn.dataset.action === 'view') {
+          window.location.hash = `#/members/${member.reg_no || member.regNo}`;
+          return;
+        }
+        if (btn.dataset.action === 'suspend') await suspendMember(member);
+        if (btn.dataset.action === 'close') await closeMember(member);
+        if (btn.dataset.action === 'delete') await deleteMember(member);
+      };
+    });
 
     paginationWrapper.innerHTML = '';
     const pagination = renderPagination(totalItems, pageSize, currentPage, (newPage) => {
@@ -171,6 +207,75 @@ export const renderMemberList = async () => {
     });
   };
 
+  const suspendMember = async (member) => {
+    if (!canManageLifecycle) {
+      if (window.notify) window.notify.error('Only super admins can suspend members.');
+      return;
+    }
+    const confirmed = window.confirmDialog ? await window.confirmDialog({
+      title: 'Suspend Member',
+      message: `Suspend ${member.full_name || 'this member'}? The account will be hidden from normal operations but can be revived from Reports > Lifecycle.`,
+      confirmText: 'Suspend Member',
+      cancelText: 'Cancel',
+      type: 'warning'
+    }) : confirm(`Suspend ${member.full_name || 'this member'}?`);
+    if (!confirmed) return;
+    try {
+      await memberService.suspend(member.id);
+      if (window.notify) window.notify.success('Member suspended. It can be revived from Reports > Lifecycle.');
+      loadMembers();
+    } catch (err) {
+      if (window.notify) window.notify.error('Failed to suspend member: ' + (err.message || 'Please try again.'));
+    }
+  };
+
+  const closeMember = async (member) => {
+    if (!canManageLifecycle) {
+      if (window.notify) window.notify.error('Only super admins can close member accounts.');
+      return;
+    }
+    const confirmed = window.confirmDialog ? await window.confirmDialog({
+      title: 'Close Member Account',
+      message: `Close ${member.full_name || 'this member'} permanently? Closed accounts remain in reports but cannot be revived.`,
+      confirmText: 'Close Account',
+      cancelText: 'Cancel',
+      type: 'danger'
+    }) : confirm(`Close ${member.full_name || 'this member'} permanently? This cannot be revived.`);
+    if (!confirmed) return;
+    try {
+      await memberService.close(member.id);
+      if (window.notify) window.notify.success('Member account closed. Historical reports remain available.');
+      loadMembers();
+    } catch (err) {
+      if (window.notify) window.notify.error('Failed to close member: ' + (err.message || 'Please try again.'));
+    }
+  };
+
+  const deleteMember = async (member) => {
+    if (!canManageLifecycle) {
+      if (window.notify) window.notify.error('Only super admins can delete member records.');
+      return;
+    }
+    const confirmed = window.confirmDialog ? await window.confirmDialog({
+      title: 'Delete Member Record',
+      message: `Permanently delete ${member.full_name || 'this member'}? Use this only for wrong or duplicate entries. If this member has linked loans, savings, repayments, or reports, PocketBase may block deletion to protect financial history.`,
+      confirmText: 'Delete Permanently',
+      cancelText: 'Cancel',
+      type: 'danger'
+    }) : confirm(`Delete ${member.full_name || 'this member'} permanently? Use only for wrong or duplicate entries.`);
+    if (!confirmed) return;
+    try {
+      await memberService.delete(member.id);
+      if (window.notify) window.notify.success('Member record deleted.');
+      loadMembers();
+    } catch (err) {
+      const message = err?.status === 400
+        ? 'PocketBase blocked deletion because this member may have linked records. Use Close Account instead for historical accounts.'
+        : (err.message || 'Please try again.');
+      if (window.notify) window.notify.error('Failed to delete member: ' + message);
+    }
+  };
+
   const loadMembers = async () => {
     const thisRequest = ++requestId;
     const cancelLoading = showDelayedLoading(() => {
@@ -180,7 +285,9 @@ export const renderMemberList = async () => {
     });
 
     try {
-      const filter = buildSearchFilter(currentSearch);
+      const searchFilter = buildSearchFilter(currentSearch);
+      const lifecycleFilter = 'status!="suspended" && status!="closed"';
+      const filter = searchFilter ? `(${lifecycleFilter}) && (${searchFilter})` : lifecycleFilter;
       const sort = alphaSort === 'az' ? 'full_name' : (alphaSort === 'za' ? '-full_name' : '-created');
       const query = { page: currentPage, perPage: pageSize, filter, sort };
 

@@ -45,7 +45,7 @@ export const renderAnalyticsDashboard = async () => {
 
   let dateRange = { from: '', to: '' };
   let currentOfficerFilter = 'all';
-  let currentCollectionWindow = 'this_month';
+  let currentCollectionWindow = 'overdue';
   let chartInstances = [];
 
   const destroyCharts = () => {
@@ -162,22 +162,8 @@ export const renderAnalyticsDashboard = async () => {
     };
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
     const getCollectionWindow = () => {
-      const startOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1);
-      const endOfMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
-      const addDays = (date, days) => {
-        const next = new Date(date);
-        next.setDate(next.getDate() + days);
-        return next;
-      };
-
-      if (currentCollectionWindow === 'next_7_days') {
-        const end = addDays(todayStart, 7);
-        end.setHours(23, 59, 59, 999);
-        return { label: 'Next 7 Days', start: todayStart, end, includeOverdue: false };
-      }
-      if (currentCollectionWindow === 'next_month') {
-        const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-        return { label: 'Next Month', start: startOfMonth(nextMonth), end: endOfMonth(nextMonth), includeOverdue: false };
+      if (!['overdue', 'all_upcoming'].includes(currentCollectionWindow)) {
+        currentCollectionWindow = 'overdue';
       }
       if (currentCollectionWindow === 'overdue') {
         const end = new Date(todayStart);
@@ -187,7 +173,9 @@ export const renderAnalyticsDashboard = async () => {
       if (currentCollectionWindow === 'all_upcoming') {
         return { label: 'All Upcoming', start: todayStart, end: null, includeOverdue: false };
       }
-      return { label: 'This Month', start: startOfMonth(today), end: endOfMonth(today), includeOverdue: false };
+      const end = new Date(todayStart);
+      end.setMilliseconds(-1);
+      return { label: 'Overdue', start: null, end, includeOverdue: true };
     };
     const collectionWindow = getCollectionWindow();
     const collectionWindowRange = collectionWindow.start && collectionWindow.end
@@ -266,28 +254,14 @@ export const renderAnalyticsDashboard = async () => {
     const effectiveSchedulePaidMap = buildEffectiveSchedulePaidMap();
     const getEffectiveSchedulePaid = (schedule) => effectiveSchedulePaidMap.get(schedule.id) ?? Math.min(Number(schedule.amount) || 0, Math.max(0, Number(schedule.paid) || 0));
     const getEffectiveScheduleRemaining = (schedule) => Math.max(0, (Number(schedule.amount) || 0) - getEffectiveSchedulePaid(schedule));
-    const loanPortfolio = activeLoans.reduce((sum, l) => sum + getLoanLiability(l), 0);
+    const allRepaymentsByLoan = repayments.reduce((map, repayment) => {
+      if (!repayment.loan) return map;
+      map.set(repayment.loan, (map.get(repayment.loan) || 0) + (Number(repayment.amount) || 0));
+      return map;
+    }, new Map());
+    const getLoanOutstandingBalance = (loan) => Math.max(0, getLoanLiability(loan) - (allRepaymentsByLoan.get(loan.id) || 0));
+    const loanPortfolio = activeLoans.reduce((sum, l) => sum + getLoanOutstandingBalance(l), 0);
     const totalDisbursedLoans = activeLoans.reduce((sum, l) => sum + getLoanPrincipal(l), 0);
-    const officerTargetsMap = {};
-    activeLoans.forEach(loan => {
-      const officerKey = loan.processed_by || 'unassigned';
-      if (!officerTargetsMap[officerKey]) {
-        officerTargetsMap[officerKey] = {
-          id: officerKey,
-          name: getOfficerName(loan),
-          expected: 0,
-          principal: 0,
-          loans: 0
-        };
-      }
-      officerTargetsMap[officerKey].expected += getLoanLiability(loan);
-      officerTargetsMap[officerKey].principal += getLoanPrincipal(loan);
-      officerTargetsMap[officerKey].loans += 1;
-    });
-    const officerTargets = Object.values(officerTargetsMap).sort((a, b) => b.expected - a.expected);
-    const officerAssignedExpected = officerTargets
-      .filter(o => o.id !== 'unassigned')
-      .reduce((sum, o) => sum + o.expected, 0);
     const forecastSchedules = scopedSchedules
       .filter(schedule => {
         const loan = loansById.get(schedule.loan);
@@ -332,6 +306,27 @@ export const renderAnalyticsDashboard = async () => {
     const collectionOfficerRows = Object.values(collectionOfficerMap)
       .map(row => ({ ...row, clients: row.clients.size }))
       .sort((a, b) => b.expected - a.expected);
+    const getEfficiencyRating = (rate, gross) => {
+      if (gross <= 0) return { label: 'No Due', color: 'var(--text-muted)' };
+      if (rate <= 50) return { label: 'Below Average', color: 'var(--danger)' };
+      if (rate <= 80) return { label: 'Average', color: 'var(--warning)' };
+      return { label: 'Best', color: 'var(--success)' };
+    };
+    const collectionEfficiencyRows = collectionOfficerRows
+      .map(row => {
+        const efficiency = row.gross > 0 ? Math.min(100, (row.paid / row.gross) * 100) : 0;
+        return {
+          ...row,
+          efficiency,
+          rating: getEfficiencyRating(efficiency, row.gross)
+        };
+      })
+      .sort((a, b) => b.efficiency - a.efficiency);
+    const overallCollectionEfficiencyNumber = scheduledGrossCollection > 0
+      ? Math.min(100, (scheduledPaidCollection / scheduledGrossCollection) * 100)
+      : 0;
+    const overallCollectionEfficiency = overallCollectionEfficiencyNumber.toFixed(1);
+    const overallCollectionEfficiencyRating = getEfficiencyRating(overallCollectionEfficiencyNumber, scheduledGrossCollection);
     
     // Correct savings calculation
     const totalSavings = scopedSavings
@@ -428,9 +423,6 @@ export const renderAnalyticsDashboard = async () => {
             <button type="button" class="btn btn-outline btn-sm" id="analytics-date-clear" style="font-size: 0.75rem;">Clear</button>
           </div>
           <select id="collection-window-filter" class="form-control" style="width: auto; min-width: 170px;">
-            <option value="this_month" ${currentCollectionWindow === 'this_month' ? 'selected' : ''}>Collections: This Month</option>
-            <option value="next_7_days" ${currentCollectionWindow === 'next_7_days' ? 'selected' : ''}>Collections: Next 7 Days</option>
-            <option value="next_month" ${currentCollectionWindow === 'next_month' ? 'selected' : ''}>Collections: Next Month</option>
             <option value="overdue" ${currentCollectionWindow === 'overdue' ? 'selected' : ''}>Collections: Overdue</option>
             <option value="all_upcoming" ${currentCollectionWindow === 'all_upcoming' ? 'selected' : ''}>Collections: All Upcoming</option>
           </select>
@@ -453,7 +445,7 @@ export const renderAnalyticsDashboard = async () => {
           <div class="kpi-icon" style="background: rgba(232, 105, 42, 0.1); color: var(--secondary);">💰</div>
           <div class="kpi-label">Active Loan Portfolio</div>
           <div class="kpi-value">KES ${loanPortfolio.toLocaleString()}</div>
-          <div class="kpi-trend trend-up">Disbursed principal + interest</div>
+          <div class="kpi-trend trend-up">Outstanding balance after repayments</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(42, 90, 158, 0.1); color: var(--primary-light);">💵</div>
@@ -463,9 +455,9 @@ export const renderAnalyticsDashboard = async () => {
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(13, 148, 136, 0.1); color: #0d9488;">🧾</div>
-          <div class="kpi-label">Officer Collection Targets</div>
-          <div class="kpi-value">KES ${officerAssignedExpected.toLocaleString()}</div>
-          <div class="kpi-trend trend-up">${currentOfficerFilter === 'all' ? `${officerTargets.filter(o => o.id !== 'unassigned').length} officers assigned` : 'Selected officer view'}</div>
+          <div class="kpi-label">Officer Collection Efficiency</div>
+          <div class="kpi-value">${overallCollectionEfficiency}%</div>
+          <div class="kpi-trend" style="color: ${overallCollectionEfficiencyRating.color};">${overallCollectionEfficiencyRating.label}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">📅</div>
@@ -550,8 +542,8 @@ export const renderAnalyticsDashboard = async () => {
       <div class="chart-card" style="min-height: auto; margin-top: 24px;">
         <div class="chart-header">
           <div>
-            <div class="chart-title">Loan Officer Collection Targets</div>
-            <div class="text-xs text-muted" style="margin-top: 4px;">Expected collection is disbursed principal plus interest for loans handled by each officer.</div>
+            <div class="chart-title">Officer Collection Efficiency</div>
+            <div class="text-xs text-muted" style="margin-top: 4px;">Efficiency is collected amount divided by scheduled amount due in the selected collection window.</div>
           </div>
         </div>
         <div class="table-responsive">
@@ -559,21 +551,29 @@ export const renderAnalyticsDashboard = async () => {
             <thead>
               <tr>
                 <th>Loan Officer</th>
-                <th>Active Loans</th>
-                <th class="text-right">Principal</th>
-                <th class="text-right">Expected Collection</th>
+                <th>Clients</th>
+                <th>Installments</th>
+                <th class="text-right">Due</th>
+                <th class="text-right">Collected</th>
+                <th class="text-right">Balance</th>
+                <th class="text-right">Efficiency</th>
+                <th>Rating</th>
               </tr>
             </thead>
             <tbody>
-              ${officerTargets.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No active officer targets.</td></tr>' : officerTargets.map(o => `
+              ${collectionEfficiencyRows.length === 0 ? '<tr><td colspan="8" class="text-center text-muted">No officer collections due in this window.</td></tr>' : collectionEfficiencyRows.map(o => `
                 <tr>
                   <td>
                     <div class="font-semibold">${escapeHtml(o.name)}</div>
                     <div class="text-xs text-muted">${o.id === 'unassigned' ? 'No officer recorded' : escapeHtml(o.id)}</div>
                   </td>
-                  <td>${o.loans.toLocaleString()}</td>
-                  <td class="text-right">${o.principal.toLocaleString()}</td>
+                  <td>${o.clients.toLocaleString()}</td>
+                  <td>${o.installments.toLocaleString()}</td>
+                  <td class="text-right">${o.gross.toLocaleString()}</td>
+                  <td class="text-right text-success">${o.paid.toLocaleString()}</td>
                   <td class="text-right font-semibold text-danger">${o.expected.toLocaleString()}</td>
+                  <td class="text-right font-semibold" style="color: ${o.rating.color};">${o.efficiency.toFixed(1)}%</td>
+                  <td><span class="badge" style="background: ${o.rating.color}; color: white; font-size: 0.65rem;">${o.rating.label}</span></td>
                 </tr>
               `).join('')}
             </tbody>

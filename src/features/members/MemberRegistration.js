@@ -64,7 +64,7 @@ export const renderMemberRegistration = async () => {
 
           <div class="form-group">
             <label class="form-label">Telephone</label>
-            <input type="tel" name="phone_number" class="form-control" required />
+            <input type="tel" name="phone_number" class="form-control" inputmode="numeric" pattern="[0-9]+" autocomplete="tel" required />
           </div>
 
           <div class="form-group">
@@ -99,7 +99,7 @@ export const renderMemberRegistration = async () => {
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
             <div class="form-group">
               <label class="form-label">Next of Kin Phone</label>
-              <input type="tel" name="nok_phone" class="form-control" required />
+              <input type="tel" name="nok_phone" class="form-control" inputmode="numeric" pattern="[0-9]+" autocomplete="tel" required />
             </div>
             <div class="form-group">
               <label class="form-label">Relationship</label>
@@ -195,8 +195,16 @@ export const renderMemberRegistration = async () => {
 
   // Form Submission
   const form = container.querySelector('#member-reg-form');
+  form.querySelectorAll('input[name="phone_number"], input[name="nok_phone"]').forEach(input => {
+    input.addEventListener('input', () => {
+      input.value = input.value.replace(/\D/g, '');
+    });
+  });
+
   form.onsubmit = async (e) => {
     e.preventDefault();
+    if (!form.reportValidity()) return;
+
     const formData = new FormData(form);
     const memberData = Object.fromEntries(formData.entries());
     const parsedDob = parseInputDate(memberData.dob);

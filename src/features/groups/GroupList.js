@@ -49,6 +49,16 @@ export const renderGroupList = async () => {
         background: rgba(245, 158, 11, 0.1);
         color: var(--warning);
       }
+      .group-close-btn {
+        border: 1px solid rgba(239, 68, 68, 0.3);
+        background: rgba(239, 68, 68, 0.08);
+        color: var(--danger);
+      }
+      .group-delete-btn {
+        border: 1px solid rgba(127, 29, 29, 0.3);
+        background: rgba(127, 29, 29, 0.08);
+        color: #991b1b;
+      }
       .group-edit-btn:hover {
         background: rgba(27, 61, 114, 0.14);
         border-color: rgba(27, 61, 114, 0.42);
@@ -58,6 +68,16 @@ export const renderGroupList = async () => {
         background: rgba(239, 68, 68, 0.14);
         border-color: rgba(239, 68, 68, 0.42);
         color: var(--danger);
+        transform: translateY(-1px);
+      }
+      .group-close-btn:hover {
+        background: rgba(239, 68, 68, 0.16);
+        border-color: rgba(239, 68, 68, 0.5);
+        transform: translateY(-1px);
+      }
+      .group-delete-btn:hover {
+        background: rgba(127, 29, 29, 0.16);
+        border-color: rgba(127, 29, 29, 0.5);
         transform: translateY(-1px);
       }
       .group-card-action:disabled {
@@ -76,7 +96,8 @@ export const renderGroupList = async () => {
   let totalItems = 0;
   let requestId = 0;
   const pageSize = 12; // Good for a 3-column or 4-column grid
-  const canManageGroups = authService.hasRole('super_admin', 'admin');
+  const canEditGroups = authService.hasRole('super_admin', 'admin');
+  const canManageLifecycle = authService.hasRole('super_admin');
 
   const relationFilter = (field, ids) => ids.map(id => `${field}="${id}"`).join(' || ');
   const moneyTotal = (records) => records.reduce((sum, record) => {
@@ -117,13 +138,15 @@ export const renderGroupList = async () => {
           </div>
           <div style="display: flex; align-items: center; gap: 8px;">
             <span class="badge ${g.status === 'active' ? 'badge-success' : g.status === 'suspended' ? 'badge-danger' : 'badge-warning'}">${(g.status || 'ACTIVE').toUpperCase()}</span>
-            ${canManageGroups ? `
+            ${canEditGroups ? `
               <button type="button" class="group-card-action group-edit-btn" data-id="${g.id}" aria-label="Edit group" title="Edit group">
                 <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
                   <path d="M12 20h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                   <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
               </button>
+            ` : ''}
+            ${canManageLifecycle ? `
               ${g.status !== 'suspended' ? `
                 <button type="button" class="group-card-action group-suspend-btn" data-id="${g.id}" data-name="${escapeHtml(g.name || 'this group')}" aria-label="Suspend group" title="Suspend group">
                   <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
@@ -138,6 +161,16 @@ export const renderGroupList = async () => {
                   <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
                 </svg>
               `}
+              <button type="button" class="group-card-action group-close-btn" data-id="${g.id}" data-name="${escapeHtml(g.name || 'this group')}" aria-label="Close group account" title="Close group account">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+              </button>
+              <button type="button" class="group-card-action group-delete-btn" data-id="${g.id}" data-name="${escapeHtml(g.name || 'this group')}" aria-label="Delete mistaken or duplicate group" title="Delete mistaken/duplicate group">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                  <path d="M3 6h18M8 6V4h8v2M9 10v8M15 10v8M6 6l1 15h10l1-15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
             ` : ''}
           </div>
         </div>
@@ -197,12 +230,63 @@ export const renderGroupList = async () => {
     }
 
     const suspendBtn = event.target.closest('.group-suspend-btn');
-    if (!suspendBtn) return;
+    const closeBtn = event.target.closest('.group-close-btn');
+    const deleteBtn = event.target.closest('.group-delete-btn');
+    if (!suspendBtn && !closeBtn && !deleteBtn) return;
     event.preventDefault();
     event.stopPropagation();
 
-    if (!canManageGroups) {
-      if (window.notify) window.notify.error('Only admins can suspend groups.');
+    if (!canManageLifecycle) {
+      if (window.notify) window.notify.error('Only super admins can manage group lifecycle.');
+      return;
+    }
+
+    if (deleteBtn) {
+      const groupId = deleteBtn.dataset.id;
+      const groupName = deleteBtn.dataset.name || 'this group';
+      const confirmed = window.confirmDialog ? await window.confirmDialog({
+        title: 'Delete Group Record',
+        message: `Permanently delete ${groupName}? Use this only for wrong or duplicate entries. If the group has members, loans, savings, or reports, PocketBase may block deletion to protect financial history.`,
+        confirmText: 'Delete Permanently',
+        cancelText: 'Cancel',
+        type: 'danger'
+      }) : confirm(`Delete ${groupName} permanently? Use only for wrong or duplicate entries.`);
+      if (!confirmed) return;
+      const restoreButton = setButtonLoading(deleteBtn, '...');
+      try {
+        await groupService.delete(groupId);
+        if (window.notify) window.notify.success('Group record deleted.');
+        await loadGroups();
+      } catch (err) {
+        const message = err?.status === 400
+          ? 'PocketBase blocked deletion because this group may have linked records. Use Close Account instead for historical groups.'
+          : (err.message || 'Please try again.');
+        if (window.notify) window.notify.error('Failed to delete group: ' + message);
+        restoreButton();
+      }
+      return;
+    }
+
+    if (closeBtn) {
+      const groupId = closeBtn.dataset.id;
+      const groupName = closeBtn.dataset.name || 'this group';
+      const confirmed = window.confirmDialog ? await window.confirmDialog({
+        title: 'Close Group Account',
+        message: `Close ${groupName} permanently? Closed groups remain in historical reports but cannot be revived.`,
+        confirmText: 'Close Account',
+        cancelText: 'Cancel',
+        type: 'danger'
+      }) : confirm(`Close ${groupName} permanently? This cannot be revived.`);
+      if (!confirmed) return;
+      const restoreButton = setButtonLoading(closeBtn, '...');
+      try {
+        await groupService.close(groupId);
+        if (window.notify) window.notify.success('Group account closed. Historical reports remain available.');
+        await loadGroups();
+      } catch (err) {
+        if (window.notify) window.notify.error('Failed to close group: ' + (err.message || 'Please try again.'));
+        restoreButton();
+      }
       return;
     }
 
@@ -210,7 +294,7 @@ export const renderGroupList = async () => {
     const groupName = suspendBtn.dataset.name || 'this group';
     const confirmed = window.confirmDialog ? await window.confirmDialog({
       title: 'Suspend Group',
-      message: `Suspend ${groupName}? The group, members, savings, loans, and reports will remain intact. Admins can revive it later from the Lifecycle report.`,
+      message: `Suspend ${groupName}? The group, members, savings, loans, and reports will remain intact. Super admins can revive it later from the Lifecycle report.`,
       confirmText: 'Suspend Group',
       cancelText: 'Cancel',
       type: 'warning'

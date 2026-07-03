@@ -11,6 +11,13 @@ const normalizePhone = (value = '') => {
 const normalizeIdNumber = (value = '') => String(value || '').trim().toLowerCase();
 
 const getPrimaryPhone = (record = {}) => record.phone_number || record.phone || '';
+const visibleMemberFilter = 'status!="suspended" && status!="closed"';
+const combineFilters = (...filters) => filters.filter(Boolean).map(filter => `(${filter})`).join(' && ');
+const requireSuperAdminLifecycleManager = () => {
+  if (pb.authStore.model?.role !== 'super_admin') {
+    throw new Error('Only super admins can manage member lifecycle.');
+  }
+};
 
 const toMemberPayload = (data = {}) => {
   if (!data.passportPhotoFile) return data;
@@ -35,7 +42,7 @@ const stripOptionalRegistrationFeeDetails = (data) => {
 export const memberService = {
   async list({ page = 1, perPage = 20, filter = '', sort = '-created' } = {}) {
     return await pb.collection('members').getList(page, perPage, {
-      filter,
+      filter: combineFilters(visibleMemberFilter, filter),
       sort,
       expand: 'group',
     });
@@ -48,7 +55,15 @@ export const memberService = {
   },
 
   async getAll(onUpdate = null) {
-    return await dataCache.getLocalFirst('members:all', () => pb.collection('members').getFullList({
+    return await dataCache.getLocalFirst('members:all:visible', () => pb.collection('members').getFullList({
+      filter: visibleMemberFilter,
+      expand: 'group',
+      sort: '-created'
+    }), onUpdate);
+  },
+
+  async getAllIncludingLifecycle(onUpdate = null) {
+    return await dataCache.getLocalFirst('members:all:including-lifecycle', () => pb.collection('members').getFullList({
       expand: 'group',
       sort: '-created'
     }), onUpdate);
@@ -100,6 +115,7 @@ export const memberService = {
   },
 
   async suspend(id) {
+    requireSuperAdminLifecycleManager();
     const record = await pb.collection('members').update(id, { status: 'suspended' });
     await dataCache.invalidatePrefix('members:');
     await dataCache.invalidatePrefix('group_summary:');
@@ -107,12 +123,31 @@ export const memberService = {
     return record;
   },
 
+  async close(id) {
+    requireSuperAdminLifecycleManager();
+    const record = await pb.collection('members').update(id, { status: 'closed' });
+    await dataCache.invalidatePrefix('members:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
+    return record;
+  },
+
   async revive(id) {
+    requireSuperAdminLifecycleManager();
     const record = await pb.collection('members').update(id, { status: 'active' });
     await dataCache.invalidatePrefix('members:');
     await dataCache.invalidatePrefix('group_summary:');
     await dataCache.invalidatePrefix('groups:profile:');
     return record;
+  },
+
+  async delete(id) {
+    requireSuperAdminLifecycleManager();
+    await pb.collection('members').delete(id);
+    await dataCache.invalidatePrefix('members:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
+    return true;
   },
 
   getPhotoUrl(member = {}) {

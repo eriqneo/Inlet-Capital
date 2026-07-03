@@ -336,6 +336,7 @@ export const renderLoanDetails = async (params) => {
                   <th>Date</th>
                   <th>Ref / Method</th>
                   <th>Recorded By</th>
+                  <th class="text-right">Fine</th>
                   <th class="text-right">Amount</th>
                 </tr>
               </thead>
@@ -349,8 +350,13 @@ export const renderLoanDetails = async (params) => {
           <form id="payment-form" style="max-width: 500px;">
             <div class="form-group">
               <label class="form-label">Payment Amount (KES)</label>
-              <input type="number" name="amount" class="form-control" required min="1" max="${outstandingBalance}" value="${outstandingBalance > 0 ? outstandingBalance : ''}" />
+              <input type="number" name="amount" class="form-control" required min="1" max="${outstandingBalance}" step="1" placeholder="Enter amount paid" />
               <p class="text-xs text-muted" style="margin-top: 4px;">Max payable: KES ${outstandingBalance.toLocaleString()}</p>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Late Fine (Optional)</label>
+              <input type="number" name="fine_amount" class="form-control" min="0" step="1" placeholder="0" />
+              <p class="text-xs text-muted" style="margin-top: 4px;">Use only when a late-payment fine was actually charged.</p>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
               <div class="form-group">
@@ -424,11 +430,12 @@ export const renderLoanDetails = async (params) => {
     const paginated = repayments.slice(start, start + pageSize);
     const tbody = container.querySelector('#repayment-history-body');
     
-    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No repayments recorded yet.</td></tr>' : paginated.map(r => `
+    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="5" class="text-center text-muted">No repayments recorded yet.</td></tr>' : paginated.map(r => `
       <tr>
         <td>${formatDate(r.date)}</td>
         <td><div class="font-semibold">${r.reference || 'N/A'}</div><div class="text-xs text-muted">${r.method.toUpperCase()}</div></td>
         <td class="text-xs text-muted">${r.expand?.recorded_by?.name || 'System'}</td>
+        <td class="text-right font-semibold ${Number(r.fine_amount) > 0 ? 'text-warning' : 'text-muted'}">${(Number(r.fine_amount) || 0).toLocaleString()}</td>
         <td class="text-right font-semibold text-success">${(Number(r.amount) || 0).toLocaleString()}</td>
       </tr>`).join('');
 
@@ -592,16 +599,28 @@ export const renderLoanDetails = async (params) => {
   const paymentForm = container.querySelector('#payment-form');
   paymentForm.onsubmit = async (e) => {
     e.preventDefault();
-    const btn = paymentForm.querySelector('button[type="submit"]');
-    const restoreButton = setButtonLoading(btn, 'Recording...');
+    if (!paymentForm.reportValidity()) return;
 
     const formData = new FormData(paymentForm);
     const data = Object.fromEntries(formData.entries());
     const amount = parseFloat(data.amount);
+    const fineAmount = data.fine_amount === '' ? 0 : parseFloat(data.fine_amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      if (window.notify) window.notify.error('Enter a valid payment amount before recording.');
+      return;
+    }
+    if (!Number.isFinite(fineAmount) || fineAmount < 0) {
+      if (window.notify) window.notify.error('Enter a valid fine amount or leave it blank.');
+      return;
+    }
+
+    const btn = paymentForm.querySelector('button[type="submit"]');
+    const restoreButton = setButtonLoading(btn, 'Recording...');
     
     const repayment = {
       loan: loan.id,
       amount: amount,
+      fine_amount: fineAmount,
       date: new Date(data.date).toISOString(),
       method: data.method,
       reference: data.reference,

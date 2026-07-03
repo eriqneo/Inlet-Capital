@@ -3,8 +3,8 @@ import { dataCache } from './dataCache.js';
 
 const requireAdminRecordManager = () => {
   const role = pb.authStore.model?.role;
-  if (!['super_admin', 'admin'].includes(role)) {
-    throw new Error('Only admins can delete records.');
+  if (role !== 'super_admin') {
+    throw new Error('Only super admins can delete loan records.');
   }
 };
 

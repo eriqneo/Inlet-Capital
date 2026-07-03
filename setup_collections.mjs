@@ -148,14 +148,14 @@ async function run() {
         { name: 'registration_fee', type: 'number' },
         { name: 'registration_date', type: 'date', required: true },
         { name: 'performance_rating', type: 'number' },
-        { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'suspended', 'dissolved'] },
+        { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'suspended', 'closed', 'dissolved'] },
         { name: 'created_by', type: 'relation', collectionId: usersForGroupsColl.id, cascadeDelete: false, maxSelect: 1 }
       ],
       listRule: '@request.auth.id != ""',
       viewRule: '@request.auth.id != ""',
       createRule: '@request.auth.role != "auditor"',
       updateRule: '@request.auth.role != "auditor"',
-      deleteRule: '@request.auth.role = "super_admin" || @request.auth.role = "admin"'
+      deleteRule: '@request.auth.role = "super_admin"'
     };
     try {
       await fetchPb('collections', 'POST', groupsDef, token);
@@ -165,12 +165,19 @@ async function run() {
          console.log('Groups collection already exists.');
          try {
            const groupsColl = await fetchPb('collections/groups', 'GET', null, token);
+           let changed = false;
            const statusField = groupsColl.fields.find(f => f.name === 'status');
-           if (statusField && !statusField.values.includes('suspended')) {
-             statusField.values = Array.from(new Set([...(statusField.values || []), 'suspended']));
-             await fetchPb('collections/groups', 'PATCH', groupsColl, token);
-             console.log('Groups collection updated with suspended status.');
+           if (statusField && (!statusField.values.includes('suspended') || !statusField.values.includes('closed'))) {
+             statusField.values = Array.from(new Set([...(statusField.values || []), 'suspended', 'closed']));
+             changed = true;
+             console.log('Groups collection updated with lifecycle statuses.');
            }
+           if (groupsColl.deleteRule !== '@request.auth.role = "super_admin"') {
+             groupsColl.deleteRule = '@request.auth.role = "super_admin"';
+             changed = true;
+             console.log('Groups collection delete rule restricted to super admins.');
+           }
+           if (changed) await fetchPb('collections/groups', 'PATCH', groupsColl, token);
          } catch (updateErr) {
            console.log('Could not update groups status values:', updateErr.message);
          }
@@ -208,7 +215,7 @@ async function run() {
         { name: 'registration_fee', type: 'number' },
         { name: 'registration_fee_details', type: 'json' },
         { name: 'registration_date', type: 'date', required: true },
-        { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'suspended', 'exited'] },
+        { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'suspended', 'closed', 'exited'] },
         { name: 'group', type: 'relation', collectionId: groupsForMembersColl.id, cascadeDelete: false, maxSelect: 1 },
         { name: 'registered_by', type: 'relation', collectionId: usersForMembersColl.id, cascadeDelete: false, maxSelect: 1 }
       ],
@@ -216,7 +223,7 @@ async function run() {
       viewRule: '@request.auth.id != ""',
       createRule: '@request.auth.role != "auditor"',
       updateRule: '@request.auth.role != "auditor"',
-      deleteRule: '@request.auth.role = "super_admin" || @request.auth.role = "admin"'
+      deleteRule: '@request.auth.role = "super_admin"'
     };
     try {
       await fetchPb('collections', 'POST', membersDef, token);
@@ -226,12 +233,19 @@ async function run() {
          console.log('Members collection already exists.');
          try {
            const membersColl = await fetchPb('collections/members', 'GET', null, token);
+           let changed = false;
            const statusField = membersColl.fields.find(f => f.name === 'status');
-           if (statusField && !statusField.values.includes('suspended')) {
-             statusField.values = Array.from(new Set([...(statusField.values || []), 'suspended']));
-             await fetchPb('collections/members', 'PATCH', membersColl, token);
-             console.log('Members collection updated with suspended status.');
+           if (statusField && (!statusField.values.includes('suspended') || !statusField.values.includes('closed'))) {
+             statusField.values = Array.from(new Set([...(statusField.values || []), 'suspended', 'closed']));
+             changed = true;
+             console.log('Members collection updated with lifecycle statuses.');
            }
+           if (membersColl.deleteRule !== '@request.auth.role = "super_admin"') {
+             membersColl.deleteRule = '@request.auth.role = "super_admin"';
+             changed = true;
+             console.log('Members collection delete rule restricted to super admins.');
+           }
+           if (changed) await fetchPb('collections/members', 'PATCH', membersColl, token);
          } catch (updateErr) {
            console.log('Could not update members status values:', updateErr.message);
          }
@@ -368,6 +382,11 @@ async function run() {
     try {
       const loansColl = await fetchPb('collections/loans', 'GET', null, token);
       let changed = false;
+      if (loansColl.deleteRule !== '@request.auth.role = "super_admin"') {
+        loansColl.deleteRule = '@request.auth.role = "super_admin"';
+        changed = true;
+        console.log('Loans collection delete rule restricted to super admins.');
+      }
       if (!loansColl.fields.some(field => field.name === 'approval_comment')) {
         loansColl.fields.push({
           name: 'approval_comment',
@@ -393,6 +412,24 @@ async function run() {
       if (changed) await fetchPb('collections/loans', 'PATCH', loansColl, token);
     } catch (e) {
       console.log('Error updating loans extra fields:', e.message);
+    }
+
+    console.log('Ensuring loan repayment fine field...');
+    try {
+      const repaymentsColl = await fetchPb('collections/loan_repayments', 'GET', null, token);
+      if (!repaymentsColl.fields.some(field => field.name === 'fine_amount')) {
+        repaymentsColl.fields.push({
+          name: 'fine_amount',
+          type: 'number',
+          required: false
+        });
+        await fetchPb('collections/loan_repayments', 'PATCH', repaymentsColl, token);
+        console.log('Loan repayments collection updated with fine_amount field.');
+      } else {
+        console.log('Loan repayments collection already has fine_amount field.');
+      }
+    } catch (e) {
+      console.log('Error updating loan repayment fine field:', e.message);
     }
 
     console.log('Ensuring user login activity collection...');

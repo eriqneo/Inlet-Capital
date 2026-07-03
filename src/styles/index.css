@@ -808,6 +808,8 @@ h1, h2, h3, h4, h5, h6 {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
   padding: 16px 24px;
   background: white;
   border-top: 1px solid var(--border-color);
@@ -820,12 +822,16 @@ h1, h2, h3, h4, h5, h6 {
 
 .pagination-controls {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .pagination-btn {
-  width: 36px;
+  min-width: 36px;
   height: 36px;
+  padding: 0 10px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -860,6 +866,11 @@ h1, h2, h3, h4, h5, h6 {
 .pagination-arrow {
   padding: 0 12px;
   width: auto;
+}
+
+.pagination-ellipsis {
+  min-width: 18px;
+  text-align: center;
 }
 
 /* Payment Pill Selectors */

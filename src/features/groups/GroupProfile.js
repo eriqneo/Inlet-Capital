@@ -41,6 +41,19 @@ export const renderGroupProfile = async (params) => {
 
   const groupProfileRoute = `#/groups/${id}`;
   const canManageRecords = authService.hasRole('super_admin', 'admin');
+  if (String(group.status || '').toLowerCase() === 'suspended') {
+    container.innerHTML = `
+      <div class="card text-center" style="max-width: 560px; margin: 40px auto; border-top: 4px solid var(--warning);">
+        <h2 style="margin-bottom: 8px;">Group Suspended</h2>
+        <p class="text-muted" style="margin-bottom: 20px;">${group.name || 'This group'} is hidden from normal operations until an admin revives it from Reports &gt; Lifecycle.</p>
+        <div style="display: flex; justify-content: center; gap: 12px; flex-wrap: wrap;">
+          <button class="btn btn-outline" onclick="window.location.hash = '#/groups'">Back to Groups</button>
+          ${canManageRecords ? `<button class="btn btn-primary" onclick="window.location.hash = '#/reports?tab=lifecycle'">Open Lifecycle Report</button>` : ''}
+        </div>
+      </div>
+    `;
+    return;
+  }
   let quickSummary = null;
   try {
     quickSummary = await groupSummaryService.getByGroup(id);
@@ -74,6 +87,7 @@ export const renderGroupProfile = async (params) => {
         <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);"><div class="text-xs text-muted">Total Fees</div><div class="text-lg font-semibold" style="color: var(--warning);">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">Total Members</div><div class="text-lg font-semibold text-primary">${memberCount}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid ${totalArrears > 0 ? 'var(--danger)' : 'var(--border-color)'};"><div class="text-xs text-muted">Total Arrears</div><div class="text-lg font-semibold" style="color: ${totalArrears > 0 ? 'var(--danger)' : 'inherit'};">KES ${totalArrears.toLocaleString()}</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);"><div class="text-xs text-muted">Portfolio at Risk (PAR)</div><div class="text-lg font-semibold" style="color: var(--warning);">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid ${membersInArrears > 0 ? 'var(--warning)' : 'var(--border-color)'};"><div class="text-xs text-muted">Members in Arrears</div><div class="text-lg font-semibold" style="color: ${membersInArrears > 0 ? 'var(--warning)' : 'inherit'};">${membersInArrears}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid ${inactiveMembers > 0 ? 'var(--danger)' : 'var(--border-color)'};"><div class="text-xs text-muted">Inactive Members</div><div class="text-lg font-semibold" style="color: ${inactiveMembers > 0 ? 'var(--danger)' : 'inherit'};">${inactiveMembers} <span class="text-xs text-muted" style="font-weight:normal;">(>90 days)</span></div></div>
       </div>
@@ -96,18 +110,41 @@ export const renderGroupProfile = async (params) => {
       const amount = Number(s.amount) || 0;
       return s.type === 'deposit' ? sum + amount : sum - amount;
     }, 0);
+  const calculateSavingsMovement = (records) => records
+    .filter(s => !s.is_reversed)
+    .reduce((totals, s) => {
+      const amount = Number(s.amount) || 0;
+      if (s.type === 'deposit') totals.deposits += amount;
+      if (s.type === 'withdrawal') totals.withdrawals += amount;
+      return totals;
+    }, { deposits: 0, withdrawals: 0 });
   const isDisbursedLoanForBalance = (loan) => Boolean(loan?.disbursement_date)
     && ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status);
   const isCollectibleLoan = (loan) => loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
+  const getLoanLiability = (loan) => {
+    const storedLiability = Number(loan?.total_liability) || 0;
+    if (storedLiability > 0) return storedLiability;
+    const principal = Number(loan?.approved_amount || loan?.amount_applied) || 0;
+    return principal + (Number(loan?.interest_amount) || 0);
+  };
   const calculateLoanBalance = (loan, repayments) => {
     if (!isDisbursedLoanForBalance(loan)) return 0;
-    const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
-    const liability = Number(loan.total_liability) || (principal + (Number(loan.interest_amount) || 0));
+    const liability = getLoanLiability(loan);
     const paid = repayments
       .filter(r => r.loan === loan.id)
       .reduce((repaymentSum, r) => repaymentSum + (Number(r.amount) || 0), 0);
     return Math.max(0, liability - paid);
   };
+  const calculateActiveLoanPortfolio = (loans) => loans
+    .filter(isCollectibleLoan)
+    .reduce((sum, loan) => sum + getLoanLiability(loan), 0);
+  const getParHealth = (parRate) => parRate >= 16
+    ? { label: 'High Risk', color: 'var(--danger)', accent: 'var(--danger)' }
+    : parRate >= 11
+      ? { label: 'Needs Attention', color: 'var(--warning)', accent: 'var(--warning)' }
+      : parRate >= 6
+        ? { label: 'Good', color: 'var(--primary)', accent: 'var(--primary)' }
+        : { label: 'Excellent', color: 'var(--success)', accent: 'var(--success)' };
   const calculateOutstandingLoanBalance = (loans, repayments) => loans
     .filter(isDisbursedLoanForBalance)
     .reduce((sum, loan) => sum + calculateLoanBalance(loan, repayments), 0);
@@ -268,6 +305,7 @@ export const renderGroupProfile = async (params) => {
   const totalMemberSavings = enrichedMembers.reduce((sum, m) => sum + m.totalSavings, 0);
   const groupAccountSavings = calculateSavingsTotal(groupSavings.filter(s => !s.member));
   let totalGroupSavings = totalMemberSavings + groupAccountSavings;
+  const initialSavingsMovement = calculateSavingsMovement(groupSavings);
 
   // Group-level loan arrears
   const activeGroupLoans = groupLoans.filter(l => !l.member && isCollectibleLoan(l));
@@ -284,6 +322,9 @@ export const renderGroupProfile = async (params) => {
     if (!m.isActive) inactiveMembersCount++;
   }
   let totalOutstandingLoan = calculateOutstandingLoanBalance(groupLoans, allRepayments);
+  const activeLoanPortfolio = calculateActiveLoanPortfolio(groupLoans);
+  const groupParRateNumber = activeLoanPortfolio > 0 ? (totalGroupArrears / activeLoanPortfolio) * 100 : 0;
+  const groupParHealth = getParHealth(groupParRateNumber);
   const savedThisCycleCount = enrichedMembers.filter(member => member.savedThisCycle).length;
   const savingsParticipationRate = enrichedMembers.length > 0
     ? (savedThisCycleCount / enrichedMembers.length) * 100
@@ -358,6 +399,10 @@ export const renderGroupProfile = async (params) => {
           <div class="card" style="padding: 16px; border-left: 3px solid var(--success);">
             <div class="text-xs text-muted">Total Savings</div>
             <div class="text-lg font-semibold text-success" id="group-total-savings-kpi">KES ${totalGroupSavings.toLocaleString()}</div>
+            <div class="text-xs" id="group-savings-movement-kpi" style="margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap;">
+              <span style="color: var(--success); font-weight: 700;">DEP ${initialSavingsMovement.deposits.toLocaleString()}</span>
+              <span style="color: var(--danger); font-weight: 700;">WIT ${initialSavingsMovement.withdrawals.toLocaleString()}</span>
+            </div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);">
             <div class="text-xs text-muted">Outstanding Loan</div>
@@ -378,6 +423,11 @@ export const renderGroupProfile = async (params) => {
           <div class="card" style="padding: 16px; border-left: 3px solid ${totalGroupArrears > 0 ? 'var(--danger)' : 'var(--border-color)'};">
             <div class="text-xs text-muted">Total Arrears</div>
             <div class="text-lg font-semibold" id="group-total-arrears-kpi" style="color: ${totalGroupArrears > 0 ? 'var(--danger)' : 'inherit'};">KES ${totalGroupArrears.toLocaleString()}</div>
+          </div>
+          <div class="card" id="group-par-card" style="padding: 16px; border-left: 3px solid ${groupParHealth.accent};">
+            <div class="text-xs text-muted">Portfolio at Risk (PAR)</div>
+            <div class="text-lg font-semibold" id="group-par-kpi" style="color: ${groupParHealth.color};">${groupParRateNumber.toFixed(1)}%</div>
+            <div class="text-xs" id="group-par-health" style="margin-top: 4px; color: ${groupParHealth.color}; font-weight: 700;">${groupParHealth.label}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid ${membersInArrearsCount > 0 ? 'var(--warning)' : 'var(--border-color)'};">
             <div class="text-xs text-muted">Members in Arrears</div>
@@ -470,7 +520,7 @@ export const renderGroupProfile = async (params) => {
           <div style="margin-bottom: 12px;"><div class="text-xs text-muted">Location</div><div>${group.location || '-'}</div></div>
           <div style="margin-bottom: 12px;"><div class="text-xs text-muted">Registration Date</div><div>${group.registration_date ? formatDate(group.registration_date) : '-'}</div></div>
           <div style="margin-bottom: 12px;"><div class="text-xs text-muted">Phone</div><div>${group.phone || '-'}</div></div>
-          <div style="margin-bottom: 12px;"><div class="text-xs text-muted">Performance Rating</div><div id="group-rating-container" style="margin-top: 4px;"></div></div>
+          <div style="margin-bottom: 12px;"><div class="text-xs text-muted">Performance Savings Rating</div><div id="group-rating-container" style="margin-top: 4px;"></div></div>
         </div>
       </div>
     </div>
@@ -786,11 +836,22 @@ export const renderGroupProfile = async (params) => {
     const arrearsCount = filteredMembers.filter(m => getMemberArrears(m) > 0).length;
     const inactiveCount = filteredMembers.filter(m => !m.isActive).length;
     const savingsTotal = calculateSavingsTotal(filteredSavings);
+    const savingsMovement = calculateSavingsMovement(filteredSavings);
     const outstandingLoan = calculateOutstandingLoanBalance(filteredLoans, allRepayments);
+    const filteredActiveLoanPortfolio = calculateActiveLoanPortfolio(filteredLoans);
+    const parRate = filteredActiveLoanPortfolio > 0 ? (arrearsAmount / filteredActiveLoanPortfolio) * 100 : 0;
+    const parHealth = getParHealth(parRate);
     const repaymentsTotal = calculateRepaymentsTotal(filteredRepayments);
     const feesTotal = calculateFeesTotal(feeKpiMembers, groupLoans);
 
     container.querySelector('#group-total-savings-kpi').textContent = `KES ${savingsTotal.toLocaleString()}`;
+    const savingsMovementKpi = container.querySelector('#group-savings-movement-kpi');
+    if (savingsMovementKpi) {
+      savingsMovementKpi.innerHTML = `
+        <span style="color: var(--success); font-weight: 700;">DEP ${savingsMovement.deposits.toLocaleString()}</span>
+        <span style="color: var(--danger); font-weight: 700;">WIT ${savingsMovement.withdrawals.toLocaleString()}</span>
+      `;
+    }
     container.querySelector('#group-outstanding-loan-kpi').textContent = `KES ${outstandingLoan.toLocaleString()}`;
     container.querySelector('#group-total-repayments-kpi').textContent = `KES ${repaymentsTotal.toLocaleString()}`;
     container.querySelector('#group-total-fees-kpi').textContent = `KES ${feesTotal.toLocaleString()}`;
@@ -798,6 +859,18 @@ export const renderGroupProfile = async (params) => {
     const totalArrearsKpi = container.querySelector('#group-total-arrears-kpi');
     totalArrearsKpi.textContent = `KES ${arrearsAmount.toLocaleString()}`;
     totalArrearsKpi.style.color = arrearsAmount > 0 ? 'var(--danger)' : 'inherit';
+    const parCard = container.querySelector('#group-par-card');
+    const parKpi = container.querySelector('#group-par-kpi');
+    const parHealthEl = container.querySelector('#group-par-health');
+    if (parCard) parCard.style.borderLeftColor = parHealth.accent;
+    if (parKpi) {
+      parKpi.textContent = `${parRate.toFixed(1)}%`;
+      parKpi.style.color = parHealth.color;
+    }
+    if (parHealthEl) {
+      parHealthEl.textContent = parHealth.label;
+      parHealthEl.style.color = parHealth.color;
+    }
     container.querySelector('#group-arrears-kpi').textContent = arrearsCount;
     container.querySelector('#group-inactive-members-kpi').innerHTML = `${inactiveCount} <span class="text-xs text-muted" style="font-weight:normal;">(>90 days)</span>`;
 
