@@ -100,6 +100,7 @@ export const renderGroupRegistration = async (params = {}) => {
       const userId = authService.getUser()?.id;
       if (userId) {
         group.created_by = userId;
+        group.assigned_officer = userId;
       }
     }
 

@@ -51,6 +51,20 @@ async function curlPb(path, method = 'GET', body = null, token = null) {
   return data;
 }
 
+async function getFullList(collection, token, query = '') {
+  const perPage = 200;
+  let page = 1;
+  let items = [];
+  while (true) {
+    const separator = query ? '&' : '';
+    const result = await fetchPb(`collections/${collection}/records?page=${page}&perPage=${perPage}${separator}${query}`, 'GET', null, token);
+    items = items.concat(result.items || []);
+    if (!result.items || result.items.length < perPage || page >= result.totalPages) break;
+    page += 1;
+  }
+  return items;
+}
+
 async function run() {
   try {
     console.log('Authenticating...');
@@ -149,7 +163,8 @@ async function run() {
         { name: 'registration_date', type: 'date', required: true },
         { name: 'performance_rating', type: 'number' },
         { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'suspended', 'closed', 'dissolved'] },
-        { name: 'created_by', type: 'relation', collectionId: usersForGroupsColl.id, cascadeDelete: false, maxSelect: 1 }
+        { name: 'created_by', type: 'relation', collectionId: usersForGroupsColl.id, cascadeDelete: false, maxSelect: 1 },
+        { name: 'assigned_officer', type: 'relation', collectionId: usersForGroupsColl.id, cascadeDelete: false, maxSelect: 1 }
       ],
       listRule: '@request.auth.id != ""',
       viewRule: '@request.auth.id != ""',
@@ -176,6 +191,17 @@ async function run() {
              groupsColl.deleteRule = '@request.auth.role = "super_admin"';
              changed = true;
              console.log('Groups collection delete rule restricted to super admins.');
+           }
+           if (!groupsColl.fields.some(field => field.name === 'assigned_officer')) {
+             groupsColl.fields.push({
+               name: 'assigned_officer',
+               type: 'relation',
+               collectionId: usersForGroupsColl.id,
+               cascadeDelete: false,
+               maxSelect: 1
+             });
+             changed = true;
+             console.log('Groups collection updated with assigned_officer field.');
            }
            if (changed) await fetchPb('collections/groups', 'PATCH', groupsColl, token);
          } catch (updateErr) {
@@ -217,7 +243,8 @@ async function run() {
         { name: 'registration_date', type: 'date', required: true },
         { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'suspended', 'closed', 'exited'] },
         { name: 'group', type: 'relation', collectionId: groupsForMembersColl.id, cascadeDelete: false, maxSelect: 1 },
-        { name: 'registered_by', type: 'relation', collectionId: usersForMembersColl.id, cascadeDelete: false, maxSelect: 1 }
+        { name: 'registered_by', type: 'relation', collectionId: usersForMembersColl.id, cascadeDelete: false, maxSelect: 1 },
+        { name: 'assigned_officer', type: 'relation', collectionId: usersForMembersColl.id, cascadeDelete: false, maxSelect: 1 }
       ],
       listRule: '@request.auth.id != ""',
       viewRule: '@request.auth.id != ""',
@@ -244,6 +271,17 @@ async function run() {
              membersColl.deleteRule = '@request.auth.role = "super_admin"';
              changed = true;
              console.log('Members collection delete rule restricted to super admins.');
+           }
+           if (!membersColl.fields.some(field => field.name === 'assigned_officer')) {
+             membersColl.fields.push({
+               name: 'assigned_officer',
+               type: 'relation',
+               collectionId: usersForMembersColl.id,
+               cascadeDelete: false,
+               maxSelect: 1
+             });
+             changed = true;
+             console.log('Members collection updated with assigned_officer field.');
            }
            if (changed) await fetchPb('collections/members', 'PATCH', membersColl, token);
          } catch (updateErr) {
@@ -335,6 +373,31 @@ async function run() {
       }
     } catch (e) {
       console.log('Error updating members profile fields:', e.message);
+    }
+
+    console.log('Backfilling assigned officers...');
+    try {
+      const [memberRecords, groupRecords] = await Promise.all([
+        getFullList('members', token, 'fields=id,registered_by,assigned_officer'),
+        getFullList('groups', token, 'fields=id,created_by,assigned_officer')
+      ]);
+      let memberBackfilled = 0;
+      for (const member of memberRecords) {
+        if (!member.assigned_officer && member.registered_by) {
+          await fetchPb(`collections/members/records/${member.id}`, 'PATCH', { assigned_officer: member.registered_by }, token);
+          memberBackfilled += 1;
+        }
+      }
+      let groupBackfilled = 0;
+      for (const group of groupRecords) {
+        if (!group.assigned_officer && group.created_by) {
+          await fetchPb(`collections/groups/records/${group.id}`, 'PATCH', { assigned_officer: group.created_by }, token);
+          groupBackfilled += 1;
+        }
+      }
+      console.log(`Assigned officer backfill complete. Members: ${memberBackfilled}, Groups: ${groupBackfilled}.`);
+    } catch (e) {
+      console.log('Error backfilling assigned officers:', e.message);
     }
 
     console.log('Ensuring member unique identity fields...');

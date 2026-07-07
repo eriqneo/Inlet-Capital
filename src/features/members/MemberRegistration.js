@@ -213,6 +213,7 @@ export const renderMemberRegistration = async () => {
     const phoneNumber = memberData.phone_number || memberData.phone || '';
     const maritalStatus = memberData.maritalStatus || memberData.marital_status || 'Single';
     const childrenCount = Number(memberData.childrenCount || memberData.children_count || 0);
+    const currentUserId = authService.getUser()?.id || null;
     
     const member = {
       ...memberData,
@@ -234,7 +235,8 @@ export const renderMemberRegistration = async () => {
         captured_at: capturedAt
       },
       status: 'active',
-      registered_by: authService.getUser()?.id || null
+      registered_by: currentUserId,
+      assigned_officer: currentUserId
     };
     if (passportPhotoFile) member.passportPhotoFile = passportPhotoFile;
 

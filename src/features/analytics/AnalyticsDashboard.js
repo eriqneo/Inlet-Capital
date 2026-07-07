@@ -137,11 +137,17 @@ export const renderAnalyticsDashboard = async () => {
       }
     });
     members.forEach(member => {
+      if (member.assigned_officer && !officerOptionMap[member.assigned_officer]) {
+        officerOptionMap[member.assigned_officer] = getUserName(member.assigned_officer);
+      }
       if (member.registered_by && !officerOptionMap[member.registered_by]) {
         officerOptionMap[member.registered_by] = getUserName(member.registered_by);
       }
     });
     groups.forEach(group => {
+      if (group.assigned_officer && !officerOptionMap[group.assigned_officer]) {
+        officerOptionMap[group.assigned_officer] = getUserName(group.assigned_officer);
+      }
       if (group.created_by && !officerOptionMap[group.created_by]) {
         officerOptionMap[group.created_by] = getUserName(group.created_by);
       }
@@ -149,22 +155,40 @@ export const renderAnalyticsDashboard = async () => {
     const officerOptions = Object.entries(officerOptionMap)
       .map(([id, name]) => ({ id, name }))
       .sort((a, b) => a.name.localeCompare(b.name));
-    const filterByOfficer = (loan) => currentOfficerFilter === 'all' || loan.processed_by === currentOfficerFilter;
-    const filterMemberByOfficer = (member) => currentOfficerFilter === 'all' || member.registered_by === currentOfficerFilter;
-    const filterGroupByOfficer = (group) => currentOfficerFilter === 'all' || group.created_by === currentOfficerFilter;
     const membersById = new Map(members.map(member => [member.id, member]));
     const groupsById = new Map(groups.map(group => [group.id, group]));
+    const getMemberAssignedOfficer = (member) => member?.assigned_officer || member?.registered_by || '';
+    const getGroupAssignedOfficer = (group) => group?.assigned_officer || group?.created_by || '';
+    const getLoanResponsibleOfficer = (loan) => {
+      if (!loan) return '';
+      if (loan.member) return getMemberAssignedOfficer(membersById.get(loan.member) || loan.expand?.member) || loan.processed_by || '';
+      if (loan.group) return getGroupAssignedOfficer(groupsById.get(loan.group) || loan.expand?.group) || loan.processed_by || '';
+      return loan.processed_by || '';
+    };
+    const getResponsibleOfficerName = (loan) => {
+      const officerId = getLoanResponsibleOfficer(loan);
+      return getUserName(officerId) || getOfficerName(loan);
+    };
+    const filterByOfficer = (loan) => currentOfficerFilter === 'all' || getLoanResponsibleOfficer(loan) === currentOfficerFilter;
+    const filterMemberByOfficer = (member) => currentOfficerFilter === 'all' || getMemberAssignedOfficer(member) === currentOfficerFilter;
+    const filterGroupByOfficer = (group) => currentOfficerFilter === 'all' || getGroupAssignedOfficer(group) === currentOfficerFilter;
     const filterSavingsByOfficer = (saving) => {
       if (currentOfficerFilter === 'all') return true;
-      if (saving.member) return membersById.get(saving.member)?.registered_by === currentOfficerFilter;
-      if (saving.group) return groupsById.get(saving.group)?.created_by === currentOfficerFilter;
+      if (saving.member) return getMemberAssignedOfficer(membersById.get(saving.member)) === currentOfficerFilter;
+      if (saving.group) return getGroupAssignedOfficer(groupsById.get(saving.group)) === currentOfficerFilter;
       return false;
     };
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
     const getCollectionWindow = () => {
-      if (!['overdue', 'all_upcoming'].includes(currentCollectionWindow)) {
+      const allowedWindows = ['overdue', 'all_upcoming', 'last_month', 'this_month', 'next_month'];
+      if (!allowedWindows.includes(currentCollectionWindow)) {
         currentCollectionWindow = 'overdue';
       }
+      const monthWindow = (offset, label) => {
+        const start = new Date(todayStart.getFullYear(), todayStart.getMonth() + offset, 1);
+        const end = new Date(todayStart.getFullYear(), todayStart.getMonth() + offset + 1, 0, 23, 59, 59, 999);
+        return { label, start, end, includeOverdue: false };
+      };
       if (currentCollectionWindow === 'overdue') {
         const end = new Date(todayStart);
         end.setMilliseconds(-1);
@@ -173,6 +197,9 @@ export const renderAnalyticsDashboard = async () => {
       if (currentCollectionWindow === 'all_upcoming') {
         return { label: 'All Upcoming', start: todayStart, end: null, includeOverdue: false };
       }
+      if (currentCollectionWindow === 'last_month') return monthWindow(-1, 'Last Month');
+      if (currentCollectionWindow === 'this_month') return monthWindow(0, 'This Month');
+      if (currentCollectionWindow === 'next_month') return monthWindow(1, 'Next Month');
       const end = new Date(todayStart);
       end.setMilliseconds(-1);
       return { label: 'Overdue', start: null, end, includeOverdue: true };
@@ -285,11 +312,11 @@ export const renderAnalyticsDashboard = async () => {
     const collectionOfficerMap = {};
     forecastSchedules.forEach(schedule => {
       const loan = loansById.get(schedule.loan);
-      const officerKey = loan?.processed_by || 'unassigned';
+      const officerKey = getLoanResponsibleOfficer(loan) || 'unassigned';
       if (!collectionOfficerMap[officerKey]) {
         collectionOfficerMap[officerKey] = {
           id: officerKey,
-          name: loan ? getOfficerName(loan) : 'Unassigned',
+          name: loan ? getResponsibleOfficerName(loan) : 'Unassigned',
           installments: 0,
           clients: new Set(),
           gross: 0,
@@ -425,6 +452,9 @@ export const renderAnalyticsDashboard = async () => {
           <select id="collection-window-filter" class="form-control" style="width: auto; min-width: 170px;">
             <option value="overdue" ${currentCollectionWindow === 'overdue' ? 'selected' : ''}>Collections: Overdue</option>
             <option value="all_upcoming" ${currentCollectionWindow === 'all_upcoming' ? 'selected' : ''}>Collections: All Upcoming</option>
+            <option value="last_month" ${currentCollectionWindow === 'last_month' ? 'selected' : ''}>Collections: Last Month</option>
+            <option value="this_month" ${currentCollectionWindow === 'this_month' ? 'selected' : ''}>Collections: This Month</option>
+            <option value="next_month" ${currentCollectionWindow === 'next_month' ? 'selected' : ''}>Collections: Next Month</option>
           </select>
         </div>
       </div>

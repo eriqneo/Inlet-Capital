@@ -16,12 +16,16 @@ export const renderAdminSettings = async () => {
   let timestamps = {};
   let users = [];
   let userLastLoginMap = {};
+  let assignmentMembers = [];
+  let assignmentGroups = [];
   let voteheads = [];
   let auditLogs = [];
   let showArchivedVoteheads = false;
   let usersLoadError = '';
+  let assignmentLoadError = '';
   let isSettingsLoading = true;
   let isUsersLoading = true;
+  let isAssignmentsLoading = true;
   let isVoteheadsLoading = true;
   let isAuditLoading = true;
   
@@ -57,31 +61,53 @@ export const renderAdminSettings = async () => {
 
   const loadUsers = async () => {
     isUsersLoading = true;
+    isAssignmentsLoading = true;
+    assignmentLoadError = '';
     renderUI();
     try {
-      const [userRecords, loginActivity] = await Promise.all([
+      const [userRecords, loginActivity, memberRecords, groupRecords] = await Promise.all([
         pb.collection('users').getFullList({ sort: '-created' }),
         pb.collection('user_login_activity').getFullList({ sort: '-login_at' }).catch(err => {
           console.warn('[AdminSettings] Login activity unavailable:', err);
           return [];
-        })
+        }),
+        canManageUsers
+          ? pb.collection('members').getFullList({ sort: 'full_name', expand: 'assigned_officer,registered_by,group' }).catch(err => {
+              console.warn('[AdminSettings] Member assignment data unavailable:', err);
+              assignmentLoadError = err.message || 'Could not load member assignments.';
+              return [];
+            })
+          : Promise.resolve([]),
+        canManageUsers
+          ? pb.collection('groups').getFullList({ sort: 'name', expand: 'assigned_officer,created_by' }).catch(err => {
+              console.warn('[AdminSettings] Group assignment data unavailable:', err);
+              assignmentLoadError = err.message || 'Could not load group assignments.';
+              return [];
+            })
+          : Promise.resolve([])
       ]);
       users = userRecords;
+      assignmentMembers = memberRecords;
+      assignmentGroups = groupRecords;
       userLastLoginMap = loginActivity.reduce((map, activity) => {
         if (activity.user && !map[activity.user]) map[activity.user] = activity.login_at || activity.created;
         return map;
       }, {});
       usersLoadError = '';
+      if (memberRecords.length || groupRecords.length) assignmentLoadError = '';
     } catch (err) {
       console.error("Failed to load users", err);
       users = [];
       userLastLoginMap = {};
+      assignmentMembers = [];
+      assignmentGroups = [];
       usersLoadError = err.status === 403
         ? 'Your account can open Settings, but PocketBase does not currently allow this role to list system users.'
         : `Failed to load users: ${err.message || 'Unknown error'}`;
       if (window.notify) window.notify.error(usersLoadError);
     } finally {
       isUsersLoading = false;
+      isAssignmentsLoading = false;
       renderUI();
     }
   };
@@ -154,6 +180,15 @@ export const renderAdminSettings = async () => {
       const timestamp = userLastLoginMap[user.id] || user.last_login || user.lastLogin || '';
       return timestamp ? new Date(timestamp).toLocaleString() : 'Never';
     };
+    const officerUsers = users
+      .filter(user => ['loan_officer', 'group_officer', 'manager', 'admin', 'super_admin'].includes(user.role || ''))
+      .sort((a, b) => String(a.name || a.email || '').localeCompare(String(b.name || b.email || ''), undefined, { sensitivity: 'base' }));
+    const getAssignedOfficerId = (record, fallbackField) => record.assigned_officer || record[fallbackField] || '';
+    const selectedFromOfficer = container.querySelector('#assignment-from-officer')?.value || 'all';
+    const selectedAssignmentScope = container.querySelector('#assignment-scope')?.value || 'both';
+    const assignedMemberCount = assignmentMembers.filter(member => selectedFromOfficer === 'all' || getAssignedOfficerId(member, 'registered_by') === selectedFromOfficer).length;
+    const assignedGroupCount = assignmentGroups.filter(group => selectedFromOfficer === 'all' || getAssignedOfficerId(group, 'created_by') === selectedFromOfficer).length;
+    const assignmentPreviewCount = (selectedAssignmentScope === 'groups' ? 0 : assignedMemberCount) + (selectedAssignmentScope === 'members' ? 0 : assignedGroupCount);
 
     container.innerHTML = `
       <div style="margin-bottom: 24px;">
@@ -301,6 +336,62 @@ export const renderAdminSettings = async () => {
                 </tbody>
               </table>
             </div>
+
+            ${canManageUsers ? `
+              <div class="card" style="margin-top: 24px; background: var(--bg-light); border: 1px solid var(--border-color);">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 16px;">
+                  <div>
+                    <h3 style="margin-bottom: 6px;">Client Assignment Transfer</h3>
+                    <div class="text-sm text-muted">Move assigned clients from one loan user to another without changing historical registration or loan origination records.</div>
+                  </div>
+                  <div class="badge" style="background: rgba(27,61,114,0.08); color: var(--primary);">Super Admin</div>
+                </div>
+                ${isAssignmentsLoading ? `
+                  <div>${renderInlineSyncStatus('Loading client assignments...')}</div>
+                ` : assignmentLoadError ? `
+                  <div class="text-sm text-danger">${assignmentLoadError}</div>
+                ` : `
+                  <form id="assignment-transfer-form">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; align-items: end;">
+                      <div class="form-group" style="margin: 0;">
+                        <label class="form-label">From Officer</label>
+                        <select id="assignment-from-officer" name="from_officer" class="form-control" required>
+                          <option value="all" ${selectedFromOfficer === 'all' ? 'selected' : ''}>All assigned clients</option>
+                          ${officerUsers.map(user => `<option value="${user.id}" ${selectedFromOfficer === user.id ? 'selected' : ''}>${user.name || user.email}</option>`).join('')}
+                        </select>
+                      </div>
+                      <div class="form-group" style="margin: 0;">
+                        <label class="form-label">To Officer</label>
+                        <select id="assignment-to-officer" name="to_officer" class="form-control" required>
+                          <option value="">Select new officer</option>
+                          ${officerUsers.map(user => `<option value="${user.id}">${user.name || user.email}</option>`).join('')}
+                        </select>
+                      </div>
+                      <div class="form-group" style="margin: 0;">
+                        <label class="form-label">Scope</label>
+                        <select id="assignment-scope" name="scope" class="form-control" required>
+                          <option value="both" ${selectedAssignmentScope === 'both' ? 'selected' : ''}>Members and Groups</option>
+                          <option value="members" ${selectedAssignmentScope === 'members' ? 'selected' : ''}>Members only</option>
+                          <option value="groups" ${selectedAssignmentScope === 'groups' ? 'selected' : ''}>Groups only</option>
+                        </select>
+                      </div>
+                      <div class="form-group" style="margin: 0;">
+                        <label class="form-label">Reason</label>
+                        <input type="text" name="reason" class="form-control" placeholder="e.g. Officer resigned" />
+                      </div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-color);">
+                      <div class="text-xs text-muted">
+                        Preview: <strong>${assignmentPreviewCount}</strong> records selected
+                        <span style="margin-left: 8px;">Members: ${assignedMemberCount}</span>
+                        <span style="margin-left: 8px;">Groups: ${assignedGroupCount}</span>
+                      </div>
+                      <button type="submit" class="btn btn-primary" ${assignmentPreviewCount === 0 ? 'disabled' : ''}>Transfer Clients</button>
+                    </div>
+                  </form>
+                `}
+              </div>
+            ` : ''}
           </div>
 
           <!-- Add/Edit User Modal -->
@@ -477,6 +568,7 @@ export const renderAdminSettings = async () => {
                   <option value="user_created" ${auditFilter === 'user_created' ? 'selected' : ''}>User Created</option>
                   <option value="user_updated" ${auditFilter === 'user_updated' ? 'selected' : ''}>User Updated</option>
                   <option value="user_deleted" ${auditFilter === 'user_deleted' ? 'selected' : ''}>User Deleted</option>
+                  <option value="client_assignment_transfer" ${auditFilter === 'client_assignment_transfer' ? 'selected' : ''}>Client Assignment Transfer</option>
                 </select>
               </div>
             </div>
@@ -834,6 +926,80 @@ export const renderAdminSettings = async () => {
         }
       };
     });
+
+    const assignmentFrom = container.querySelector('#assignment-from-officer');
+    const assignmentScope = container.querySelector('#assignment-scope');
+    if (assignmentFrom) assignmentFrom.onchange = renderUI;
+    if (assignmentScope) assignmentScope.onchange = renderUI;
+
+    const assignmentTransferForm = container.querySelector('#assignment-transfer-form');
+    if (assignmentTransferForm) {
+      assignmentTransferForm.onsubmit = async (event) => {
+        event.preventDefault();
+        const formData = new FormData(assignmentTransferForm);
+        const data = Object.fromEntries(formData.entries());
+        const fromOfficer = data.from_officer || 'all';
+        const toOfficer = data.to_officer;
+        const scope = data.scope || 'both';
+        const reason = String(data.reason || '').trim();
+
+        if (!toOfficer) {
+          if (window.notify) window.notify.error('Select the officer who will receive the clients.');
+          return;
+        }
+        if (fromOfficer !== 'all' && fromOfficer === toOfficer) {
+          if (window.notify) window.notify.error('Select a different receiving officer.');
+          return;
+        }
+
+        const memberTargets = scope === 'groups'
+          ? []
+          : assignmentMembers.filter(member => fromOfficer === 'all' || (member.assigned_officer || member.registered_by || '') === fromOfficer);
+        const groupTargets = scope === 'members'
+          ? []
+          : assignmentGroups.filter(group => fromOfficer === 'all' || (group.assigned_officer || group.created_by || '') === fromOfficer);
+        const totalTargets = memberTargets.length + groupTargets.length;
+        if (totalTargets === 0) {
+          if (window.notify) window.notify.error('No clients match this transfer selection.');
+          return;
+        }
+
+        const fromLabel = fromOfficer === 'all'
+          ? 'all officers'
+          : (users.find(user => user.id === fromOfficer)?.name || users.find(user => user.id === fromOfficer)?.email || 'selected officer');
+        const toLabel = users.find(user => user.id === toOfficer)?.name || users.find(user => user.id === toOfficer)?.email || 'new officer';
+        const confirmed = window.confirmDialog ? await window.confirmDialog({
+          title: 'Transfer Client Assignments',
+          message: `Transfer ${totalTargets} client assignment${totalTargets === 1 ? '' : 's'} from ${fromLabel} to ${toLabel}? Historical registration and loan records will not be changed.`,
+          confirmText: 'Transfer Clients',
+          cancelText: 'Cancel',
+          type: 'warning'
+        }) : confirm(`Transfer ${totalTargets} client assignments from ${fromLabel} to ${toLabel}?`);
+        if (!confirmed) return;
+
+        const restoreButton = setButtonLoading(assignmentTransferForm.querySelector('button[type="submit"]'), 'Transferring...');
+        try {
+          await Promise.all([
+            ...memberTargets.map(member => pb.collection('members').update(member.id, { assigned_officer: toOfficer })),
+            ...groupTargets.map(group => pb.collection('groups').update(group.id, { assigned_officer: toOfficer }))
+          ]);
+          await dataCache.invalidatePrefix('members:');
+          await dataCache.invalidatePrefix('groups:');
+          await dataCache.invalidatePrefix('savings:');
+          await dataCache.invalidatePrefix('loans:analytics:');
+          await logAudit(
+            'client_assignment_transfer',
+            `Transferred ${memberTargets.length} members and ${groupTargets.length} groups from ${fromLabel} to ${toLabel}${reason ? ` (${reason})` : ''}`
+          );
+          if (window.notify) window.notify.success(`Transferred ${totalTargets} client assignments.`);
+          await loadData();
+          renderUI();
+        } catch (err) {
+          if (window.notify) window.notify.error('Transfer failed: ' + (err.message || 'Please try again.'));
+          restoreButton();
+        }
+      };
+    }
 
     // Voteheads Logic
     const voteheadModal = container.querySelector('#votehead-modal');
