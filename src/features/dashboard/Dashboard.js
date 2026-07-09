@@ -200,7 +200,44 @@ export const renderDashboard = async () => {
 
   // calculate savings correctly
   const totalSavings = savings
-    .reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
+    .reduce((sum, s) => s.type === 'deposit' ? sum + (Number(s.amount) || 0) : sum - (Number(s.amount) || 0), 0);
+
+  const getMonthBounds = (offset = 0) => {
+    const start = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(today.getFullYear(), today.getMonth() + offset + 1, 0, 23, 59, 59, 999);
+    return { start, end };
+  };
+  const isWithinBounds = (value, bounds) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return false;
+    return date >= bounds.start && date <= bounds.end;
+  };
+  const calculateGrowthRate = (current, previous) => {
+    if (previous > 0) return ((current - previous) / previous) * 100;
+    if (current > 0) return 100;
+    return 0;
+  };
+  const getGrowthHealth = (rate) => rate >= 0
+    ? { color: 'var(--success)', label: `+${rate.toFixed(1)}%`, note: 'Growing' }
+    : { color: 'var(--danger)', label: `${rate.toFixed(1)}%`, note: 'Declining' };
+  const currentMonth = getMonthBounds(0);
+  const previousMonth = getMonthBounds(-1);
+  const getSavingsMovementForMonth = (bounds) => savings
+    .filter(s => isWithinBounds(s.date || s.created, bounds))
+    .reduce((sum, s) => s.type === 'deposit' ? sum + (Number(s.amount) || 0) : sum - (Number(s.amount) || 0), 0);
+  const getLoanDisbursedForMonth = (bounds) => loans
+    .filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date)
+    .filter(l => isWithinBounds(l.disbursement_date, bounds))
+    .reduce((sum, l) => sum + (Number(l.approved_amount || l.amount_applied) || 0), 0);
+  const currentMonthSavings = getSavingsMovementForMonth(currentMonth);
+  const previousMonthSavings = getSavingsMovementForMonth(previousMonth);
+  const savingsGrowthRate = calculateGrowthRate(currentMonthSavings, previousMonthSavings);
+  const savingsGrowthHealth = getGrowthHealth(savingsGrowthRate);
+  const currentMonthLoans = getLoanDisbursedForMonth(currentMonth);
+  const previousMonthLoans = getLoanDisbursedForMonth(previousMonth);
+  const loanGrowthRate = calculateGrowthRate(currentMonthLoans, previousMonthLoans);
+  const loanGrowthHealth = getGrowthHealth(loanGrowthRate);
 
   const totalArrears = getArrearsTotal(overdueSchedules, today);
   const activeLoanPortfolio = loans
@@ -331,6 +368,18 @@ export const renderDashboard = async () => {
       <div class="card">
         <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Total Savings (KES)</h3>
         <p style="font-size: 2.5rem; font-weight: 700; color: var(--success);">${totalSavings.toLocaleString()}</p>
+      </div>
+      <div class="card" style="border-left: 4px solid ${savingsGrowthHealth.color};">
+        <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Savings Growth</h3>
+        <p style="font-size: 2.5rem; font-weight: 700; color: ${savingsGrowthHealth.color};">${savingsGrowthHealth.label}</p>
+        <p class="text-xs" style="margin-top: 8px; color: ${savingsGrowthHealth.color}; font-weight: 700;">${savingsGrowthHealth.note}</p>
+        <p class="text-xs text-muted" style="margin-top: 4px;">This month KES ${currentMonthSavings.toLocaleString()} vs last month KES ${previousMonthSavings.toLocaleString()}</p>
+      </div>
+      <div class="card" style="border-left: 4px solid ${loanGrowthHealth.color};">
+        <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Loan Growth</h3>
+        <p style="font-size: 2.5rem; font-weight: 700; color: ${loanGrowthHealth.color};">${loanGrowthHealth.label}</p>
+        <p class="text-xs" style="margin-top: 8px; color: ${loanGrowthHealth.color}; font-weight: 700;">${loanGrowthHealth.note}</p>
+        <p class="text-xs text-muted" style="margin-top: 4px;">Disbursed this month KES ${currentMonthLoans.toLocaleString()} vs last month KES ${previousMonthLoans.toLocaleString()}</p>
       </div>
       <div class="card">
         <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Total Arrears (KES)</h3>

@@ -34,12 +34,13 @@ export const renderSavingsLedger = async (params = {}) => {
             <label class="form-label">Account Type</label>
             <select id="account-type" class="form-control" required>
               <option value="individual">Individual Member</option>
+              <option value="group_member">Member in Group</option>
               <option value="group">Group Account</option>
             </select>
           </div>
 
           <div class="form-group" id="member-select-wrap">
-            <label class="form-label">Select Member</label>
+            <label class="form-label" id="member-select-label">Select Member</label>
             <input type="search" class="form-control" id="member-search" placeholder="Search name, reg no, phone, or ID" autocomplete="off" />
             <input type="hidden" name="memberId" id="member-id" />
             <div id="member-search-results" class="member-picker-results" style="margin-top: 10px;"></div>
@@ -47,7 +48,7 @@ export const renderSavingsLedger = async (params = {}) => {
           </div>
 
           <div class="form-group" id="group-select-wrap" style="display: none;">
-            <label class="form-label">Select Group</label>
+            <label class="form-label" id="group-select-label">Select Group</label>
             <select name="groupId" class="form-control" id="group-id">
               <option value="">Loading groups...</option>
             </select>
@@ -135,6 +136,8 @@ export const renderSavingsLedger = async (params = {}) => {
   const accountType = container.querySelector('#account-type');
   const mWrap = container.querySelector('#member-select-wrap');
   const gWrap = container.querySelector('#group-select-wrap');
+  const memberSelectLabel = container.querySelector('#member-select-label');
+  const groupSelectLabel = container.querySelector('#group-select-label');
   const txType = container.querySelector('#tx-type');
   const payPanel = container.querySelector('#payment-panel');
   const paymentPanelLabel = container.querySelector('#payment-panel-label');
@@ -162,8 +165,16 @@ export const renderSavingsLedger = async (params = {}) => {
     "'": '&#039;'
   }[char]));
 
-  const populateAccountOptions = () => {
-    memberFuse = new Fuse(members, {
+  const getMembersForGroup = (groupId) => members.filter(member => member.group === groupId || member.expand?.group?.id === groupId);
+  const getSelectableMembers = () => {
+    if (accountType.value === 'group_member') {
+      return groupSelect.value ? getMembersForGroup(groupSelect.value) : [];
+    }
+    return members;
+  };
+
+  const refreshMemberFuse = () => {
+    memberFuse = new Fuse(getSelectableMembers(), {
       keys: [
         { name: 'full_name', weight: 0.45 },
         { name: 'reg_no', weight: 0.25 },
@@ -176,6 +187,10 @@ export const renderSavingsLedger = async (params = {}) => {
       includeScore: true,
       minMatchCharLength: 1
     });
+  };
+
+  const populateAccountOptions = () => {
+    refreshMemberFuse();
     renderMemberSearchResults();
     groupSelect.innerHTML = `<option value="">Select...</option>${groups.map(g => `<option value="${g.id}">${g.name} (${g.group_id})</option>`).join('')}`;
   };
@@ -186,15 +201,22 @@ export const renderSavingsLedger = async (params = {}) => {
     const query = memberSearch.value.trim();
     let matches = [];
 
-    if (members.length === 0) {
-      memberSearchResults.innerHTML = `<div class="member-picker-empty">No members are available.</div>`;
+    const selectableMembers = getSelectableMembers();
+
+    if (accountType.value === 'group_member' && !groupSelect.value) {
+      memberSearchResults.innerHTML = `<div class="member-picker-empty">Select a group first to see its members.</div>`;
+      return;
+    }
+
+    if (selectableMembers.length === 0) {
+      memberSearchResults.innerHTML = `<div class="member-picker-empty">${accountType.value === 'group_member' ? 'No members are assigned to this group.' : 'No members are available.'}</div>`;
       return;
     }
 
     if (query && memberFuse) {
       matches = memberFuse.search(query).slice(0, 8).map(result => result.item);
     } else {
-      matches = members.slice(0, 8);
+      matches = selectableMembers.slice(0, 8);
     }
 
     if (matches.length === 0) {
@@ -227,9 +249,8 @@ export const renderSavingsLedger = async (params = {}) => {
     renderMemberSearchResults();
   };
 
-  const getMembersForGroup = (groupId) => members.filter(member => member.group === groupId || member.expand?.group?.id === groupId);
   const renderSelectedGroupMembers = () => {
-    if (accountType.value !== 'group' || !groupSelect.value) {
+    if (!['group', 'group_member'].includes(accountType.value) || !groupSelect.value) {
       selectedGroupMembersCard.style.display = 'none';
       return;
     }
@@ -238,7 +259,7 @@ export const renderSavingsLedger = async (params = {}) => {
     const groupMembers = getMembersForGroup(groupSelect.value);
     selectedGroupMembersCard.style.display = 'block';
     selectedGroupMembersSubtitle.textContent = selectedGroup
-      ? `${selectedGroup.name || 'Selected group'} member preview`
+      ? `${selectedGroup.name || 'Selected group'} ${accountType.value === 'group_member' ? 'eligible members' : 'member preview'}`
       : 'Selected group member preview';
     selectedGroupMembersCount.textContent = groupMembers.length;
     seeMoreGroupMembersBtn.disabled = !selectedGroup;
@@ -263,8 +284,13 @@ export const renderSavingsLedger = async (params = {}) => {
     if (preselectedMemberId) {
       const selectedMember = members.find(m => m.id === preselectedMemberId || m.reg_no === preselectedMemberId || m.regNo === preselectedMemberId);
       if (selectedMember) {
-        accountType.value = 'individual';
+        accountType.value = selectedMember.group ? 'group_member' : 'individual';
         accountType.onchange();
+        if (selectedMember.group) {
+          groupSelect.value = selectedMember.group;
+          refreshMemberFuse();
+          renderSelectedGroupMembers();
+        }
         selectMember(selectedMember.id);
         container.querySelector('[name="amount"]')?.focus();
       }
@@ -298,18 +324,39 @@ export const renderSavingsLedger = async (params = {}) => {
 
   accountType.onchange = () => {
     if (accountType.value === 'individual') {
+      memberSelectLabel.textContent = 'Select Member';
       mWrap.style.display = 'block';
       gWrap.style.display = 'none';
+      groupSelect.value = '';
+      refreshMemberFuse();
+      clearMemberSelection();
       renderSelectedGroupMembers();
       setTimeout(() => memberSearch.focus(), 0);
+    } else if (accountType.value === 'group_member') {
+      memberSelectLabel.textContent = 'Select Group Member';
+      groupSelectLabel.textContent = 'Select Group';
+      mWrap.style.display = 'block';
+      gWrap.style.display = 'block';
+      refreshMemberFuse();
+      clearMemberSelection();
+      renderSelectedGroupMembers();
+      setTimeout(() => groupSelect.focus(), 0);
     } else {
+      groupSelectLabel.textContent = 'Select Group Account';
       mWrap.style.display = 'none';
       gWrap.style.display = 'block';
+      clearMemberSelection();
       renderSelectedGroupMembers();
     }
   };
 
-  groupSelect.onchange = renderSelectedGroupMembers;
+  groupSelect.onchange = () => {
+    if (accountType.value === 'group_member') {
+      refreshMemberFuse();
+      clearMemberSelection();
+    }
+    renderSelectedGroupMembers();
+  };
   seeMoreGroupMembersBtn.onclick = () => {
     if (groupSelect.value) navigate(`#/groups/${groupSelect.value}`);
   };
@@ -381,6 +428,18 @@ export const renderSavingsLedger = async (params = {}) => {
     if (accountType.value === 'individual') {
       if (!data.memberId) return window.notify?.error('Please select a member');
       transaction.member = data.memberId;
+      const selectedMember = members.find(member => member.id === data.memberId);
+      if (selectedMember?.group) transaction.group = selectedMember.group;
+    } else if (accountType.value === 'group_member') {
+      if (!data.groupId) return window.notify?.error('Please select a group');
+      if (!data.memberId) return window.notify?.error('Please select a member in this group');
+      const selectedMember = members.find(member => member.id === data.memberId);
+      const selectedMemberGroupId = selectedMember?.group || selectedMember?.expand?.group?.id || '';
+      if (selectedMemberGroupId !== data.groupId) {
+        return window.notify?.error('Selected member does not belong to the selected group.');
+      }
+      transaction.member = data.memberId;
+      transaction.group = data.groupId;
     } else {
       if (!data.groupId) return window.notify?.error('Please select a group');
       transaction.group = data.groupId;

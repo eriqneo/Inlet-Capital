@@ -62,6 +62,7 @@ export const renderLoanList = async () => {
             <tr>
               <th>Loan Details</th>
               <th>Client Name</th>
+              <th>Group</th>
               <th>Applicant ID</th>
               <th>Applied</th>
               <th>A.Liability</th>
@@ -222,7 +223,7 @@ export const renderLoanList = async () => {
     const thisRequest = ++requestId;
     const cancelLoading = showDelayedLoading(() => {
       if (thisRequest !== requestId) return;
-      tableBody.innerHTML = renderTableSkeletonRows(8, 6);
+      tableBody.innerHTML = renderTableSkeletonRows(9, 6);
       paginationWrapper.innerHTML = '';
     });
     try {
@@ -247,7 +248,7 @@ export const renderLoanList = async () => {
         const paginatedLoans = result.items;
 
         tableBody.innerHTML = paginatedLoans.length === 0 ? `
-          <tr><td colspan="8" class="text-center text-muted" style="padding: 40px;">No loans found.</td></tr>
+          <tr><td colspan="9" class="text-center text-muted" style="padding: 40px;">No loans found.</td></tr>
         ` : paginatedLoans.map(l => {
           const member = l.expand?.member;
           const loanGroup = l.expand?.group;
@@ -261,6 +262,13 @@ export const renderLoanList = async () => {
           const groupContext = member && memberGroup
             ? `<div class="text-xs text-muted" style="margin-top: 4px;">${memberGroup.name || memberGroup.group_id || 'Group member'}</div>`
             : '';
+          const groupLabel = isGroupAccountLoan
+            ? (loanGroup?.name || loanGroup?.group_id || 'Table Banking')
+            : (memberGroup?.name || 'Individual');
+          const groupCode = isGroupAccountLoan
+            ? (loanGroup?.group_id || '')
+            : (memberGroup?.group_id || '');
+          const groupBadgeClass = isGroupAccountLoan || memberGroup ? 'badge-primary' : 'badge-outline';
           const statusLabel = l.status === 'disbursed' ? 'RUNNING' :
             l.status === 'approved' ? 'AWAITING DISBURSEMENT' :
             l.status === 'partial_approved' ? 'PARTIAL AWAITING DISBURSEMENT' :
@@ -274,6 +282,10 @@ export const renderLoanList = async () => {
               <div class="text-xs text-muted">${formatDate(l.application_date)}</div>
             </td>
             <td class="font-semibold">${clientName}</td>
+            <td>
+              <span class="badge ${groupBadgeClass}" style="font-size: 0.65rem;">${groupLabel}</span>
+              ${groupCode ? `<div class="text-xs text-muted" style="margin-top: 4px;">${groupCode}</div>` : ''}
+            </td>
             <td class="text-sm">
               ${applicantBadge} ${clientReg}
               ${groupContext}
@@ -379,7 +391,7 @@ export const renderLoanList = async () => {
     } catch (e) {
       cancelLoading();
       console.error(e);
-      tableBody.innerHTML = `<tr><td colspan="8" class="text-center text-danger" style="padding: 40px;">Failed to load loans.</td></tr>`;
+      tableBody.innerHTML = `<tr><td colspan="9" class="text-center text-danger" style="padding: 40px;">Failed to load loans.</td></tr>`;
     }
   };
 

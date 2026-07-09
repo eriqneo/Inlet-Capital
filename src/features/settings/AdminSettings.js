@@ -18,6 +18,12 @@ export const renderAdminSettings = async () => {
   let userLastLoginMap = {};
   let assignmentMembers = [];
   let assignmentGroups = [];
+  let assignmentMode = 'bulk';
+  let assignmentSelectedMembers = new Set();
+  let assignmentSelectedGroups = new Set();
+  let assignmentSearch = '';
+  let assignmentToOfficer = '';
+  let assignmentReason = '';
   let voteheads = [];
   let auditLogs = [];
   let showArchivedVoteheads = false;
@@ -186,9 +192,36 @@ export const renderAdminSettings = async () => {
     const getAssignedOfficerId = (record, fallbackField) => record.assigned_officer || record[fallbackField] || '';
     const selectedFromOfficer = container.querySelector('#assignment-from-officer')?.value || 'all';
     const selectedAssignmentScope = container.querySelector('#assignment-scope')?.value || 'both';
-    const assignedMemberCount = assignmentMembers.filter(member => selectedFromOfficer === 'all' || getAssignedOfficerId(member, 'registered_by') === selectedFromOfficer).length;
-    const assignedGroupCount = assignmentGroups.filter(group => selectedFromOfficer === 'all' || getAssignedOfficerId(group, 'created_by') === selectedFromOfficer).length;
-    const assignmentPreviewCount = (selectedAssignmentScope === 'groups' ? 0 : assignedMemberCount) + (selectedAssignmentScope === 'members' ? 0 : assignedGroupCount);
+    assignmentToOfficer = container.querySelector('#assignment-to-officer')?.value ?? assignmentToOfficer;
+    assignmentReason = container.querySelector('[name="reason"]')?.value ?? assignmentReason;
+    const selectedAssignmentMode = container.querySelector('#assignment-mode')?.value || assignmentMode;
+    assignmentMode = selectedAssignmentMode;
+    const getOfficerLabel = (officerId) => {
+      const user = users.find(item => item.id === officerId);
+      return user?.name || user?.email || (officerId ? `User ${String(officerId).slice(0, 6)}` : 'Unassigned');
+    };
+    const searchNeedle = assignmentSearch.trim().toLowerCase();
+    const memberPool = assignmentMembers.filter(member => selectedFromOfficer === 'all' || getAssignedOfficerId(member, 'registered_by') === selectedFromOfficer);
+    const groupPool = assignmentGroups.filter(group => selectedFromOfficer === 'all' || getAssignedOfficerId(group, 'created_by') === selectedFromOfficer);
+    const searchableMemberPool = memberPool.filter(member => {
+      if (!searchNeedle) return true;
+      return [member.full_name, member.reg_no, member.phone_number, member.phone, member.id_number, member.expand?.group?.name]
+        .filter(Boolean).join(' ').toLowerCase().includes(searchNeedle);
+    });
+    const searchableGroupPool = groupPool.filter(group => {
+      if (!searchNeedle) return true;
+      return [group.name, group.group_id, group.phone, group.location]
+        .filter(Boolean).join(' ').toLowerCase().includes(searchNeedle);
+    });
+    const visibleAssignmentMembers = selectedAssignmentScope === 'groups' ? [] : searchableMemberPool.slice(0, 12);
+    const visibleAssignmentGroups = selectedAssignmentScope === 'members' ? [] : searchableGroupPool.slice(0, 12);
+    const assignedMemberCount = memberPool.length;
+    const assignedGroupCount = groupPool.length;
+    const selectedMemberCount = Array.from(assignmentSelectedMembers).filter(id => memberPool.some(member => member.id === id)).length;
+    const selectedGroupCount = Array.from(assignmentSelectedGroups).filter(id => groupPool.some(group => group.id === id)).length;
+    const assignmentPreviewCount = assignmentMode === 'selected'
+      ? (selectedAssignmentScope === 'groups' ? 0 : selectedMemberCount) + (selectedAssignmentScope === 'members' ? 0 : selectedGroupCount)
+      : (selectedAssignmentScope === 'groups' ? 0 : assignedMemberCount) + (selectedAssignmentScope === 'members' ? 0 : assignedGroupCount);
 
     container.innerHTML = `
       <div style="margin-bottom: 24px;">
@@ -364,7 +397,7 @@ export const renderAdminSettings = async () => {
                         <label class="form-label">To Officer</label>
                         <select id="assignment-to-officer" name="to_officer" class="form-control" required>
                           <option value="">Select new officer</option>
-                          ${officerUsers.map(user => `<option value="${user.id}">${user.name || user.email}</option>`).join('')}
+                          ${officerUsers.map(user => `<option value="${user.id}" ${assignmentToOfficer === user.id ? 'selected' : ''}>${user.name || user.email}</option>`).join('')}
                         </select>
                       </div>
                       <div class="form-group" style="margin: 0;">
@@ -376,15 +409,75 @@ export const renderAdminSettings = async () => {
                         </select>
                       </div>
                       <div class="form-group" style="margin: 0;">
+                        <label class="form-label">Transfer Mode</label>
+                        <select id="assignment-mode" name="mode" class="form-control" required>
+                          <option value="bulk" ${assignmentMode === 'bulk' ? 'selected' : ''}>All matching clients</option>
+                          <option value="selected" ${assignmentMode === 'selected' ? 'selected' : ''}>Selected clients only</option>
+                        </select>
+                      </div>
+                      <div class="form-group" style="margin: 0;">
                         <label class="form-label">Reason</label>
-                        <input type="text" name="reason" class="form-control" placeholder="e.g. Officer resigned" />
+                        <input type="text" name="reason" class="form-control" value="${assignmentReason}" placeholder="e.g. Officer resigned" />
                       </div>
                     </div>
+                    ${assignmentMode === 'selected' ? `
+                      <div style="margin-top: 16px; padding: 14px; background: white; border: 1px solid var(--border-color); border-radius: 8px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;">
+                          <div>
+                            <div class="font-semibold" style="color: var(--primary);">Select Specific Clients</div>
+                            <div class="text-xs text-muted">Search and tick only the members or groups to transfer.</div>
+                          </div>
+                          <input type="search" id="assignment-client-search" class="form-control" value="${assignmentSearch}" placeholder="Search name, phone, reg no, group..." style="max-width: 280px;" />
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px;">
+                          ${selectedAssignmentScope !== 'groups' ? `
+                            <div>
+                              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <div class="text-xs font-semibold text-muted">Members (${searchableMemberPool.length})</div>
+                                <button type="button" class="btn btn-outline btn-xs assignment-select-visible" data-type="members">Select visible</button>
+                              </div>
+                              <div style="max-height: 280px; overflow: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                                ${visibleAssignmentMembers.length === 0 ? `<div class="text-xs text-muted" style="padding: 12px;">No matching members.</div>` : visibleAssignmentMembers.map(member => `
+                                  <label style="display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-bottom: 1px solid var(--border-color); cursor: pointer;">
+                                    <input type="checkbox" class="assignment-client-checkbox" data-type="member" value="${member.id}" ${assignmentSelectedMembers.has(member.id) ? 'checked' : ''} />
+                                    <span>
+                                      <span class="font-semibold" style="display:block;">${member.full_name || 'Unnamed Member'}</span>
+                                      <span class="text-xs text-muted">${member.reg_no || '-'} · ${member.phone_number || member.phone || '-'} · ${getOfficerLabel(getAssignedOfficerId(member, 'registered_by'))}</span>
+                                    </span>
+                                  </label>
+                                `).join('')}
+                              </div>
+                              ${searchableMemberPool.length > visibleAssignmentMembers.length ? `<div class="text-xs text-muted" style="margin-top: 6px;">Showing first ${visibleAssignmentMembers.length}. Use search to narrow more.</div>` : ''}
+                            </div>
+                          ` : ''}
+                          ${selectedAssignmentScope !== 'members' ? `
+                            <div>
+                              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <div class="text-xs font-semibold text-muted">Groups (${searchableGroupPool.length})</div>
+                                <button type="button" class="btn btn-outline btn-xs assignment-select-visible" data-type="groups">Select visible</button>
+                              </div>
+                              <div style="max-height: 280px; overflow: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                                ${visibleAssignmentGroups.length === 0 ? `<div class="text-xs text-muted" style="padding: 12px;">No matching groups.</div>` : visibleAssignmentGroups.map(group => `
+                                  <label style="display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-bottom: 1px solid var(--border-color); cursor: pointer;">
+                                    <input type="checkbox" class="assignment-client-checkbox" data-type="group" value="${group.id}" ${assignmentSelectedGroups.has(group.id) ? 'checked' : ''} />
+                                    <span>
+                                      <span class="font-semibold" style="display:block;">${group.name || 'Unnamed Group'}</span>
+                                      <span class="text-xs text-muted">${group.group_id || '-'} · ${group.location || '-'} · ${getOfficerLabel(getAssignedOfficerId(group, 'created_by'))}</span>
+                                    </span>
+                                  </label>
+                                `).join('')}
+                              </div>
+                              ${searchableGroupPool.length > visibleAssignmentGroups.length ? `<div class="text-xs text-muted" style="margin-top: 6px;">Showing first ${visibleAssignmentGroups.length}. Use search to narrow more.</div>` : ''}
+                            </div>
+                          ` : ''}
+                        </div>
+                      </div>
+                    ` : ''}
                     <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-color);">
                       <div class="text-xs text-muted">
                         Preview: <strong>${assignmentPreviewCount}</strong> records selected
-                        <span style="margin-left: 8px;">Members: ${assignedMemberCount}</span>
-                        <span style="margin-left: 8px;">Groups: ${assignedGroupCount}</span>
+                        <span style="margin-left: 8px;">Members: ${assignmentMode === 'selected' ? selectedMemberCount : assignedMemberCount}</span>
+                        <span style="margin-left: 8px;">Groups: ${assignmentMode === 'selected' ? selectedGroupCount : assignedGroupCount}</span>
                       </div>
                       <button type="submit" class="btn btn-primary" ${assignmentPreviewCount === 0 ? 'disabled' : ''}>Transfer Clients</button>
                     </div>
@@ -928,9 +1021,56 @@ export const renderAdminSettings = async () => {
     });
 
     const assignmentFrom = container.querySelector('#assignment-from-officer');
+    const assignmentTo = container.querySelector('#assignment-to-officer');
     const assignmentScope = container.querySelector('#assignment-scope');
-    if (assignmentFrom) assignmentFrom.onchange = renderUI;
+    const assignmentModeSelect = container.querySelector('#assignment-mode');
+    const assignmentSearchInput = container.querySelector('#assignment-client-search');
+    const assignmentReasonInput = container.querySelector('[name="reason"]');
+    if (assignmentFrom) assignmentFrom.onchange = () => {
+      assignmentSelectedMembers.clear();
+      assignmentSelectedGroups.clear();
+      renderUI();
+    };
     if (assignmentScope) assignmentScope.onchange = renderUI;
+    if (assignmentModeSelect) assignmentModeSelect.onchange = () => {
+      assignmentMode = assignmentModeSelect.value;
+      renderUI();
+    };
+    if (assignmentTo) assignmentTo.onchange = () => {
+      assignmentToOfficer = assignmentTo.value;
+    };
+    if (assignmentReasonInput) assignmentReasonInput.oninput = () => {
+      assignmentReason = assignmentReasonInput.value;
+    };
+    if (assignmentSearchInput) assignmentSearchInput.oninput = () => {
+      const cursorPosition = assignmentSearchInput.selectionStart ?? assignmentSearchInput.value.length;
+      assignmentSearch = assignmentSearchInput.value;
+      renderUI();
+      const refreshedSearchInput = container.querySelector('#assignment-client-search');
+      if (refreshedSearchInput) {
+        refreshedSearchInput.focus();
+        const safeCursorPosition = Math.min(cursorPosition, refreshedSearchInput.value.length);
+        refreshedSearchInput.setSelectionRange(safeCursorPosition, safeCursorPosition);
+      }
+    };
+    container.querySelectorAll('.assignment-client-checkbox').forEach(input => {
+      input.onchange = () => {
+        const targetSet = input.dataset.type === 'group' ? assignmentSelectedGroups : assignmentSelectedMembers;
+        if (input.checked) targetSet.add(input.value);
+        else targetSet.delete(input.value);
+        renderUI();
+      };
+    });
+    container.querySelectorAll('.assignment-select-visible').forEach(btn => {
+      btn.onclick = () => {
+        if (btn.dataset.type === 'members') {
+          container.querySelectorAll('.assignment-client-checkbox[data-type="member"]').forEach(input => assignmentSelectedMembers.add(input.value));
+        } else {
+          container.querySelectorAll('.assignment-client-checkbox[data-type="group"]').forEach(input => assignmentSelectedGroups.add(input.value));
+        }
+        renderUI();
+      };
+    });
 
     const assignmentTransferForm = container.querySelector('#assignment-transfer-form');
     if (assignmentTransferForm) {
@@ -941,6 +1081,7 @@ export const renderAdminSettings = async () => {
         const fromOfficer = data.from_officer || 'all';
         const toOfficer = data.to_officer;
         const scope = data.scope || 'both';
+        const mode = data.mode || assignmentMode || 'bulk';
         const reason = String(data.reason || '').trim();
 
         if (!toOfficer) {
@@ -952,12 +1093,18 @@ export const renderAdminSettings = async () => {
           return;
         }
 
+        const memberPool = assignmentMembers.filter(member => fromOfficer === 'all' || (member.assigned_officer || member.registered_by || '') === fromOfficer);
+        const groupPool = assignmentGroups.filter(group => fromOfficer === 'all' || (group.assigned_officer || group.created_by || '') === fromOfficer);
         const memberTargets = scope === 'groups'
           ? []
-          : assignmentMembers.filter(member => fromOfficer === 'all' || (member.assigned_officer || member.registered_by || '') === fromOfficer);
+          : mode === 'selected'
+            ? memberPool.filter(member => assignmentSelectedMembers.has(member.id))
+            : memberPool;
         const groupTargets = scope === 'members'
           ? []
-          : assignmentGroups.filter(group => fromOfficer === 'all' || (group.assigned_officer || group.created_by || '') === fromOfficer);
+          : mode === 'selected'
+            ? groupPool.filter(group => assignmentSelectedGroups.has(group.id))
+            : groupPool;
         const totalTargets = memberTargets.length + groupTargets.length;
         if (totalTargets === 0) {
           if (window.notify) window.notify.error('No clients match this transfer selection.');
@@ -989,8 +1136,13 @@ export const renderAdminSettings = async () => {
           await dataCache.invalidatePrefix('loans:analytics:');
           await logAudit(
             'client_assignment_transfer',
-            `Transferred ${memberTargets.length} members and ${groupTargets.length} groups from ${fromLabel} to ${toLabel}${reason ? ` (${reason})` : ''}`
+            `Transferred ${memberTargets.length} members and ${groupTargets.length} groups from ${fromLabel} to ${toLabel} using ${mode} mode${reason ? ` (${reason})` : ''}`
           );
+          assignmentSelectedMembers.clear();
+          assignmentSelectedGroups.clear();
+          assignmentSearch = '';
+          assignmentToOfficer = '';
+          assignmentReason = '';
           if (window.notify) window.notify.success(`Transferred ${totalTargets} client assignments.`);
           await loadData();
           renderUI();

@@ -45,7 +45,7 @@ export const renderAnalyticsDashboard = async () => {
 
   let dateRange = { from: '', to: '' };
   let currentOfficerFilter = 'all';
-  let currentCollectionWindow = 'overdue';
+  let currentCollectionWindow = 'this_month';
   let chartInstances = [];
 
   const destroyCharts = () => {
@@ -157,6 +157,9 @@ export const renderAnalyticsDashboard = async () => {
       .sort((a, b) => a.name.localeCompare(b.name));
     const membersById = new Map(members.map(member => [member.id, member]));
     const groupsById = new Map(groups.map(group => [group.id, group]));
+    const getRelationId = (value) => typeof value === 'string' ? value : (value?.id || '');
+    const getSavingMemberId = (saving) => getRelationId(saving?.member) || saving?.expand?.member?.id || '';
+    const getSavingGroupId = (saving) => getRelationId(saving?.group) || saving?.expand?.group?.id || '';
     const getMemberAssignedOfficer = (member) => member?.assigned_officer || member?.registered_by || '';
     const getGroupAssignedOfficer = (group) => group?.assigned_officer || group?.created_by || '';
     const getLoanResponsibleOfficer = (loan) => {
@@ -174,15 +177,17 @@ export const renderAnalyticsDashboard = async () => {
     const filterGroupByOfficer = (group) => currentOfficerFilter === 'all' || getGroupAssignedOfficer(group) === currentOfficerFilter;
     const filterSavingsByOfficer = (saving) => {
       if (currentOfficerFilter === 'all') return true;
-      if (saving.member) return getMemberAssignedOfficer(membersById.get(saving.member)) === currentOfficerFilter;
-      if (saving.group) return getGroupAssignedOfficer(groupsById.get(saving.group)) === currentOfficerFilter;
+      const memberId = getSavingMemberId(saving);
+      const groupId = getSavingGroupId(saving);
+      if (memberId) return getMemberAssignedOfficer(membersById.get(memberId)) === currentOfficerFilter;
+      if (groupId) return getGroupAssignedOfficer(groupsById.get(groupId)) === currentOfficerFilter;
       return false;
     };
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
     const getCollectionWindow = () => {
-      const allowedWindows = ['overdue', 'all_upcoming', 'last_month', 'this_month', 'next_month'];
+      const allowedWindows = ['overdue', 'all_upcoming', 'next_7_days', 'last_month', 'this_month', 'next_month'];
       if (!allowedWindows.includes(currentCollectionWindow)) {
-        currentCollectionWindow = 'overdue';
+        currentCollectionWindow = 'this_month';
       }
       const monthWindow = (offset, label) => {
         const start = new Date(todayStart.getFullYear(), todayStart.getMonth() + offset, 1);
@@ -196,6 +201,12 @@ export const renderAnalyticsDashboard = async () => {
       }
       if (currentCollectionWindow === 'all_upcoming') {
         return { label: 'All Upcoming', start: todayStart, end: null, includeOverdue: false };
+      }
+      if (currentCollectionWindow === 'next_7_days') {
+        const end = new Date(todayStart);
+        end.setDate(end.getDate() + 7);
+        end.setHours(23, 59, 59, 999);
+        return { label: 'Next 7 Days', start: todayStart, end, includeOverdue: false };
       }
       if (currentCollectionWindow === 'last_month') return monthWindow(-1, 'Last Month');
       if (currentCollectionWindow === 'this_month') return monthWindow(0, 'This Month');
@@ -215,6 +226,13 @@ export const renderAnalyticsDashboard = async () => {
       if (Number.isNaN(dueDate.getTime())) return false;
       if (collectionWindow.start && dueDate < collectionWindow.start) return false;
       if (collectionWindow.end && dueDate > collectionWindow.end) return false;
+      return true;
+    };
+    const recordMatchesCollectionWindow = (value) => {
+      const recordDate = toValidDate(value);
+      if (!recordDate) return false;
+      if (collectionWindow.start && recordDate < collectionWindow.start) return false;
+      if (collectionWindow.end && recordDate > collectionWindow.end) return false;
       return true;
     };
 
@@ -309,6 +327,20 @@ export const renderAnalyticsDashboard = async () => {
       const loan = loansById.get(schedule.loan);
       return loan?.member || loan?.group || schedule.loan;
     })).size;
+    const forecastLoanIds = new Set(forecastSchedules.map(schedule => schedule.loan).filter(Boolean));
+    const collectionRepaymentsInWindow = repayments.filter(repayment => {
+      const loan = loansById.get(repayment.loan);
+      if (!loan || !forecastLoanIds.has(repayment.loan)) return false;
+      if (!filterByOfficer(loan)) return false;
+      return recordMatchesCollectionWindow(repayment.date || repayment.created);
+    });
+    const collectedInWindowByOfficer = collectionRepaymentsInWindow.reduce((map, repayment) => {
+      const loan = loansById.get(repayment.loan);
+      const officerKey = getLoanResponsibleOfficer(loan) || 'unassigned';
+      map.set(officerKey, (map.get(officerKey) || 0) + (Number(repayment.amount) || 0));
+      return map;
+    }, new Map());
+    const collectedInWindowTotal = collectionRepaymentsInWindow.reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
     const collectionOfficerMap = {};
     forecastSchedules.forEach(schedule => {
       const loan = loansById.get(schedule.loan);
@@ -321,6 +353,7 @@ export const renderAnalyticsDashboard = async () => {
           clients: new Set(),
           gross: 0,
           paid: 0,
+          collectedInWindow: 0,
           expected: 0
         };
       }
@@ -329,6 +362,21 @@ export const renderAnalyticsDashboard = async () => {
       collectionOfficerMap[officerKey].gross += Number(schedule.amount) || 0;
       collectionOfficerMap[officerKey].paid += getEffectiveSchedulePaid(schedule);
       collectionOfficerMap[officerKey].expected += getEffectiveScheduleRemaining(schedule);
+    });
+    collectedInWindowByOfficer.forEach((collected, officerKey) => {
+      if (!collectionOfficerMap[officerKey]) {
+        collectionOfficerMap[officerKey] = {
+          id: officerKey,
+          name: officerKey === 'unassigned' ? 'Unassigned' : getUserName(officerKey),
+          installments: 0,
+          clients: new Set(),
+          gross: 0,
+          paid: 0,
+          collectedInWindow: 0,
+          expected: 0
+        };
+      }
+      collectionOfficerMap[officerKey].collectedInWindow = collected;
     });
     const collectionOfficerRows = Object.values(collectionOfficerMap)
       .map(row => ({ ...row, clients: row.clients.size }))
@@ -341,16 +389,17 @@ export const renderAnalyticsDashboard = async () => {
     };
     const collectionEfficiencyRows = collectionOfficerRows
       .map(row => {
-        const efficiency = row.gross > 0 ? Math.min(100, (row.paid / row.gross) * 100) : 0;
+        const efficiency = row.gross > 0 ? Math.min(100, (row.collectedInWindow / row.gross) * 100) : 0;
         return {
           ...row,
+          targetGap: Math.max(0, row.gross - row.collectedInWindow),
           efficiency,
           rating: getEfficiencyRating(efficiency, row.gross)
         };
       })
       .sort((a, b) => b.efficiency - a.efficiency);
     const overallCollectionEfficiencyNumber = scheduledGrossCollection > 0
-      ? Math.min(100, (scheduledPaidCollection / scheduledGrossCollection) * 100)
+      ? Math.min(100, (collectedInWindowTotal / scheduledGrossCollection) * 100)
       : 0;
     const overallCollectionEfficiency = overallCollectionEfficiencyNumber.toFixed(1);
     const overallCollectionEfficiencyRating = getEfficiencyRating(overallCollectionEfficiencyNumber, scheduledGrossCollection);
@@ -358,7 +407,7 @@ export const renderAnalyticsDashboard = async () => {
     // Correct savings calculation
     const totalSavings = scopedSavings
       .filter(s => !s.is_reversed)
-      .reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
+      .reduce((sum, s) => s.type === 'deposit' ? sum + (Number(s.amount) || 0) : sum - (Number(s.amount) || 0), 0);
     
     const activeLoanIds = new Set(activeLoans.map(loan => loan.id));
     const activeLoanRepayments = fRepayments.filter(repayment => activeLoanIds.has(repayment.loan));
@@ -452,6 +501,7 @@ export const renderAnalyticsDashboard = async () => {
           <select id="collection-window-filter" class="form-control" style="width: auto; min-width: 170px;">
             <option value="overdue" ${currentCollectionWindow === 'overdue' ? 'selected' : ''}>Collections: Overdue</option>
             <option value="all_upcoming" ${currentCollectionWindow === 'all_upcoming' ? 'selected' : ''}>Collections: All Upcoming</option>
+            <option value="next_7_days" ${currentCollectionWindow === 'next_7_days' ? 'selected' : ''}>Collections: Next 7 Days</option>
             <option value="last_month" ${currentCollectionWindow === 'last_month' ? 'selected' : ''}>Collections: Last Month</option>
             <option value="this_month" ${currentCollectionWindow === 'this_month' ? 'selected' : ''}>Collections: This Month</option>
             <option value="next_month" ${currentCollectionWindow === 'next_month' ? 'selected' : ''}>Collections: Next Month</option>
@@ -487,7 +537,7 @@ export const renderAnalyticsDashboard = async () => {
           <div class="kpi-icon" style="background: rgba(13, 148, 136, 0.1); color: #0d9488;">🧾</div>
           <div class="kpi-label">Officer Collection Efficiency</div>
           <div class="kpi-value">${overallCollectionEfficiency}%</div>
-          <div class="kpi-trend" style="color: ${overallCollectionEfficiencyRating.color};">${overallCollectionEfficiencyRating.label}</div>
+          <div class="kpi-trend" style="color: ${overallCollectionEfficiencyRating.color};">${overallCollectionEfficiencyRating.label} · Collected KES ${collectedInWindowTotal.toLocaleString()} of KES ${scheduledGrossCollection.toLocaleString()}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">📅</div>
@@ -573,7 +623,7 @@ export const renderAnalyticsDashboard = async () => {
         <div class="chart-header">
           <div>
             <div class="chart-title">Officer Collection Efficiency</div>
-            <div class="text-xs text-muted" style="margin-top: 4px;">Efficiency is collected amount divided by scheduled amount due in the selected collection window.</div>
+            <div class="text-xs text-muted" style="margin-top: 4px;">Efficiency is actual repayment cash collected during the selected window divided by scheduled amount due in that window.</div>
           </div>
         </div>
         <div class="table-responsive">
@@ -584,8 +634,8 @@ export const renderAnalyticsDashboard = async () => {
                 <th>Clients</th>
                 <th>Installments</th>
                 <th class="text-right">Due</th>
-                <th class="text-right">Collected</th>
-                <th class="text-right">Balance</th>
+                <th class="text-right">Collected in Window</th>
+                <th class="text-right">Target Gap</th>
                 <th class="text-right">Efficiency</th>
                 <th>Rating</th>
               </tr>
@@ -600,8 +650,8 @@ export const renderAnalyticsDashboard = async () => {
                   <td>${o.clients.toLocaleString()}</td>
                   <td>${o.installments.toLocaleString()}</td>
                   <td class="text-right">${o.gross.toLocaleString()}</td>
-                  <td class="text-right text-success">${o.paid.toLocaleString()}</td>
-                  <td class="text-right font-semibold text-danger">${o.expected.toLocaleString()}</td>
+                  <td class="text-right text-success">${o.collectedInWindow.toLocaleString()}</td>
+                  <td class="text-right font-semibold text-danger">${o.targetGap.toLocaleString()}</td>
                   <td class="text-right font-semibold" style="color: ${o.rating.color};">${o.efficiency.toFixed(1)}%</td>
                   <td><span class="badge" style="background: ${o.rating.color}; color: white; font-size: 0.65rem;">${o.rating.label}</span></td>
                 </tr>
@@ -647,6 +697,17 @@ export const renderAnalyticsDashboard = async () => {
           </div>
           <div class="chart-canvas-wrapper">
             <canvas id="savingsVsDisbursedChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="charts-grid" style="margin-top: 24px;">
+        <div class="chart-card" style="grid-column: 1 / -1;">
+          <div class="chart-header">
+            <div class="chart-title">Loan Growth vs Savings Growth (%)</div>
+          </div>
+          <div class="chart-canvas-wrapper">
+            <canvas id="loanSavingsGrowthChart"></canvas>
           </div>
         </div>
       </div>
@@ -942,6 +1003,76 @@ export const renderAnalyticsDashboard = async () => {
           plugins: { legend: { position: 'bottom' } },
           scales: {
             y: { beginAtZero: true },
+            x: { grid: { display: false } }
+          }
+        }
+      }));
+    }
+
+    // 5. Loan Growth vs Savings Growth
+    const savingsNetData = monthKeys.map(mk => {
+      return fSavings
+        .filter(s => (s.date || s.created || '').startsWith(mk))
+        .reduce((sum, s) => {
+          const amount = Number(s.amount) || 0;
+          return s.type === 'withdrawal' ? sum - amount : sum + amount;
+        }, 0);
+    });
+    const calculateGrowthSeries = (values) => values.map((value, index) => {
+      if (index === 0) return 0;
+      const previous = Number(values[index - 1]) || 0;
+      const current = Number(value) || 0;
+      if (previous > 0) return ((current - previous) / previous) * 100;
+      if (current > 0) return 100;
+      return 0;
+    });
+    const savingsGrowthData = calculateGrowthSeries(savingsNetData);
+    const loanGrowthData = calculateGrowthSeries(disbData);
+
+    const canvas5 = document.getElementById('loanSavingsGrowthChart');
+    if (canvas5) {
+      chartInstances.push(new Chart(canvas5, {
+        type: 'line',
+        data: {
+          labels: months,
+          datasets: [
+            {
+              label: 'Savings Growth %',
+              data: savingsGrowthData,
+              borderColor: '#10B981',
+              backgroundColor: 'rgba(16, 185, 129, 0.08)',
+              fill: false,
+              tension: 0.35,
+              pointRadius: 3
+            },
+            {
+              label: 'Loan Growth %',
+              data: loanGrowthData,
+              borderColor: '#E8692A',
+              backgroundColor: 'rgba(232, 105, 42, 0.08)',
+              fill: false,
+              tension: 0.35,
+              pointRadius: 3
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom' },
+            tooltip: {
+              callbacks: {
+                label: (context) => `${context.dataset.label}: ${(Number(context.raw) || 0).toFixed(1)}%`
+              }
+            }
+          },
+          scales: {
+            y: {
+              ticks: {
+                callback: (value) => `${value}%`
+              }
+            },
             x: { grid: { display: false } }
           }
         }

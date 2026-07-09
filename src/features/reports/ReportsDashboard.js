@@ -10,6 +10,7 @@ import { dataCache } from '../../services/dataCache.js';
 import { renderCardSkeleton, renderInlineSyncStatus, renderTableSkeletonRows, setButtonLoading } from '../../core/uiState.js';
 import { settingsService } from '../../services/settingsService.js';
 import { getArrearsTotal, getDaysInArrears, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
+import { calculateLoanPenaltyState, getRepaymentPrincipalAmount } from '../../core/loanPenalty.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
 
@@ -25,6 +26,7 @@ export const renderReportsDashboard = async () => {
   }
   const orgName = orgSettings.org_name || 'Inlet Capital';
   const orgLogo = orgSettings.org_logo || '';
+  const automaticPenaltyAmount = Number(orgSettings.penalty_amount) || 500;
   const generatedAt = new Date();
   const pageSize = 10;
   let pages = {
@@ -193,7 +195,7 @@ export const renderReportsDashboard = async () => {
         <h2 style="margin-bottom: 16px;">Individual Reports</h2>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 16px;">
           <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--success);">
-            <div class="text-xs text-muted">Savings</div>
+            <div class="text-xs text-muted">Savings Net</div>
             <div class="text-xl font-semibold text-success" id="individuals-total-savings">KES 0</div>
           </div>
           <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--danger);">
@@ -216,7 +218,7 @@ export const renderReportsDashboard = async () => {
                 <th>Name / ID</th>
                 <th>Group</th>
                 <th>Phone</th>
-                <th>A.Savings <span title="Accumulated Savings — total deposits by this member" style="cursor:help; opacity:0.6;">ⓘ</span></th>
+                <th>A.Savings <span title="Accumulated Savings Net — deposits minus withdrawals by this member" style="cursor:help; opacity:0.6;">ⓘ</span></th>
                 <th>OL Balance</th>
                 <th>Total Repaid</th>
                 <th style="color: var(--danger);">Arrears</th>
@@ -609,6 +611,58 @@ export const renderReportsDashboard = async () => {
   const getMemberPhone = (member) => member?.phone_number || member?.phone || member?.mobile || '-';
   const getGroupPhone = (group) => group?.phone || group?.phone_number || group?.mobile || '-';
   const getMemberDob = (member) => member?.dob || member?.date_of_birth || member?.dateOfBirth || member?.birth_date || '';
+  const getRelationId = (value) => typeof value === 'string' ? value : (value?.id || '');
+  const getSavingMemberId = (saving) => getRelationId(saving?.member) || saving?.expand?.member?.id || '';
+  const getSavingGroupId = (saving) => getRelationId(saving?.group) || saving?.expand?.group?.id || '';
+  const getLoanMemberId = (loan) => getRelationId(loan?.member) || loan?.expand?.member?.id || '';
+  const getLoanGroupId = (loan) => getRelationId(loan?.group) || loan?.expand?.group?.id || '';
+  const getRepaymentLoanId = (repayment) => getRelationId(repayment?.loan) || repayment?.expand?.loan?.id || '';
+  const getScheduleLoanId = (schedule) => getRelationId(schedule?.loan) || schedule?.expand?.loan?.id || '';
+  const isActiveSavingsTransaction = (saving) => !saving?.is_reversed;
+  const getSavingsTransactionDate = (saving) => saving?.date || saving?.created;
+  const getSavingsSignedAmount = (saving) => {
+    const amount = Number(saving?.amount) || 0;
+    return saving?.type === 'withdrawal' ? -amount : amount;
+  };
+  const getLoanPrincipalAmount = (loan) => {
+    const approved = Number(loan?.approved_amount) || 0;
+    if (approved > 0) return approved;
+    const applied = Number(loan?.amount_applied) || 0;
+    if (applied > 0) return applied;
+    const liability = Number(loan?.total_liability) || 0;
+    const interest = Number(loan?.interest_amount) || 0;
+    if (liability > 0) return Math.max(0, liability - interest);
+    return 0;
+  };
+  const getLoanInterestAmount = (loan) => {
+    const storedInterest = Number(loan?.interest_amount) || 0;
+    if (storedInterest > 0) return storedInterest;
+    const liability = Number(loan?.total_liability) || 0;
+    if (liability <= 0) return 0;
+    return Math.max(0, liability - getLoanPrincipalAmount(loan));
+  };
+  const getLoanLiabilityAmount = (loan) => {
+    const storedLiability = Number(loan?.total_liability) || 0;
+    if (storedLiability > 0) return storedLiability;
+    return getLoanPrincipalAmount(loan) + getLoanInterestAmount(loan);
+  };
+  const isLoanPortfolioRecord = (loan) => Boolean(loan?.disbursement_date)
+    && ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan?.status);
+  const getSchedulesForLoan = (loan) => schedules.filter(schedule => getScheduleLoanId(schedule) === loan?.id);
+  const getRepaymentsForLoan = (loan) => repayments.filter(repayment => getRepaymentLoanId(repayment) === loan?.id);
+  const getLoanPenaltyState = (loan) => calculateLoanPenaltyState({
+    schedules: getSchedulesForLoan(loan),
+    repayments: getRepaymentsForLoan(loan),
+    penaltyAmount: automaticPenaltyAmount
+  });
+  const getLoanPrincipalPaidAmount = (loan) => getRepaymentsForLoan(loan)
+    .reduce((sum, repayment) => sum + getRepaymentPrincipalAmount(repayment), 0);
+  const getLoanCashPaidAmount = (loan) => getRepaymentsForLoan(loan)
+    .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
+  const getLoanOutstandingBalanceWithFines = (loan) => {
+    const penaltyState = getLoanPenaltyState(loan);
+    return Math.max(0, getLoanLiabilityAmount(loan) - getLoanPrincipalPaidAmount(loan) + penaltyState.outstandingFine);
+  };
   const toValidDate = (value) => {
     if (!value) return null;
     const date = new Date(value);
@@ -701,45 +755,129 @@ export const renderReportsDashboard = async () => {
   const updatePLSummary = () => {
     const getRegistrationFeeDate = (member) => member.registration_fee_details?.date || member.registration_fee_details?.captured_at || member.registration_date || member.created;
     const getProcessingFeeDate = (loan) => loan.processing_fee_details?.date || loan.processing_fee_details?.captured_at || loan.created;
+    const repaymentsByLoanId = repayments.reduce((map, repayment) => {
+      const loanId = repayment.loan ? String(repayment.loan) : '';
+      if (!loanId) return map;
+      if (!map.has(loanId)) map.set(loanId, []);
+      map.get(loanId).push(repayment);
+      return map;
+    }, new Map());
+    const schedulesByLoanId = schedules.reduce((map, schedule) => {
+      const loanId = schedule.loan ? String(schedule.loan) : '';
+      if (!loanId) return map;
+      if (!map.has(loanId)) map.set(loanId, []);
+      map.get(loanId).push(schedule);
+      return map;
+    }, new Map());
     const getLoanPrincipal = (loan) => {
       const approved = Number(loan.approved_amount) || 0;
       if (approved > 0) return approved;
+      const applied = Number(loan.amount_applied) || 0;
+      if (applied > 0) return applied;
       const liability = Number(loan.total_liability) || 0;
       const interest = Number(loan.interest_amount) || 0;
       if (liability > 0) return Math.max(0, liability - interest);
-      return Number(loan.amount_applied) || 0;
+      return 0;
     };
-    const getInterestCollectedThrough = (loan, cutoffDate = null) => {
-      const expectedInterest = Number(loan.interest_amount) || 0;
-      if (expectedInterest <= 0) return 0;
-      const liability = Number(loan.total_liability) || (getLoanPrincipal(loan) + expectedInterest);
+    const getLoanInterest = (loan) => {
+      const storedInterest = Number(loan.interest_amount) || 0;
+      if (storedInterest > 0) return storedInterest;
+      const liability = Number(loan.total_liability) || 0;
       if (liability <= 0) return 0;
-      const interestShare = expectedInterest / liability;
-      const paid = repayments
-        .filter(repayment => repayment.loan === loan.id)
-        .filter(repayment => {
-          if (!cutoffDate) return true;
-          const repaymentDate = toValidDate(repayment.date || repayment.created);
-          return repaymentDate && repaymentDate <= cutoffDate;
-        })
-        .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
-      return Math.min(expectedInterest, Math.max(0, paid * interestShare));
+      return Math.max(0, liability - getLoanPrincipal(loan));
     };
-    const getCollectedInterestInRange = (loan) => {
+    const getLoanLiabilityForInterest = (loan) => {
+      const storedLiability = Number(loan.total_liability) || 0;
+      if (storedLiability > 0) return storedLiability;
+      return getLoanPrincipal(loan) + getLoanInterest(loan);
+    };
+    const getInterestCollectedInRange = (loan) => {
+      const expectedInterest = getLoanInterest(loan);
+      if (expectedInterest <= 0) return 0;
+      const liability = getLoanLiabilityForInterest(loan);
+      if (liability <= 0) return 0;
       const { fromDate, toDate } = getDateRangeBounds();
-      const beforeStart = fromDate ? new Date(fromDate.getTime() - 1) : null;
-      return Math.max(0, getInterestCollectedThrough(loan, toDate) - getInterestCollectedThrough(loan, beforeStart));
+      const loanRepayments = (repaymentsByLoanId.get(String(loan.id)) || [])
+        .map(repayment => ({
+          ...repayment,
+          _paidDate: toValidDate(repayment.date || repayment.created),
+          _amount: Math.max(0, Number(repayment.amount) || 0)
+        }))
+        .filter(repayment => repayment._paidDate && repayment._amount > 0)
+        .filter(repayment => !toDate || repayment._paidDate <= toDate)
+        .sort((a, b) => a._paidDate - b._paidDate);
+
+      const loanSchedules = (schedulesByLoanId.get(String(loan.id)) || [])
+        .slice()
+        .sort((a, b) => {
+          const installmentDiff = (Number(a.installment_no) || 0) - (Number(b.installment_no) || 0);
+          if (installmentDiff !== 0) return installmentDiff;
+          return (toValidDate(a.due_date)?.getTime() || 0) - (toValidDate(b.due_date)?.getTime() || 0);
+        });
+
+      if (loanSchedules.length === 0) {
+        const interestShare = expectedInterest / liability;
+        return loanRepayments
+          .filter(repayment => (!fromDate || repayment._paidDate >= fromDate))
+          .reduce((sum, repayment) => sum + Math.min(expectedInterest - sum, repayment._amount * interestShare), 0);
+      }
+
+      const period = Math.max(loanSchedules.length, Number(loan.period) || 0, 1);
+      const fallbackInstallmentAmount = liability / period;
+      const fallbackInstallmentInterest = expectedInterest / period;
+      const installmentState = loanSchedules.map(schedule => {
+        const amount = Number(schedule.amount) || fallbackInstallmentAmount;
+        const interestAmount = Math.min(amount, fallbackInstallmentInterest);
+        return {
+          amount,
+          paid: 0,
+          interestAmount,
+          interestCollected: 0
+        };
+      });
+
+      let collectedInterest = 0;
+      for (const repayment of loanRepayments) {
+        let remainingPayment = repayment._amount;
+        const countThisPayment = (!fromDate || repayment._paidDate >= fromDate);
+
+        for (const installment of installmentState) {
+          if (remainingPayment <= 0) break;
+          const installmentRemaining = Math.max(0, installment.amount - installment.paid);
+          if (installmentRemaining <= 0) continue;
+
+          const applied = Math.min(remainingPayment, installmentRemaining);
+          const interestRatio = installment.amount > 0 ? installment.interestAmount / installment.amount : 0;
+          const interestApplied = Math.min(
+            Math.max(0, installment.interestAmount - installment.interestCollected),
+            applied * interestRatio
+          );
+
+          installment.paid += applied;
+          installment.interestCollected += interestApplied;
+          remainingPayment -= applied;
+
+          if (countThisPayment) collectedInterest += interestApplied;
+        }
+      }
+
+      return Math.min(expectedInterest, Math.max(0, collectedInterest));
     };
-    const approvedLoans = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date && isWithinDateRange(l.disbursement_date));
-    const repaymentLoans = loans.filter(l => ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date);
+    const isIncomeLoan = (loan) => {
+      if (!['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status)) return false;
+      return !!(loan.disbursement_date || repaymentsByLoanId.has(String(loan.id)));
+    };
+    const getLoanIncomeDate = (loan) => loan.disbursement_date || loan.approval_date || loan.application_date || loan.created;
+    const approvedLoans = loans.filter(l => isIncomeLoan(l) && isWithinDateRange(getLoanIncomeDate(l)));
+    const repaymentLoans = loans.filter(isIncomeLoan);
     const filteredExpenses = expenses.filter(e => isWithinDateRange(e.date || e.expense_date || e.created));
     const filteredMembers = members.filter(m => isWithinDateRange(getRegistrationFeeDate(m)));
     const filteredProcessingFeeLoans = loans.filter(l => l.processing_fee_paid && isWithinDateRange(getProcessingFeeDate(l)));
     const filteredFineRepayments = repayments.filter(r => isWithinDateRange(r.date || r.created));
     const totalExpenses = filteredExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-    const totalCapitalDisbursed = approvedLoans.reduce((sum, l) => sum + (l.approved_amount || 0), 0);
-    const expectedInterest = approvedLoans.reduce((sum, l) => sum + (l.interest_amount || 0), 0);
-    const collectedInterest = repaymentLoans.reduce((sum, loan) => sum + getCollectedInterestInRange(loan), 0);
+    const totalCapitalDisbursed = approvedLoans.reduce((sum, l) => sum + getLoanPrincipal(l), 0);
+    const expectedInterest = approvedLoans.reduce((sum, l) => sum + getLoanInterest(l), 0);
+    const collectedInterest = repaymentLoans.reduce((sum, loan) => sum + getInterestCollectedInRange(loan), 0);
     const collectedFines = filteredFineRepayments.reduce((sum, r) => sum + (Number(r.fine_amount) || 0), 0);
     const processingFeesCollected = filteredProcessingFeeLoans.reduce((sum, l) => sum + (l.processing_fee || 0), 0);
     const registrationFeesCollected = filteredMembers.reduce((sum, m) => sum + (m.registration_fee || 0), 0);
@@ -762,40 +900,33 @@ export const renderReportsDashboard = async () => {
   setReportLoadingRows();
 
   const updateIndividuals = () => {
-    const getLoanLiability = (loan) => {
-      const storedLiability = Number(loan.total_liability) || 0;
-      if (storedLiability > 0) return storedLiability;
-      const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
-      const interest = Number(loan.interest_amount) || 0;
-      return principal + interest;
-    };
     const filtered = members.filter(m => {
-      if (!isWithinDateRange(m.registration_date || m.created)) return false;
       if (activeFilters.individuals === 'all') return true;
-      const isGroupMember = !!m.group;
+      const isGroupMember = Boolean(getRelationId(m.group) || m.expand?.group?.id);
       if (activeFilters.individuals === 'individual') return !isGroupMember;
       if (activeFilters.individuals === 'group') return isGroupMember;
       return true;
     });
     const individualRows = filtered.map(m => {
-      const allMemberLoans = loans.filter(l => (l.member === m.id) && l.disbursement_date);
-      const runningLoans = allMemberLoans.filter(l => l.status === 'disbursed' || (['approved', 'partial_approved'].includes(l.status) && l.disbursement_date));
-      const completedLoans = allMemberLoans.filter(l => ['completed', 'closed'].includes(l.status));
+      const allMemberLoans = loans.filter(l => getLoanMemberId(l) === m.id && isLoanPortfolioRecord(l));
+      const runningLoans = allMemberLoans.filter(l => getLoanOutstandingBalanceWithFines(l) > 0);
+      const completedLoans = allMemberLoans.filter(l => getLoanOutstandingBalanceWithFines(l) <= 0 || ['completed', 'closed'].includes(l.status));
       const mLoans = runningLoans.length > 0 ? runningLoans : completedLoans;
       const collectibleLoans = runningLoans;
-      const totalLiability = mLoans.reduce((sum, l) => sum + getLoanLiability(l), 0);
-      const memberLoanIds = new Set(mLoans.map(loan => loan.id));
-      const totalRepaid = repayments
-        .filter(r => memberLoanIds.has(r.loan))
-        .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
-      const olBalance = Math.max(0, totalLiability - totalRepaid);
-      const percentRepaid = totalLiability > 0 ? ((totalRepaid / totalLiability) * 100).toFixed(1) : (mLoans.length > 0 ? 100 : 0);
-      const overdueSchedules = schedules.filter(s => collectibleLoans.some(ml => ml.id === s.loan) && isScheduleInArrears(s));
+      const totalLiability = mLoans.reduce((sum, l) => sum + getLoanLiabilityAmount(l), 0);
+      const totalRepaid = mLoans.reduce((sum, l) => sum + getLoanCashPaidAmount(l), 0);
+      const principalPaid = mLoans.reduce((sum, l) => sum + getLoanPrincipalPaidAmount(l), 0);
+      const olBalance = mLoans.reduce((sum, l) => sum + getLoanOutstandingBalanceWithFines(l), 0);
+      const percentRepaid = totalLiability > 0 ? ((principalPaid / totalLiability) * 100).toFixed(1) : (mLoans.length > 0 ? 100 : 0);
+      const overdueSchedules = schedules.filter(s => collectibleLoans.some(ml => ml.id === getScheduleLoanId(s)) && isScheduleInArrears(s));
       const onTrack = overdueSchedules.length === 0;
       const totalArrears = getArrearsTotal(overdueSchedules);
-      const mSavings = savings.filter(s => s.member === m.id && !s.is_reversed);
-      const totalSav = mSavings.reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
-      const lastSavingsDate = getLatestSavingsDate(mSavings);
+      const allMemberSavings = savings.filter(s => getSavingMemberId(s) === m.id && isActiveSavingsTransaction(s));
+      const mSavings = allMemberSavings.filter(s => isWithinDateRange(getSavingsTransactionDate(s)));
+      const deposits = mSavings.filter(s => s.type === 'deposit').reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+      const withdrawals = mSavings.filter(s => s.type === 'withdrawal').reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+      const totalSav = mSavings.reduce((sum, s) => sum + getSavingsSignedAmount(s), 0);
+      const lastSavingsDate = getLatestSavingsDate(allMemberSavings);
       const activityStatus = getMemberActivityStatus(m, lastSavingsDate);
       const groupName = m.expand?.group?.name || 'Individual';
 
@@ -804,6 +935,8 @@ export const renderReportsDashboard = async () => {
         groupName,
         mLoans,
         totalSav,
+        deposits,
+        withdrawals,
         olBalance,
         totalRepaid,
         totalArrears,
@@ -813,13 +946,56 @@ export const renderReportsDashboard = async () => {
       };
     });
     const totalIndividualSavings = individualRows.reduce((sum, row) => sum + (Number(row.totalSav) || 0), 0);
+    const totalIndividualDeposits = individualRows.reduce((sum, row) => sum + (Number(row.deposits) || 0), 0);
+    const totalIndividualWithdrawals = individualRows.reduce((sum, row) => sum + (Number(row.withdrawals) || 0), 0);
+    const groupAccountSavings = savings.filter(s => {
+      if (!isActiveSavingsTransaction(s)) return false;
+      if (!isWithinDateRange(getSavingsTransactionDate(s))) return false;
+      const hasGroup = Boolean(getSavingGroupId(s));
+      const hasMember = Boolean(getSavingMemberId(s));
+      if (!hasGroup || hasMember) return false;
+      return activeFilters.individuals === 'all' || activeFilters.individuals === 'group';
+    });
+    const groupAccountDeposits = groupAccountSavings
+      .filter(s => s.type === 'deposit')
+      .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+    const groupAccountWithdrawals = groupAccountSavings
+      .filter(s => s.type === 'withdrawal')
+      .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+    const groupAccountNet = groupAccountSavings.reduce((sum, s) => sum + getSavingsSignedAmount(s), 0);
+    const savingsAnalysisTotal = totalIndividualSavings + groupAccountNet;
+    const savingsAnalysisDeposits = totalIndividualDeposits + groupAccountDeposits;
+    const savingsAnalysisWithdrawals = totalIndividualWithdrawals + groupAccountWithdrawals;
     const totalIndividualOlb = individualRows.reduce((sum, row) => sum + (Number(row.olBalance) || 0), 0);
+    const groupAccountOlb = loans
+      .filter(loan => isLoanPortfolioRecord(loan) && !getLoanMemberId(loan) && getLoanGroupId(loan))
+      .filter(() => activeFilters.individuals === 'all' || activeFilters.individuals === 'group')
+      .reduce((sum, loan) => sum + getLoanOutstandingBalanceWithFines(loan), 0);
+    const olbAnalysisTotal = totalIndividualOlb + groupAccountOlb;
     const totalIndividualArrears = individualRows.reduce((sum, row) => sum + (Number(row.totalArrears) || 0), 0);
     const savingsKpiEl = container.querySelector('#individuals-total-savings');
     const olbKpiEl = container.querySelector('#individuals-total-olb');
     const arrearsKpiEl = container.querySelector('#individuals-total-arrears');
-    if (savingsKpiEl) savingsKpiEl.textContent = `KES ${totalIndividualSavings.toLocaleString()}`;
-    if (olbKpiEl) olbKpiEl.textContent = `KES ${totalIndividualOlb.toLocaleString()}`;
+    if (savingsKpiEl) {
+      savingsKpiEl.innerHTML = `
+        <div>KES ${savingsAnalysisTotal.toLocaleString()}</div>
+        <div class="text-xs" style="margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap;">
+          <span style="color: var(--success); font-weight: 700;">DEP ${savingsAnalysisDeposits.toLocaleString()}</span>
+          <span style="color: var(--danger); font-weight: 700;">WIT ${savingsAnalysisWithdrawals.toLocaleString()}</span>
+          <span style="color: var(--text-muted); font-weight: 700;">Members ${totalIndividualSavings.toLocaleString()}</span>
+          ${groupAccountNet !== 0 ? `<span style="color: var(--primary); font-weight: 700;">Group Acc ${groupAccountNet.toLocaleString()}</span>` : ''}
+        </div>
+      `;
+    }
+    if (olbKpiEl) {
+      olbKpiEl.innerHTML = `
+        <div>KES ${olbAnalysisTotal.toLocaleString()}</div>
+        <div class="text-xs" style="margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap;">
+          <span style="color: var(--text-muted); font-weight: 700;">Members ${totalIndividualOlb.toLocaleString()}</span>
+          ${groupAccountOlb !== 0 ? `<span style="color: var(--primary); font-weight: 700;">Group Acc ${groupAccountOlb.toLocaleString()}</span>` : ''}
+        </div>
+      `;
+    }
     if (arrearsKpiEl) arrearsKpiEl.textContent = `KES ${totalIndividualArrears.toLocaleString()}`;
     const entriesCountEl = container.querySelector('#individuals-entry-count');
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
@@ -908,14 +1084,14 @@ export const renderReportsDashboard = async () => {
       let inactiveCount = 0;
       let arrearsCount = 0;
       let arrearsAmount = 0;
-      const groupAccountSavings = savings.filter(s => s.group === g.id && !s.member && !s.is_reversed);
+      const groupAccountSavings = savings.filter(s => getSavingGroupId(s) === g.id && !getSavingMemberId(s) && isActiveSavingsTransaction(s));
       let gTotalSavings = groupAccountSavings.reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
       const groupActivityDates = [
         ...groupAccountSavings.map(s => s.date || s.created)
       ];
 
       gMembers.forEach(m => {
-        const mSavings = savings.filter(s => s.member === m.id && !s.is_reversed);
+        const mSavings = savings.filter(s => getSavingMemberId(s) === m.id && isActiveSavingsTransaction(s));
         gTotalSavings += mSavings.reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
         groupActivityDates.push(...mSavings.map(s => s.date || s.created));
         const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
@@ -1146,8 +1322,8 @@ export const renderReportsDashboard = async () => {
       };
     };
     const resolveSavingsOwner = (saving) => {
-      const member = saving.expand?.member || membersById.get(saving.member);
-      const group = saving.expand?.group || groupsById.get(saving.group);
+      const member = saving.expand?.member || membersById.get(getSavingMemberId(saving));
+      const group = saving.expand?.group || groupsById.get(getSavingGroupId(saving));
       if (member) return resolveMemberOwner(member);
       if (group) return resolveGroupOwner(group);
       return { client: saving.reference || '-', clientName: 'Unknown', groupName: 'Unassigned' };
@@ -1155,11 +1331,11 @@ export const renderReportsDashboard = async () => {
 
     // Aggregate all money-in
     let entries = [
-      ...savings.map(s => {
+      ...savings.filter(isActiveSavingsTransaction).map(s => {
         const owner = resolveSavingsOwner(s);
         const isWithdrawal = s.type === 'withdrawal';
         return {
-          date: s.date,
+          date: getSavingsTransactionDate(s),
           type: isWithdrawal ? 'Savings Withdrawal' : 'Savings Deposit',
           ...owner,
           ref: s.reference || (isWithdrawal ? 'SAVE-W' : 'SAVE-D'),
@@ -1285,11 +1461,11 @@ export const renderReportsDashboard = async () => {
 
   const updateWithdrawals = () => {
     const withdrawalRows = savings
-      .filter(s => s.type === 'withdrawal' && !s.is_reversed)
+      .filter(s => s.type === 'withdrawal' && isActiveSavingsTransaction(s))
       .map(s => {
-        const member = s.expand?.member;
-        const group = s.expand?.group || member?.expand?.group;
-        const isGroupAccount = Boolean(s.group && !s.member);
+        const member = s.expand?.member || members.find(m => m.id === getSavingMemberId(s));
+        const group = s.expand?.group || member?.expand?.group || groups.find(g => g.id === getSavingGroupId(s));
+        const isGroupAccount = Boolean(getSavingGroupId(s) && !getSavingMemberId(s));
         const isGroupMember = Boolean(member && group);
         return {
           name: member?.full_name || group?.name || 'Unknown',
@@ -1337,21 +1513,10 @@ export const renderReportsDashboard = async () => {
     const membersById = new Map(members.map(member => [member.id, member]));
     const groupsById = new Map(groups.map(group => [group.id, group]));
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
-    const getLoanLiability = (loan) => {
-      const storedLiability = Number(loan?.total_liability) || 0;
-      if (storedLiability > 0) return storedLiability;
-      const principal = Number(loan?.approved_amount || loan?.amount_applied) || 0;
-      return principal + (Number(loan?.interest_amount) || 0);
-    };
-    const repaymentsByLoan = repayments.reduce((map, repayment) => {
-      if (!repayment.loan) return map;
-      map.set(repayment.loan, (map.get(repayment.loan) || 0) + (Number(repayment.amount) || 0));
-      return map;
-    }, new Map());
-    const isCollectibleLoan = (loan) => loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
+    const isCollectibleLoan = (loan) => isLoanPortfolioRecord(loan) && getLoanOutstandingBalanceWithFines(loan) > 0;
     const getLoanOwner = (loan) => {
-      const member = loan?.expand?.member || membersById.get(loan?.member);
-      const group = loan?.expand?.group || groupsById.get(loan?.group) || member?.expand?.group || groupsById.get(member?.group);
+      const member = loan?.expand?.member || membersById.get(getLoanMemberId(loan));
+      const group = loan?.expand?.group || groupsById.get(getLoanGroupId(loan)) || member?.expand?.group || groupsById.get(member?.group);
       return {
         clientName: member?.full_name || group?.name || 'Unknown',
         groupName: group?.name || (member ? 'Individual' : '-')
@@ -1360,10 +1525,10 @@ export const renderReportsDashboard = async () => {
 
     const repaymentRows = schedules
       .map(schedule => {
-        const loan = loansById.get(schedule.loan);
+        const loan = loansById.get(getScheduleLoanId(schedule));
         if (!loan || !isCollectibleLoan(loan)) return null;
         const paid = Number(schedule.paid) || 0;
-        const olb = Math.max(0, getLoanLiability(loan) - (repaymentsByLoan.get(loan.id) || 0));
+        const olb = getLoanOutstandingBalanceWithFines(loan);
         const isArrears = isScheduleInArrears(schedule);
         const isPaid = isSchedulePaid(schedule);
         const owner = getLoanOwner(loan);
@@ -1424,7 +1589,7 @@ export const renderReportsDashboard = async () => {
         </tr>
       `).join('');
 
-    const totalSchedules = schedules.filter(schedule => isCollectibleLoan(loansById.get(schedule.loan))).length;
+    const totalSchedules = schedules.filter(schedule => isCollectibleLoan(loansById.get(getScheduleLoanId(schedule)))).length;
     container.querySelector('#filter-count').textContent = `Showing ${repaymentRows.length} of ${totalSchedules} repayment schedules`;
     renderReportPagination('#repayments-pagination', repaymentRows.length, pageSize, (p) => { pages.repayments = p; updateRepayments(); });
   };

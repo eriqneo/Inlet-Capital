@@ -84,6 +84,7 @@ export const renderGroupProfile = async (params) => {
         <div class="card" style="padding: 16px; border-left: 3px solid var(--success);"><div class="text-xs text-muted">Total Savings</div><div class="text-lg font-semibold text-success">KES ${totalSavings.toLocaleString()}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);"><div class="text-xs text-muted">Outstanding Loan</div><div class="text-lg font-semibold text-danger">KES ${outstandingLoan.toLocaleString()}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--secondary);"><div class="text-xs text-muted">Total Repayments</div><div class="text-lg font-semibold" style="color: var(--secondary);">Syncing...</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">This Month Collections Expected</div><div class="text-lg font-semibold" style="color: var(--primary);">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);"><div class="text-xs text-muted">Total Fees</div><div class="text-lg font-semibold" style="color: var(--warning);">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">Total Members</div><div class="text-lg font-semibold text-primary">${memberCount}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid ${totalArrears > 0 ? 'var(--danger)' : 'var(--border-color)'};"><div class="text-xs text-muted">Total Arrears</div><div class="text-lg font-semibold" style="color: ${totalArrears > 0 ? 'var(--danger)' : 'inherit'};">KES ${totalArrears.toLocaleString()}</div></div>
@@ -175,6 +176,74 @@ export const renderGroupProfile = async (params) => {
       .filter(loan => loan.processing_fee_paid && isDateWithinCurrentFilter(getProcessingFeeDate(loan)))
       .reduce((sum, loan) => sum + (Number(loan.processing_fee) || 0), 0);
     return registrationFees + processingFees;
+  };
+  const buildEffectiveSchedulePaidMap = (schedules, repayments) => {
+    const schedulesByLoan = new Map();
+    schedules.forEach(schedule => {
+      if (!schedule.loan) return;
+      if (!schedulesByLoan.has(schedule.loan)) schedulesByLoan.set(schedule.loan, []);
+      schedulesByLoan.get(schedule.loan).push(schedule);
+    });
+    schedulesByLoan.forEach(loanSchedules => {
+      loanSchedules.sort((a, b) => {
+        const installmentDiff = (Number(a.installment_no) || 0) - (Number(b.installment_no) || 0);
+        if (installmentDiff !== 0) return installmentDiff;
+        return new Date(a.due_date || 0) - new Date(b.due_date || 0);
+      });
+    });
+
+    const repaymentsByLoan = new Map();
+    repayments.forEach(repayment => {
+      if (!repayment.loan) return;
+      if (!repaymentsByLoan.has(repayment.loan)) repaymentsByLoan.set(repayment.loan, []);
+      repaymentsByLoan.get(repayment.loan).push(repayment);
+    });
+    repaymentsByLoan.forEach(loanRepayments => {
+      loanRepayments.sort((a, b) => new Date(a.date || a.created || 0) - new Date(b.date || b.created || 0));
+    });
+
+    const paidMap = new Map();
+    schedulesByLoan.forEach((loanSchedules, loanId) => {
+      const allocated = new Map(loanSchedules.map(schedule => [schedule.id, 0]));
+      (repaymentsByLoan.get(loanId) || []).forEach(repayment => {
+        let remainingPayment = Number(repayment.amount) || 0;
+        for (const schedule of loanSchedules) {
+          if (remainingPayment <= 0) break;
+          const scheduleAmount = Number(schedule.amount) || 0;
+          const currentPaid = allocated.get(schedule.id) || 0;
+          const openAmount = Math.max(0, scheduleAmount - currentPaid);
+          if (openAmount <= 0) continue;
+          const applied = Math.min(openAmount, remainingPayment);
+          allocated.set(schedule.id, currentPaid + applied);
+          remainingPayment -= applied;
+        }
+      });
+      loanSchedules.forEach(schedule => {
+        const recordedPaid = Number(schedule.paid) || 0;
+        const allocatedPaid = allocated.get(schedule.id) || 0;
+        paidMap.set(schedule.id, Math.min(Number(schedule.amount) || 0, Math.max(recordedPaid, allocatedPaid)));
+      });
+    });
+    return paidMap;
+  };
+  const calculateThisMonthCollectionsExpected = (loans, schedules, repayments) => {
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0, 23, 59, 59, 999);
+    const activeLoanIds = new Set(loans.filter(isCollectibleLoan).map(loan => loan.id));
+    const effectivePaidMap = buildEffectiveSchedulePaidMap(schedules, repayments);
+    return schedules
+      .filter(schedule => activeLoanIds.has(schedule.loan))
+      .filter(schedule => {
+        const dueDate = new Date(schedule.due_date);
+        return !Number.isNaN(dueDate.getTime()) && dueDate >= monthStart && dueDate <= monthEnd;
+      })
+      .reduce((sum, schedule) => {
+        const amount = Number(schedule.amount) || 0;
+        const paid = effectivePaidMap.get(schedule.id) ?? Math.min(amount, Math.max(0, Number(schedule.paid) || 0));
+        return sum + Math.max(0, amount - paid);
+      }, 0);
   };
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
     '&': '&amp;',
@@ -322,6 +391,7 @@ export const renderGroupProfile = async (params) => {
     if (!m.isActive) inactiveMembersCount++;
   }
   let totalOutstandingLoan = calculateOutstandingLoanBalance(groupLoans, allRepayments);
+  const thisMonthCollectionsExpected = calculateThisMonthCollectionsExpected(groupLoans, allSchedules, allRepayments);
   const activeLoanPortfolio = calculateActiveLoanPortfolio(groupLoans);
   const groupParRateNumber = activeLoanPortfolio > 0 ? (totalGroupArrears / activeLoanPortfolio) * 100 : 0;
   const groupParHealth = getParHealth(groupParRateNumber);
@@ -411,6 +481,10 @@ export const renderGroupProfile = async (params) => {
           <div class="card" style="padding: 16px; border-left: 3px solid var(--secondary);">
             <div class="text-xs text-muted">Total Repayments</div>
             <div class="text-lg font-semibold" id="group-total-repayments-kpi" style="color: var(--secondary);">KES ${calculateRepaymentsTotal(allRepayments).toLocaleString()}</div>
+          </div>
+          <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);">
+            <div class="text-xs text-muted">This Month Collections Expected</div>
+            <div class="text-lg font-semibold" id="group-this-month-expected-kpi" style="color: var(--primary);">KES ${thisMonthCollectionsExpected.toLocaleString()}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);">
             <div class="text-xs text-muted">Total Fees</div>
@@ -830,6 +904,7 @@ export const renderGroupProfile = async (params) => {
     const filteredLoans = getFilteredLoans();
     const filteredSavings = getFilteredSavings();
     const filteredRepayments = getFilteredRepayments();
+    const scopedLoansForCurrentMonthCollections = allFinancialLoansSorted.filter(recordMatchesScope);
     const feeKpiMembers = getFeeKpiMembers();
     const includeGroupAccount = scopeIncludesGroupAccount();
     const arrearsAmount = filteredMembers.reduce((sum, m) => sum + getMemberArrears(m), 0) + (includeGroupAccount ? getGroupLevelArrears() : 0);
@@ -843,6 +918,7 @@ export const renderGroupProfile = async (params) => {
     const parHealth = getParHealth(parRate);
     const repaymentsTotal = calculateRepaymentsTotal(filteredRepayments);
     const feesTotal = calculateFeesTotal(feeKpiMembers, groupLoans);
+    const thisMonthExpected = calculateThisMonthCollectionsExpected(scopedLoansForCurrentMonthCollections, allSchedules, allRepayments);
 
     container.querySelector('#group-total-savings-kpi').textContent = `KES ${savingsTotal.toLocaleString()}`;
     const savingsMovementKpi = container.querySelector('#group-savings-movement-kpi');
@@ -854,6 +930,8 @@ export const renderGroupProfile = async (params) => {
     }
     container.querySelector('#group-outstanding-loan-kpi').textContent = `KES ${outstandingLoan.toLocaleString()}`;
     container.querySelector('#group-total-repayments-kpi').textContent = `KES ${repaymentsTotal.toLocaleString()}`;
+    const thisMonthExpectedKpi = container.querySelector('#group-this-month-expected-kpi');
+    if (thisMonthExpectedKpi) thisMonthExpectedKpi.textContent = `KES ${thisMonthExpected.toLocaleString()}`;
     container.querySelector('#group-total-fees-kpi').textContent = `KES ${feesTotal.toLocaleString()}`;
     container.querySelector('#group-total-members-kpi').textContent = filteredMembers.length;
     const totalArrearsKpi = container.querySelector('#group-total-arrears-kpi');

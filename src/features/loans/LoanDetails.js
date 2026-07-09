@@ -5,6 +5,7 @@ import { renderPagination } from '../../components/Pagination.js';
 import { formatDate } from '../../core/utils.js';
 import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
 import { getScheduleRemaining, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
+import { calculateLoanPenaltyState, getRepaymentPrincipalAmount } from '../../core/loanPenalty.js';
 import { getReturnTo } from '../../core/navigation.js';
 import { addMonthsPreservingDay, getRepaymentScheduleAnchorDate } from '../../core/repaymentSchedule.js';
 
@@ -86,10 +87,17 @@ export const renderLoanDetails = async (params) => {
     return principal + interest;
   };
   const totalLiability = getLoanLiability(loan);
+  const penaltyState = calculateLoanPenaltyState({
+    schedules: schedule,
+    repayments,
+    penaltyAmount: settings.penalty_amount
+  });
   const totalPaid = repayments.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
-  const outstandingBalance = Math.max(0, totalLiability - totalPaid);
+  const principalPaid = repayments.reduce((sum, r) => sum + getRepaymentPrincipalAmount(r), 0);
+  const outstandingPrincipal = Math.max(0, totalLiability - principalPaid);
+  const outstandingBalance = Math.max(0, outstandingPrincipal + penaltyState.outstandingFine);
   const percentRepaid = totalLiability > 0
-    ? Math.min(100, (totalPaid / totalLiability) * 100)
+    ? Math.min(100, (principalPaid / totalLiability) * 100)
     : (['completed', 'closed'].includes(loan.status) ? 100 : 0);
 
   let historyPage = 1;
@@ -353,10 +361,10 @@ export const renderLoanDetails = async (params) => {
               <input type="number" name="amount" class="form-control" required min="1" max="${outstandingBalance}" step="1" placeholder="Enter amount paid" />
               <p class="text-xs text-muted" style="margin-top: 4px;">Max payable: KES ${outstandingBalance.toLocaleString()}</p>
             </div>
-            <div class="form-group">
-              <label class="form-label">Late Fine (Optional)</label>
-              <input type="number" name="fine_amount" class="form-control" min="0" step="1" placeholder="0" />
-              <p class="text-xs text-muted" style="margin-top: 4px;">Use only when a late-payment fine was actually charged.</p>
+            <div class="form-group" style="background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.22); border-radius: 8px; padding: 12px;">
+              <label class="form-label">Automatic Late Fine Due</label>
+              <div class="font-semibold" style="color: ${penaltyState.outstandingFine > 0 ? 'var(--warning)' : 'var(--text-muted)'};">KES ${penaltyState.outstandingFine.toLocaleString()}</div>
+              <p class="text-xs text-muted" style="margin-top: 4px;">Applied automatically when a scheduled installment is overdue. The fine is included in the max payable amount.</p>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
               <div class="form-group">
@@ -450,29 +458,22 @@ export const renderLoanDetails = async (params) => {
     const paginated = schedule.slice(start, start + pageSize);
     const tbody = container.querySelector('#loan-schedule-body');
     
-    const penaltyAmount = settings.penalty_amount;
-    const graceWeeks = settings.penalty_grace_weeks;
-    const graceMs = graceWeeks * 7 * 24 * 60 * 60 * 1000;
-    const today = new Date().getTime();
-    
-    // In PB, you could check authService.getUser()?.role, but we just show waive for all admins
-    const isAdmin = authService.getUser()?.role === 'admin' || true; 
+    let fineCollectedRemaining = penaltyState.fineCollected;
+    const penaltyBalanceBySchedule = new Map();
+    penaltyState.scheduleStates.forEach(item => {
+      const generatedPenalty = item.penaltyAmount;
+      const collectedForSchedule = Math.min(fineCollectedRemaining, generatedPenalty);
+      fineCollectedRemaining -= collectedForSchedule;
+      penaltyBalanceBySchedule.set(item.schedule.id, Math.max(0, generatedPenalty - collectedForSchedule));
+    });
+    const isAdmin = authService.hasRole('super_admin', 'admin');
     
     tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No schedule found.</td></tr>' : paginated.map(s => {
-      let hasPenalty = false;
       let amountDue = getScheduleRemaining(s);
-      const dueTime = new Date(s.due_date).getTime();
       const isOverdue = isScheduleInArrears(s);
-      
-      if (isOverdue) {
-        if ((today - dueTime) > graceMs) {
-          hasPenalty = true;
-        }
-      }
-      
-      if (hasPenalty && !s.penalty_waived) {
-        amountDue += penaltyAmount;
-      }
+      const penaltyBalance = penaltyBalanceBySchedule.get(s.id) || 0;
+      const hasPenalty = penaltyBalance > 0;
+      amountDue += penaltyBalance;
 
       return `
       <tr style="${isOverdue ? 'background: rgba(239, 68, 68, 0.02);' : ''}">
@@ -483,13 +484,13 @@ export const renderLoanDetails = async (params) => {
         <td>${formatDate(s.due_date)}</td>
         <td class="text-right">
           <div class="font-semibold">${amountDue.toLocaleString()}</div>
-          ${hasPenalty && !s.penalty_waived ? `<div class="text-xs" style="color: var(--danger); margin-top: 2px;">+${penaltyAmount.toLocaleString()} penalty</div>` : ''}
-          ${hasPenalty && s.penalty_waived ? `<div class="text-xs" style="color: var(--success); margin-top: 2px;">Penalty waived</div>` : ''}
+          ${hasPenalty ? `<div class="text-xs" style="color: var(--danger); margin-top: 2px;">+${penaltyBalance.toLocaleString()} automatic fine</div>` : ''}
+          ${s.penalty_waived ? `<div class="text-xs" style="color: var(--success); margin-top: 2px;">Fine waived</div>` : ''}
         </td>
         <td>
           <div style="display: flex; align-items: center; justify-content: space-between;">
             <span class="badge ${s.status === 'paid' ? 'badge-success' : 'badge-warning'}">${s.status.toUpperCase()}</span>
-            ${hasPenalty && !s.penalty_waived && isAdmin ? `<button class="btn btn-outline btn-xs waive-penalty-btn" data-id="${s.id}" style="margin-left: 8px;">Waive</button>` : ''}
+            ${hasPenalty && isAdmin ? `<button class="btn btn-outline btn-xs waive-penalty-btn" data-id="${s.id}" style="margin-left: 8px;">Waive</button>` : ''}
           </div>
         </td>
       </tr>`;
@@ -511,7 +512,7 @@ export const renderLoanDetails = async (params) => {
             if (window.confirmDialog) {
               window.confirmDialog(
                 'Waive Penalty',
-                `Are you sure you want to waive the KES ${penaltyAmount} penalty for Installment #${scheduleItem.installment_no}?`,
+                `Are you sure you want to waive the automatic fine for Installment #${scheduleItem.installment_no}?`,
                 async () => {
                   const restoreButton = setButtonLoading(btn, 'Waiving...');
                   try {
@@ -604,15 +605,12 @@ export const renderLoanDetails = async (params) => {
     const formData = new FormData(paymentForm);
     const data = Object.fromEntries(formData.entries());
     const amount = parseFloat(data.amount);
-    const fineAmount = data.fine_amount === '' ? 0 : parseFloat(data.fine_amount);
     if (!Number.isFinite(amount) || amount <= 0) {
       if (window.notify) window.notify.error('Enter a valid payment amount before recording.');
       return;
     }
-    if (!Number.isFinite(fineAmount) || fineAmount < 0) {
-      if (window.notify) window.notify.error('Enter a valid fine amount or leave it blank.');
-      return;
-    }
+    const fineAmount = Math.min(penaltyState.outstandingFine, amount);
+    const principalPaymentAmount = Math.max(0, amount - fineAmount);
 
     const btn = paymentForm.querySelector('button[type="submit"]');
     const restoreButton = setButtonLoading(btn, 'Recording...');
@@ -635,8 +633,9 @@ export const renderLoanDetails = async (params) => {
       await loanService.recordRepayment(repayment);
       
       const totalRepaidNow = totalPaid + amount;
+      const outstandingAfterPayment = Math.max(0, outstandingBalance - amount);
 
-      if (totalLiability > 0 && totalRepaidNow >= totalLiability) {
+      if (totalLiability > 0 && outstandingAfterPayment <= 0) {
         await loanService.update(loan.id, { status: 'completed' });
         if (window.notify) window.notify.success('Loan fully repaid and closed!');
       } else {
@@ -644,7 +643,7 @@ export const renderLoanDetails = async (params) => {
       }
 
       // Mark schedules as paid locally to avoid refetching complex logic
-      let remaining = amount;
+      let remaining = principalPaymentAmount;
       for (const s of schedule) {
         if (remaining <= 0) break;
         const installmentRemaining = getScheduleRemaining(s);

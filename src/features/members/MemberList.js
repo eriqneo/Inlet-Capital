@@ -50,6 +50,7 @@ export const renderMemberList = async () => {
           <thead>
             <tr>
               <th>Member Details</th>
+              <th>Group</th>
               <th>ID Number</th>
               <th>Phone</th>
               <th>Status</th>
@@ -57,7 +58,7 @@ export const renderMemberList = async () => {
             </tr>
           </thead>
           <tbody id="member-table-body">
-            ${renderTableSkeletonRows(5, 5)}
+            ${renderTableSkeletonRows(6, 5)}
           </tbody>
         </table>
       </div>
@@ -126,10 +127,12 @@ export const renderMemberList = async () => {
       filterCountEl.textContent = `${totalItems.toLocaleString()} ${totalItems === 1 ? 'member' : 'members'}`;
     }
     tableBody.innerHTML = members.length === 0 ? `
-      <tr><td colspan="5" class="text-center text-muted" style="padding: 40px;">No members found.</td></tr>
+      <tr><td colspan="6" class="text-center text-muted" style="padding: 40px;">No members found.</td></tr>
     ` : members.map(m => {
       const photoUrl = memberService.getPhotoUrl(m);
       const activityStatus = getActivityStatus(m);
+      const groupName = m.expand?.group?.name || (m.group ? 'Group member' : 'Individual');
+      const groupCode = m.expand?.group?.group_id || '';
       return `
       <tr>
         <td>
@@ -142,6 +145,10 @@ export const renderMemberList = async () => {
               <div class="text-xs text-muted">${m.reg_no || m.regNo}</div>
             </div>
           </div>
+        </td>
+        <td>
+          <span class="badge ${m.group ? 'badge-primary' : 'badge-outline'}" style="font-size: 0.65rem;">${groupName}</span>
+          ${groupCode ? `<div class="text-xs text-muted" style="margin-top: 4px;">${groupCode}</div>` : ''}
         </td>
         <td>${m.id_number || m.idNo}</td>
         <td>${m.phone_number || ''}</td>
@@ -280,7 +287,7 @@ export const renderMemberList = async () => {
     const thisRequest = ++requestId;
     const cancelLoading = showDelayedLoading(() => {
       if (thisRequest !== requestId) return;
-      tableBody.innerHTML = renderTableSkeletonRows(5, 5);
+      tableBody.innerHTML = renderTableSkeletonRows(6, 5);
       paginationWrapper.innerHTML = '';
     });
 
@@ -327,7 +334,7 @@ export const renderMemberList = async () => {
       console.error('[MemberList] Failed to load members:', err);
       tableBody.innerHTML = `
         <tr>
-          <td colspan="5" class="text-center text-danger" style="padding: 40px;">
+          <td colspan="6" class="text-center text-danger" style="padding: 40px;">
             Failed to load members. ${err.message || ''}
           </td>
         </tr>

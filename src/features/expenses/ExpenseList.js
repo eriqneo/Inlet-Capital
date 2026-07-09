@@ -26,6 +26,18 @@ export const renderExpenseList = async () => {
       </div>
     </div>
 
+    <div id="expenses-summary-cards" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 16px;">
+      <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--danger);">
+        <div class="text-xs text-muted">Total Expenses</div>
+        <div class="text-xl font-semibold text-danger" id="expenses-total-amount">KES 0</div>
+        <div class="text-xs text-muted" id="expenses-total-period" style="margin-top: 6px;">All dates</div>
+      </div>
+      <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
+        <div class="text-xs text-muted">Expense Entries</div>
+        <div class="text-xl font-semibold text-primary" id="expenses-total-count">0</div>
+      </div>
+    </div>
+
     <div class="card" style="padding: 0; overflow: hidden;">
       <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap;">
         <label class="text-xs text-muted" for="expense-date-from">From</label>
@@ -59,6 +71,9 @@ export const renderExpenseList = async () => {
   const dateFromInput = container.querySelector('#expense-date-from');
   const dateToInput = container.querySelector('#expense-date-to');
   const dateClearBtn = container.querySelector('#expense-date-clear');
+  const expensesTotalAmount = container.querySelector('#expenses-total-amount');
+  const expensesTotalPeriod = container.querySelector('#expenses-total-period');
+  const expensesTotalCount = container.querySelector('#expenses-total-count');
 
   const buildDateFilter = () => {
     const filters = [];
@@ -72,6 +87,20 @@ export const renderExpenseList = async () => {
     .replace(/\r?\n/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+  const getDateRangeLabel = () => {
+    if (dateRange.from && dateRange.to) return `${formatDate(dateRange.from)} to ${formatDate(dateRange.to)}`;
+    if (dateRange.from) return `From ${formatDate(dateRange.from)}`;
+    if (dateRange.to) return `Until ${formatDate(dateRange.to)}`;
+    return 'All dates';
+  };
+
+  const renderExpenseSummary = (items) => {
+    const total = items.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
+    expensesTotalAmount.textContent = `KES ${total.toLocaleString()}`;
+    expensesTotalPeriod.textContent = getDateRangeLabel();
+    expensesTotalCount.textContent = items.length.toLocaleString();
+  };
 
   const exportExpensesToExcel = async () => {
     const restoreButton = setButtonLoading(exportBtn, 'Exporting...');
@@ -129,12 +158,13 @@ export const renderExpenseList = async () => {
     });
 
     try {
-      const renderResult = (expenseResult, voteheadsResult) => {
+      const renderResult = (expenseResult, voteheadsResult, fullExpenses = null) => {
         if (thisRequest !== requestId) return;
         cancelLoading();
         voteheads = voteheadsResult || [];
         vMap = Object.fromEntries(voteheads.map(v => [v.id, v.name]));
         const paginatedItems = expenseResult.items;
+        if (fullExpenses) renderExpenseSummary(fullExpenses);
 
         tableBody.innerHTML = paginatedItems.length === 0 ? `
           <tr><td colspan="4" class="text-center text-muted" style="padding: 40px;">No expenses recorded yet.</td></tr>
@@ -157,14 +187,15 @@ export const renderExpenseList = async () => {
         if (pagination) paginationWrapper.appendChild(pagination);
       };
 
-      const [expenseResult, voteheadsResult] = await Promise.all([
+      const [expenseResult, voteheadsResult, allExpenses] = await Promise.all([
         expenseService.getAllCached({ page: currentPage, perPage: pageSize, filter: buildDateFilter() }, freshResult => {
           renderResult(freshResult, voteheads);
         }),
-        voteheads.length > 0 ? Promise.resolve(voteheads) : expenseService.getVoteheads()
+        voteheads.length > 0 ? Promise.resolve(voteheads) : expenseService.getVoteheads(),
+        expenseService.getFullList({ filter: buildDateFilter() })
       ]);
 
-      renderResult(expenseResult, voteheadsResult);
+      renderResult(expenseResult, voteheadsResult, allExpenses);
     } catch (err) {
       cancelLoading();
       console.error('Failed to load expenses', err);
