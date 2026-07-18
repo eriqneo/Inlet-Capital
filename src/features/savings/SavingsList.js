@@ -3,10 +3,11 @@ import { memberService } from '../../services/memberService.js';
 import { groupService } from '../../services/groupService.js';
 import { authService } from '../../services/authService.js';
 import { renderPagination } from '../../components/Pagination.js';
-import { formatDate } from '../../core/utils.js';
+import { formatDate, formatMoney } from '../../core/utils.js';
 import { dataCache } from '../../services/dataCache.js';
 import { renderTableSkeletonRows, showDelayedLoading, setButtonLoading } from '../../core/uiState.js';
 import { withReturnTo } from '../../core/navigation.js';
+import { canUseOfficerFilter, createOfficerScope, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
 
 export const renderSavingsList = async () => {
   const container = document.createElement('div');
@@ -15,6 +16,7 @@ export const renderSavingsList = async () => {
   const pageSize = 10;
   let requestId = 0;
   let alphaSort = 'default';
+  let officerFilter = 'all';
   let members = [];
   let groups = [];
   let latestTransactions = [];
@@ -55,6 +57,7 @@ export const renderSavingsList = async () => {
           <option value="az">Name A-Z</option>
           <option value="za">Name Z-A</option>
         </select>
+        ${canUseOfficerFilter() ? '<select id="savings-officer-filter" class="form-control" style="min-width: 210px;"><option value="all">All Loan Officers</option></select>' : ''}
       </div>
       <div class="table-responsive">
         <table class="table">
@@ -103,6 +106,7 @@ export const renderSavingsList = async () => {
   const tableBody = container.querySelector('#savings-table-body');
   const paginationWrapper = container.querySelector('#pagination-wrapper');
   const alphaSortSelect = container.querySelector('#savings-alpha-sort');
+  const officerFilterSelect = container.querySelector('#savings-officer-filter');
   const savingsNetTotal = container.querySelector('#savings-net-total');
   const savingsMovementTotal = container.querySelector('#savings-movement-total');
   const savingsEntryTotal = container.querySelector('#savings-entry-total');
@@ -196,10 +200,10 @@ export const renderSavingsList = async () => {
       .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
     const net = activeItems.reduce((sum, item) => sum + getSavingsSignedAmount(item), 0);
 
-    savingsNetTotal.textContent = `KES ${net.toLocaleString()}`;
+    savingsNetTotal.textContent = `KES ${formatMoney(net)}`;
     savingsMovementTotal.innerHTML = `
-      <span style="color: var(--success); font-weight: 700;">DEP ${deposits.toLocaleString()}</span>
-      <span style="color: var(--danger); font-weight: 700;">WIT ${withdrawals.toLocaleString()}</span>
+      <span style="color: var(--success); font-weight: 700;">DEP ${formatMoney(deposits)}</span>
+      <span style="color: var(--danger); font-weight: 700;">WIT ${formatMoney(withdrawals)}</span>
     `;
     savingsEntryTotal.textContent = activeItems.length.toLocaleString();
   };
@@ -208,6 +212,11 @@ export const renderSavingsList = async () => {
     const comparison = getTransactionTargetName(a).localeCompare(getTransactionTargetName(b), undefined, { sensitivity: 'base' });
     return alphaSort === 'za' ? -comparison : comparison;
   });
+  const filterTransactionsByOfficer = (items) => {
+    if (officerFilter === 'all') return items;
+    const { getSavingOfficerId } = createOfficerScope({ members, groups });
+    return items.filter(item => matchesOfficer(getSavingOfficerId(item), officerFilter));
+  };
 
   const renderTransactions = (items) => {
     return items.map(t => {
@@ -241,7 +250,7 @@ export const renderSavingsList = async () => {
           </span>
         </td>
         <td style="text-align: right;" class="font-semibold ${type === 'deposit' ? 'text-success' : 'text-danger'}">
-          ${type === 'deposit' ? '+' : '-'}${amount.toLocaleString()}
+          ${type === 'deposit' ? '+' : '-'}${formatMoney(amount)}
         </td>
         ${canManageSavings ? `
           <td style="text-align: right;">
@@ -277,12 +286,15 @@ export const renderSavingsList = async () => {
         if (pagination) paginationWrapper.appendChild(pagination);
       };
       
-      if (alphaSort !== 'default') {
+      if (alphaSort !== 'default' || officerFilter !== 'all') {
         const allTransactions = await savingsService.getFullListCached({
           sort: '-date',
           cacheKey: 'savings:list:alpha:expanded:v1'
         });
-        const sortedTransactions = sortTransactionsAlphabetically(allTransactions);
+        const officerTransactions = filterTransactionsByOfficer(allTransactions);
+        const sortedTransactions = alphaSort === 'default'
+          ? officerTransactions
+          : sortTransactionsAlphabetically(officerTransactions);
         latestTransactions = sortedTransactions;
         renderSavingsSummary(sortedTransactions);
         renderReconcileBanner(sortedTransactions);
@@ -324,7 +336,7 @@ export const renderSavingsList = async () => {
     const group = groups.find(item => item.id === groupId) || transaction.expand?.group;
     const groupMembers = getGroupMembers(groupId);
     assignSavingId.value = transaction.id;
-    assignSubtitle.textContent = `${group?.name || 'Selected group'} · ${formatDate(transaction.date)} · KES ${(Number(transaction.amount) || 0).toLocaleString()}`;
+    assignSubtitle.textContent = `${group?.name || 'Selected group'} · ${formatDate(transaction.date)} · KES ${formatMoney(transaction.amount)}`;
     assignMemberSelect.innerHTML = groupMembers.length === 0
       ? '<option value="">No members found in this group</option>'
       : groupMembers.map(member => `<option value="${member.id}">${escapeHtml(member.full_name || 'Unnamed member')} (${escapeHtml(member.reg_no || member.id_number || '-')})</option>`).join('');
@@ -382,6 +394,16 @@ export const renderSavingsList = async () => {
     ]);
   } catch (err) {
     console.warn('[SavingsList] Could not preload members/groups for reconciliation:', err.message);
+  }
+
+  if (officerFilterSelect) {
+    const officerOptions = await loadOfficerOptions({ members, groups });
+    populateOfficerSelect(officerFilterSelect, officerOptions, officerFilter);
+    officerFilterSelect.onchange = () => {
+      officerFilter = officerFilterSelect.value;
+      currentPage = 1;
+      updateUI();
+    };
   }
 
   updateUI();

@@ -1,6 +1,6 @@
 import { expenseService } from '../../services/expenseService.js';
 import { renderPagination } from '../../components/Pagination.js';
-import { formatDate } from '../../core/utils.js';
+import { formatDate, formatMoney } from '../../core/utils.js';
 import { dataCache, debounce } from '../../services/dataCache.js';
 import { pb } from '../../services/api.js';
 import { renderTableSkeletonRows, setButtonLoading, showDelayedLoading } from '../../core/uiState.js';
@@ -97,7 +97,7 @@ export const renderExpenseList = async () => {
 
   const renderExpenseSummary = (items) => {
     const total = items.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
-    expensesTotalAmount.textContent = `KES ${total.toLocaleString()}`;
+    expensesTotalAmount.textContent = `KES ${formatMoney(total)}`;
     expensesTotalPeriod.textContent = getDateRangeLabel();
     expensesTotalCount.textContent = items.length.toLocaleString();
   };
@@ -122,7 +122,7 @@ export const renderExpenseList = async () => {
           formatDate(expense.date),
           expense.expand?.votehead?.name || voteheadMap[expense.votehead] || 'Unknown',
           expense.description || '-',
-          Number(expense.amount || 0).toLocaleString(),
+          formatMoney(expense.amount),
           expense.expand?.recorded_by?.name || expense.expand?.recorded_by?.email || '-'
         ].map(sanitizeCell);
         tsv += row.join('\t') + '\n';
@@ -174,7 +174,7 @@ export const renderExpenseList = async () => {
             <td><span class="badge badge-primary">${e.expand?.votehead?.name || vMap[e.votehead] || 'Unknown'}</span></td>
             <td class="text-sm">${e.description || '-'}</td>
             <td style="text-align: right;" class="font-semibold text-danger">
-              ${(e.amount || 0).toLocaleString()}
+              ${formatMoney(e.amount)}
             </td>
           </tr>
         `).join('');

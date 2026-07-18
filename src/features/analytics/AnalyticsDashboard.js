@@ -5,7 +5,12 @@ import { memberService } from '../../services/memberService.js';
 import { groupService } from '../../services/groupService.js';
 import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
+import { formatMoney, formatPercent } from '../../core/utils.js';
 import { getDaysInArrears, getScheduleArrearsAmount, getScheduleRemaining, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
+import { createOfficerScope, getGroupOfficerId, getMemberOfficerId } from '../../core/officerScope.js';
+import { settingsService } from '../../services/settingsService.js';
+import { createLoanPortfolioCalculator, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
+import { getLoanLiabilityAmount, getLoanPrincipalAmount } from '../../core/repaymentAllocation.js';
 
 export const renderAnalyticsDashboard = async () => {
   const container = document.createElement('div');
@@ -13,12 +18,13 @@ export const renderAnalyticsDashboard = async () => {
   
   // Data variables
   let members = [], loans = [], repayments = [], groups = [], savings = [], schedules = [], users = [];
+  let automaticPenaltyAmount = 500;
 
   const refresh = async () => {
     try {
-      [members, loans, repayments, groups, savings, schedules, users] = await Promise.all([
+      [members, loans, repayments, groups, savings, schedules, users, automaticPenaltyAmount] = await Promise.all([
         memberService.getAll(),
-        loanService.getFullListCached({ cacheKey: 'loans:analytics:expanded:v1' }),
+        loanService.getFullListFresh({ cacheKey: 'loans:financial:expanded:v1' }),
         pb.collection('loan_repayments').getFullList(),
         groupService.getAll(),
         savingsService.getFullListCached({ expand: '', cacheKey: 'savings:analytics:basic:v1' }),
@@ -29,7 +35,8 @@ export const renderAnalyticsDashboard = async () => {
         })).catch(err => {
           console.warn('[Analytics] Loan user list unavailable, using loan records fallback:', err.message);
           return [];
-        })
+        }),
+        settingsService.getNumber('penalty_amount', 500)
       ]);
     } catch (err) {
       console.error('Failed to load analytics data:', err);
@@ -88,24 +95,8 @@ export const renderAnalyticsDashboard = async () => {
     const fSavings = savings.filter(s => isWithinDateRange(s.date || s.created));
 
     // Calculations based on filtered data
-    const getLoanLiability = (loan) => {
-      const storedLiability = Number(loan.total_liability) || 0;
-      if (storedLiability > 0) return storedLiability;
-
-      const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
-      const interest = Number(loan.interest_amount) || 0;
-      return principal + interest;
-    };
-    const getLoanPrincipal = (loan) => {
-      const approved = Number(loan.approved_amount) || 0;
-      if (approved > 0) return approved;
-
-      const liability = Number(loan.total_liability) || 0;
-      const interest = Number(loan.interest_amount) || 0;
-      if (liability > 0) return Math.max(0, liability - interest);
-
-      return Number(loan.amount_applied) || 0;
-    };
+    const getLoanLiability = getLoanLiabilityAmount;
+    const getLoanPrincipal = getLoanPrincipalAmount;
     const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
       '&': '&amp;',
       '<': '&lt;',
@@ -114,7 +105,7 @@ export const renderAnalyticsDashboard = async () => {
       "'": '&#039;'
     }[char]));
     const isActiveDisbursedLoan = (loan) => loan.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan.status) && loan.disbursement_date);
-    const isGivenLoan = (loan) => ['disbursed', 'completed', 'closed'].includes(loan.status) || (['approved', 'partial_approved'].includes(loan.status) && loan.disbursement_date);
+    const isGivenLoan = isDisbursedLoanRecord;
     const getOfficerName = (loan) => {
       const officer = loan.expand?.processed_by;
       if (officer) return officer.name || officer.email || officer.username || 'Loan Officer';
@@ -160,14 +151,9 @@ export const renderAnalyticsDashboard = async () => {
     const getRelationId = (value) => typeof value === 'string' ? value : (value?.id || '');
     const getSavingMemberId = (saving) => getRelationId(saving?.member) || saving?.expand?.member?.id || '';
     const getSavingGroupId = (saving) => getRelationId(saving?.group) || saving?.expand?.group?.id || '';
-    const getMemberAssignedOfficer = (member) => member?.assigned_officer || member?.registered_by || '';
-    const getGroupAssignedOfficer = (group) => group?.assigned_officer || group?.created_by || '';
-    const getLoanResponsibleOfficer = (loan) => {
-      if (!loan) return '';
-      if (loan.member) return getMemberAssignedOfficer(membersById.get(loan.member) || loan.expand?.member) || loan.processed_by || '';
-      if (loan.group) return getGroupAssignedOfficer(groupsById.get(loan.group) || loan.expand?.group) || loan.processed_by || '';
-      return loan.processed_by || '';
-    };
+    const getMemberAssignedOfficer = getMemberOfficerId;
+    const getGroupAssignedOfficer = getGroupOfficerId;
+    const { getLoanOfficerId: getLoanResponsibleOfficer } = createOfficerScope({ members, groups });
     const getResponsibleOfficerName = (loan) => {
       const officerId = getLoanResponsibleOfficer(loan);
       return getUserName(officerId) || getOfficerName(loan);
@@ -299,13 +285,21 @@ export const renderAnalyticsDashboard = async () => {
     const effectiveSchedulePaidMap = buildEffectiveSchedulePaidMap();
     const getEffectiveSchedulePaid = (schedule) => effectiveSchedulePaidMap.get(schedule.id) ?? Math.min(Number(schedule.amount) || 0, Math.max(0, Number(schedule.paid) || 0));
     const getEffectiveScheduleRemaining = (schedule) => Math.max(0, (Number(schedule.amount) || 0) - getEffectiveSchedulePaid(schedule));
-    const allRepaymentsByLoan = repayments.reduce((map, repayment) => {
-      if (!repayment.loan) return map;
-      map.set(repayment.loan, (map.get(repayment.loan) || 0) + (Number(repayment.amount) || 0));
-      return map;
-    }, new Map());
-    const getLoanOutstandingBalance = (loan) => Math.max(0, getLoanLiability(loan) - (allRepaymentsByLoan.get(loan.id) || 0));
-    const loanPortfolio = activeLoans.reduce((sum, l) => sum + getLoanOutstandingBalance(l), 0);
+    const portfolioCalculator = createLoanPortfolioCalculator({
+      repayments,
+      schedules,
+      penaltyAmount: automaticPenaltyAmount
+    });
+    const getLoanOutstandingBalance = portfolioCalculator.getOutstanding;
+    const outstandingPortfolioLoans = loans.filter(loan => (
+      isGivenLoan(loan)
+      && filterByOfficer(loan)
+      && getLoanOutstandingBalance(loan) > 0
+    ));
+    const loanPortfolio = outstandingPortfolioLoans.reduce(
+      (sum, loan) => sum + getLoanOutstandingBalance(loan),
+      0
+    );
     const totalDisbursedLoans = activeLoans.reduce((sum, l) => sum + getLoanPrincipal(l), 0);
     const forecastSchedules = scopedSchedules
       .filter(schedule => {
@@ -321,7 +315,7 @@ export const renderAnalyticsDashboard = async () => {
     const windowRepaymentRateNumber = scheduledGrossCollection > 0
       ? Math.min(100, (scheduledPaidCollection / scheduledGrossCollection) * 100)
       : 0;
-    const windowRepaymentRate = windowRepaymentRateNumber.toFixed(1);
+    const windowRepaymentRate = formatPercent(windowRepaymentRateNumber);
     const expectedCollectionLoans = new Set(outstandingForecastSchedules.map(schedule => schedule.loan)).size;
     const expectedCollectionClients = new Set(outstandingForecastSchedules.map(schedule => {
       const loan = loansById.get(schedule.loan);
@@ -401,20 +395,60 @@ export const renderAnalyticsDashboard = async () => {
     const overallCollectionEfficiencyNumber = scheduledGrossCollection > 0
       ? Math.min(100, (collectedInWindowTotal / scheduledGrossCollection) * 100)
       : 0;
-    const overallCollectionEfficiency = overallCollectionEfficiencyNumber.toFixed(1);
+    const overallCollectionEfficiency = formatPercent(overallCollectionEfficiencyNumber);
     const overallCollectionEfficiencyRating = getEfficiencyRating(overallCollectionEfficiencyNumber, scheduledGrossCollection);
     
     // Correct savings calculation
     const totalSavings = scopedSavings
       .filter(s => !s.is_reversed)
       .reduce((sum, s) => s.type === 'deposit' ? sum + (Number(s.amount) || 0) : sum - (Number(s.amount) || 0), 0);
+
+    const getMonthBounds = (offset = 0) => {
+      const start = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(today.getFullYear(), today.getMonth() + offset + 1, 0, 23, 59, 59, 999);
+      return { start, end };
+    };
+    const isWithinBounds = (value, bounds) => {
+      const date = toValidDate(value);
+      if (!date) return false;
+      return date >= bounds.start && date <= bounds.end;
+    };
+    const calculateGrowthRate = (current, previous) => {
+      if (previous > 0) return ((current - previous) / previous) * 100;
+      if (current > 0) return 100;
+      return 0;
+    };
+    const getGrowthHealth = (rate) => rate >= 0
+      ? { color: 'var(--success)', label: `+${formatPercent(rate)}`, note: 'Growing' }
+      : { color: 'var(--danger)', label: formatPercent(rate), note: 'Declining' };
+    const currentMonthBounds = getMonthBounds(0);
+    const previousMonthBounds = getMonthBounds(-1);
+    const officerScopedSavingsAllTime = savings.filter(filterSavingsByOfficer);
+    const officerScopedLoansAllTime = loans.filter(filterByOfficer);
+    const getSavingsMovementForMonth = (bounds) => officerScopedSavingsAllTime
+      .filter(s => !s.is_reversed)
+      .filter(s => isWithinBounds(s.date || s.created, bounds))
+      .reduce((sum, s) => s.type === 'deposit' ? sum + (Number(s.amount) || 0) : sum - (Number(s.amount) || 0), 0);
+    const getLoanDisbursedForMonth = (bounds) => officerScopedLoansAllTime
+      .filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date)
+      .filter(l => isWithinBounds(l.disbursement_date, bounds))
+      .reduce((sum, l) => sum + (Number(l.approved_amount || l.amount_applied) || 0), 0);
+    const currentMonthSavings = getSavingsMovementForMonth(currentMonthBounds);
+    const previousMonthSavings = getSavingsMovementForMonth(previousMonthBounds);
+    const savingsGrowthRate = calculateGrowthRate(currentMonthSavings, previousMonthSavings);
+    const savingsGrowthHealth = getGrowthHealth(savingsGrowthRate);
+    const currentMonthLoans = getLoanDisbursedForMonth(currentMonthBounds);
+    const previousMonthLoans = getLoanDisbursedForMonth(previousMonthBounds);
+    const loanGrowthRate = calculateGrowthRate(currentMonthLoans, previousMonthLoans);
+    const loanGrowthHealth = getGrowthHealth(loanGrowthRate);
     
     const activeLoanIds = new Set(activeLoans.map(loan => loan.id));
     const activeLoanRepayments = fRepayments.filter(repayment => activeLoanIds.has(repayment.loan));
     const totalRepaid = activeLoanRepayments.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
     const totalLiabilityOverall = activeLoans.reduce((sum, l) => sum + getLoanLiability(l), 0);
-    const repaymentRate = totalLiabilityOverall > 0 ? ((totalRepaid / totalLiabilityOverall) * 100).toFixed(1) : 0;
-    const repaymentRateNumber = Number(repaymentRate) || 0;
+    const repaymentRateNumber = totalLiabilityOverall > 0 ? (totalRepaid / totalLiabilityOverall) * 100 : 0;
+    const repaymentRate = formatPercent(repaymentRateNumber);
     const repaymentHealth = repaymentRateNumber <= 50
       ? { label: 'Action Required', color: 'var(--danger)' }
       : repaymentRateNumber <= 70
@@ -524,49 +558,61 @@ export const renderAnalyticsDashboard = async () => {
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(232, 105, 42, 0.1); color: var(--secondary);">💰</div>
           <div class="kpi-label">Active Loan Portfolio</div>
-          <div class="kpi-value">KES ${loanPortfolio.toLocaleString()}</div>
+          <div class="kpi-value">KES ${formatMoney(loanPortfolio)}</div>
           <div class="kpi-trend trend-up">Outstanding balance after repayments</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(42, 90, 158, 0.1); color: var(--primary-light);">💵</div>
           <div class="kpi-label">Total Disbursed Loans</div>
-          <div class="kpi-value">KES ${totalDisbursedLoans.toLocaleString()}</div>
+          <div class="kpi-value">KES ${formatMoney(totalDisbursedLoans)}</div>
           <div class="kpi-trend trend-up">Principal disbursed only</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background: rgba(232, 105, 42, 0.1); color: var(--secondary);">📈</div>
+          <div class="kpi-label">Loan Growth</div>
+          <div class="kpi-value" style="color: ${loanGrowthHealth.color};">${loanGrowthHealth.label}</div>
+          <div class="kpi-trend" style="color: ${loanGrowthHealth.color};">${loanGrowthHealth.note} · This month KES ${formatMoney(currentMonthLoans)} vs last month KES ${formatMoney(previousMonthLoans)}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(13, 148, 136, 0.1); color: #0d9488;">🧾</div>
           <div class="kpi-label">Officer Collection Efficiency</div>
-          <div class="kpi-value">${overallCollectionEfficiency}%</div>
-          <div class="kpi-trend" style="color: ${overallCollectionEfficiencyRating.color};">${overallCollectionEfficiencyRating.label} · Collected KES ${collectedInWindowTotal.toLocaleString()} of KES ${scheduledGrossCollection.toLocaleString()}</div>
+          <div class="kpi-value">${overallCollectionEfficiency}</div>
+          <div class="kpi-trend" style="color: ${overallCollectionEfficiencyRating.color};">${overallCollectionEfficiencyRating.label} · Collected KES ${formatMoney(collectedInWindowTotal)} of KES ${formatMoney(scheduledGrossCollection)}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">📅</div>
-          <div class="kpi-label">${collectionWindow.label} Collections Expected</div>
-          <div class="kpi-value">KES ${expectedCollection.toLocaleString()}</div>
+          <div class="kpi-label">Outstanding Collections ${collectionWindow.label}</div>
+          <div class="kpi-value">KES ${formatMoney(expectedCollection)}</div>
           <div class="kpi-trend ${expectedCollection > 0 ? 'trend-up' : 'trend-down'}">${expectedCollectionClients} clients · ${outstandingForecastSchedules.length} outstanding of ${forecastSchedules.length} due</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(16, 185, 129, 0.1); color: var(--success);">🎯</div>
           <div class="kpi-label">${collectionWindow.label} Repayment Rate</div>
-          <div class="kpi-value">${windowRepaymentRate}%</div>
-          <div class="kpi-trend" style="color: ${windowRepaymentHealth.color};">${windowRepaymentHealth.label} · Paid KES ${scheduledPaidCollection.toLocaleString()} of KES ${scheduledGrossCollection.toLocaleString()}</div>
+          <div class="kpi-value">${windowRepaymentRate}</div>
+          <div class="kpi-trend" style="color: ${windowRepaymentHealth.color};">${windowRepaymentHealth.label} · Paid KES ${formatMoney(scheduledPaidCollection)} of KES ${formatMoney(scheduledGrossCollection)}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(16, 185, 129, 0.1); color: var(--success);">🏦</div>
           <div class="kpi-label">Total Savings Base</div>
-          <div class="kpi-value">KES ${totalSavings.toLocaleString()}</div>
+          <div class="kpi-value">KES ${formatMoney(totalSavings)}</div>
           <div class="kpi-trend trend-up">${currentOfficerFilter === 'all' ? 'System Liquidity' : 'Savings from assigned clients'}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-icon" style="background: rgba(16, 185, 129, 0.1); color: var(--success);">📊</div>
+          <div class="kpi-label">Savings Growth</div>
+          <div class="kpi-value" style="color: ${savingsGrowthHealth.color};">${savingsGrowthHealth.label}</div>
+          <div class="kpi-trend" style="color: ${savingsGrowthHealth.color};">${savingsGrowthHealth.note} · This month KES ${formatMoney(currentMonthSavings)} vs last month KES ${formatMoney(previousMonthSavings)}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(201, 168, 76, 0.1); color: var(--accent);">✅</div>
           <div class="kpi-label">Global Repayment Rate</div>
-          <div class="kpi-value">${repaymentRate}%</div>
+          <div class="kpi-value">${repaymentRate}</div>
           <div class="kpi-trend" style="color: ${repaymentHealth.color};">${repaymentHealth.label}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(239, 68, 68, 0.1); color: var(--danger);">⚠️</div>
           <div class="kpi-label">Total Arrears</div>
-          <div class="kpi-value">KES ${totalArrearsGlobal.toLocaleString()}</div>
+          <div class="kpi-value">KES ${formatMoney(totalArrearsGlobal)}</div>
           <div class="kpi-trend trend-down">Amount Overdue</div>
         </div>
       </div>
@@ -580,9 +626,9 @@ export const renderAnalyticsDashboard = async () => {
             </div>
           </div>
           <div style="display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end; font-size: 0.8rem;">
-            <span class="badge badge-primary">Due: KES ${scheduledGrossCollection.toLocaleString()}</span>
-            <span class="badge badge-success">Paid: KES ${scheduledPaidCollection.toLocaleString()}</span>
-            <span class="badge badge-warning">Remaining: KES ${expectedCollection.toLocaleString()}</span>
+            <span class="badge badge-primary">Due: KES ${formatMoney(scheduledGrossCollection)}</span>
+            <span class="badge badge-success">Paid: KES ${formatMoney(scheduledPaidCollection)}</span>
+            <span class="badge badge-warning">Remaining: KES ${formatMoney(expectedCollection)}</span>
           </div>
         </div>
         <div class="table-responsive">
@@ -606,9 +652,9 @@ export const renderAnalyticsDashboard = async () => {
                   </td>
                   <td>${row.clients.toLocaleString()}</td>
                   <td>${row.installments.toLocaleString()}</td>
-                  <td class="text-right">${row.gross.toLocaleString()}</td>
-                  <td class="text-right text-success">${row.paid.toLocaleString()}</td>
-                  <td class="text-right font-semibold text-danger">${row.expected.toLocaleString()}</td>
+                  <td class="text-right">${formatMoney(row.gross)}</td>
+                  <td class="text-right text-success">${formatMoney(row.paid)}</td>
+                  <td class="text-right font-semibold text-danger">${formatMoney(row.expected)}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -649,10 +695,10 @@ export const renderAnalyticsDashboard = async () => {
                   </td>
                   <td>${o.clients.toLocaleString()}</td>
                   <td>${o.installments.toLocaleString()}</td>
-                  <td class="text-right">${o.gross.toLocaleString()}</td>
-                  <td class="text-right text-success">${o.collectedInWindow.toLocaleString()}</td>
-                  <td class="text-right font-semibold text-danger">${o.targetGap.toLocaleString()}</td>
-                  <td class="text-right font-semibold" style="color: ${o.rating.color};">${o.efficiency.toFixed(1)}%</td>
+                  <td class="text-right">${formatMoney(o.gross)}</td>
+                  <td class="text-right text-success">${formatMoney(o.collectedInWindow)}</td>
+                  <td class="text-right font-semibold text-danger">${formatMoney(o.targetGap)}</td>
+                  <td class="text-right font-semibold" style="color: ${o.rating.color};">${formatPercent(o.efficiency)}</td>
                   <td><span class="badge" style="background: ${o.rating.color}; color: white; font-size: 0.65rem;">${o.rating.label}</span></td>
                 </tr>
               `).join('')}
@@ -734,7 +780,7 @@ export const renderAnalyticsDashboard = async () => {
                       <div class="font-semibold">${b.name}</div>
                       <div class="text-xs text-muted">${b.id}</div>
                     </td>
-                    <td class="text-right font-semibold text-danger">${b.balance.toLocaleString()}</td>
+                    <td class="text-right font-semibold text-danger">${formatMoney(b.balance)}</td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -801,7 +847,7 @@ export const renderAnalyticsDashboard = async () => {
           <tr>
             <td><div class="font-semibold">${a.name}</div><div class="text-xs text-muted">${a.id}</div></td>
             <td><span class="badge ${badge}">${a.daysOverdue} Days</span></td>
-            <td class="text-right font-semibold text-danger">${a.amount.toLocaleString()}</td>
+            <td class="text-right font-semibold text-danger">${formatMoney(a.amount)}</td>
           </tr>`;
       }).join('');
 
@@ -1063,7 +1109,7 @@ export const renderAnalyticsDashboard = async () => {
             legend: { position: 'bottom' },
             tooltip: {
               callbacks: {
-                label: (context) => `${context.dataset.label}: ${(Number(context.raw) || 0).toFixed(1)}%`
+                label: (context) => `${context.dataset.label}: ${formatPercent(Number(context.raw) || 0)}`
               }
             }
           },

@@ -421,6 +421,56 @@ async function run() {
       console.log('Error updating members unique fields:', e.message);
     }
 
+    console.log('Ensuring member comments collection...');
+    try {
+      const membersColl = await fetchPb('collections/members', 'GET', null, token);
+      const usersColl = await fetchPb('collections/users', 'GET', null, token);
+      const commentFields = [
+        { name: 'member', type: 'relation', required: true, collectionId: membersColl.id, cascadeDelete: true, maxSelect: 1 },
+        { name: 'comment_date', type: 'date', required: true },
+        { name: 'comment', type: 'text', required: true },
+        { name: 'created_by', type: 'relation', required: false, collectionId: usersColl.id, cascadeDelete: false, maxSelect: 1 }
+      ];
+      const commentsDef = {
+        name: 'member_comments',
+        type: 'base',
+        fields: commentFields,
+        listRule: '@request.auth.id != ""',
+        viewRule: '@request.auth.id != ""',
+        createRule: '@request.auth.id != ""',
+        updateRule: '@request.auth.role = "super_admin" || @request.auth.role = "admin"',
+        deleteRule: '@request.auth.role = "super_admin"'
+      };
+
+      try {
+        await fetchPb('collections', 'POST', commentsDef, token);
+        console.log('Member comments collection created.');
+      } catch (createError) {
+        const commentsColl = await fetchPb('collections/member_comments', 'GET', null, token);
+        let changed = false;
+        const existingFieldNames = new Set(commentsColl.fields.map(field => field.name));
+        const missingFields = commentFields.filter(field => !existingFieldNames.has(field.name));
+        if (missingFields.length > 0) {
+          commentsColl.fields.push(...missingFields);
+          changed = true;
+        }
+        for (const key of ['listRule', 'viewRule', 'createRule', 'updateRule', 'deleteRule']) {
+          if (commentsColl[key] !== commentsDef[key]) {
+            commentsColl[key] = commentsDef[key];
+            changed = true;
+          }
+        }
+        if (changed) {
+          await fetchPb('collections/member_comments', 'PATCH', commentsColl, token);
+          console.log('Member comments collection updated.');
+        } else {
+          console.log('Member comments collection already configured.');
+        }
+      }
+    } catch (e) {
+      console.log('Error ensuring member comments collection:', e.message);
+    }
+
     console.log('Ensuring settings file field...');
     try {
       const settingsColl = await fetchPb('collections/settings', 'GET', null, token);
@@ -480,19 +530,72 @@ async function run() {
     console.log('Ensuring loan repayment fine field...');
     try {
       const repaymentsColl = await fetchPb('collections/loan_repayments', 'GET', null, token);
+      let changed = false;
       if (!repaymentsColl.fields.some(field => field.name === 'fine_amount')) {
         repaymentsColl.fields.push({
           name: 'fine_amount',
           type: 'number',
           required: false
         });
-        await fetchPb('collections/loan_repayments', 'PATCH', repaymentsColl, token);
+        changed = true;
         console.log('Loan repayments collection updated with fine_amount field.');
       } else {
         console.log('Loan repayments collection already has fine_amount field.');
       }
+      if (!repaymentsColl.fields.some(field => field.name === 'note')) {
+        repaymentsColl.fields.push({
+          name: 'note',
+          type: 'text',
+          required: false
+        });
+        changed = true;
+        console.log('Loan repayments collection updated with note field.');
+      } else {
+        console.log('Loan repayments collection already has note field.');
+      }
+      if (!repaymentsColl.fields.some(field => field.name === 'principal_amount')) {
+        repaymentsColl.fields.push({
+          name: 'principal_amount',
+          type: 'number',
+          required: false
+        });
+        changed = true;
+        console.log('Loan repayments collection updated with principal_amount field.');
+      } else {
+        console.log('Loan repayments collection already has principal_amount field.');
+      }
+      if (!repaymentsColl.fields.some(field => field.name === 'interest_amount')) {
+        repaymentsColl.fields.push({
+          name: 'interest_amount',
+          type: 'number',
+          required: false
+        });
+        changed = true;
+        console.log('Loan repayments collection updated with interest_amount field.');
+      } else {
+        console.log('Loan repayments collection already has interest_amount field.');
+      }
+      if (changed) await fetchPb('collections/loan_repayments', 'PATCH', repaymentsColl, token);
     } catch (e) {
       console.log('Error updating loan repayment fine field:', e.message);
+    }
+
+    console.log('Ensuring loan schedule waiver reason field...');
+    try {
+      const scheduleColl = await fetchPb('collections/loan_schedule', 'GET', null, token);
+      if (!scheduleColl.fields.some(field => field.name === 'penalty_waiver_reason')) {
+        scheduleColl.fields.push({
+          name: 'penalty_waiver_reason',
+          type: 'text',
+          required: false
+        });
+        await fetchPb('collections/loan_schedule', 'PATCH', scheduleColl, token);
+        console.log('Loan schedule collection updated with penalty_waiver_reason field.');
+      } else {
+        console.log('Loan schedule collection already has penalty_waiver_reason field.');
+      }
+    } catch (e) {
+      console.log('Error updating loan schedule waiver reason field:', e.message);
     }
 
     console.log('Ensuring user login activity collection...');

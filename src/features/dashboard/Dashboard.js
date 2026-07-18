@@ -5,11 +5,15 @@ import { groupService } from '../../services/groupService.js';
 import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
 import { withReturnTo } from '../../core/navigation.js';
+import { formatMoney, formatPercent } from '../../core/utils.js';
 import { getArrearsTotal, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
+import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
 
 export const renderDashboard = async () => {
   const container = document.createElement('div');
+  let currentOfficerFilter = 'all';
+  let officerOptions = [];
   container.innerHTML = `
     <div style="margin-bottom: 24px;">
       <h1 class="text-xl">Dashboard Overview</h1>
@@ -165,6 +169,18 @@ export const renderDashboard = async () => {
       safe('loan repayments', () => dataCache.getLocalFirst('loan_repayments:dashboard:all', () => pb.collection('loan_repayments').getFullList()), [])
     ]);
 
+    if (canUseOfficerFilter()) {
+      officerOptions = await loadOfficerOptions({ members, groups, loans });
+      const officerScope = createOfficerScope({ members, groups });
+      members = members.filter(member => matchesOfficer(getMemberOfficerId(member), currentOfficerFilter));
+      groups = groups.filter(group => matchesOfficer(getGroupOfficerId(group), currentOfficerFilter));
+      loans = loans.filter(loan => matchesOfficer(officerScope.getLoanOfficerId(loan), currentOfficerFilter));
+      savings = savings.filter(saving => matchesOfficer(officerScope.getSavingOfficerId(saving), currentOfficerFilter));
+      const scopedLoanIds = new Set(loans.map(loan => loan.id));
+      schedules = schedules.filter(schedule => scopedLoanIds.has(schedule.loan));
+      repayments = repayments.filter(repayment => scopedLoanIds.has(repayment.loan));
+    }
+
     const savingsByMember = savings.reduce((map, saving) => {
       if (!saving.member) return map;
       const rows = map.get(saving.member) || [];
@@ -202,43 +218,6 @@ export const renderDashboard = async () => {
   const totalSavings = savings
     .reduce((sum, s) => s.type === 'deposit' ? sum + (Number(s.amount) || 0) : sum - (Number(s.amount) || 0), 0);
 
-  const getMonthBounds = (offset = 0) => {
-    const start = new Date(today.getFullYear(), today.getMonth() + offset, 1);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(today.getFullYear(), today.getMonth() + offset + 1, 0, 23, 59, 59, 999);
-    return { start, end };
-  };
-  const isWithinBounds = (value, bounds) => {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return false;
-    return date >= bounds.start && date <= bounds.end;
-  };
-  const calculateGrowthRate = (current, previous) => {
-    if (previous > 0) return ((current - previous) / previous) * 100;
-    if (current > 0) return 100;
-    return 0;
-  };
-  const getGrowthHealth = (rate) => rate >= 0
-    ? { color: 'var(--success)', label: `+${rate.toFixed(1)}%`, note: 'Growing' }
-    : { color: 'var(--danger)', label: `${rate.toFixed(1)}%`, note: 'Declining' };
-  const currentMonth = getMonthBounds(0);
-  const previousMonth = getMonthBounds(-1);
-  const getSavingsMovementForMonth = (bounds) => savings
-    .filter(s => isWithinBounds(s.date || s.created, bounds))
-    .reduce((sum, s) => s.type === 'deposit' ? sum + (Number(s.amount) || 0) : sum - (Number(s.amount) || 0), 0);
-  const getLoanDisbursedForMonth = (bounds) => loans
-    .filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date)
-    .filter(l => isWithinBounds(l.disbursement_date, bounds))
-    .reduce((sum, l) => sum + (Number(l.approved_amount || l.amount_applied) || 0), 0);
-  const currentMonthSavings = getSavingsMovementForMonth(currentMonth);
-  const previousMonthSavings = getSavingsMovementForMonth(previousMonth);
-  const savingsGrowthRate = calculateGrowthRate(currentMonthSavings, previousMonthSavings);
-  const savingsGrowthHealth = getGrowthHealth(savingsGrowthRate);
-  const currentMonthLoans = getLoanDisbursedForMonth(currentMonth);
-  const previousMonthLoans = getLoanDisbursedForMonth(previousMonth);
-  const loanGrowthRate = calculateGrowthRate(currentMonthLoans, previousMonthLoans);
-  const loanGrowthHealth = getGrowthHealth(loanGrowthRate);
-
   const totalArrears = getArrearsTotal(overdueSchedules, today);
   const activeLoanPortfolio = loans
     .filter(isCollectibleLoan)
@@ -247,7 +226,7 @@ export const renderDashboard = async () => {
     .filter(isCollectibleLoan)
     .reduce((sum, loan) => sum + getLoanOutstandingBalance(loan), 0);
   const parRateNumber = activeLoanPortfolio > 0 ? (totalArrears / activeLoanPortfolio) * 100 : 0;
-  const parRate = parRateNumber.toFixed(1);
+  const parRate = formatPercent(parRateNumber);
   const parHealth = parRateNumber >= 16
     ? { label: 'High Risk', color: 'var(--danger)', accent: 'var(--danger)' }
     : parRateNumber >= 11
@@ -262,7 +241,7 @@ export const renderDashboard = async () => {
   const gparRateNumber = activeOutstandingLoanPortfolio > 0
     ? (totalOverdueOutstandingLoans / activeOutstandingLoanPortfolio) * 100
     : 0;
-  const gparRate = gparRateNumber.toFixed(1);
+  const gparRate = formatPercent(gparRateNumber);
   const gparHealth = gparRateNumber >= 41
     ? { label: 'High Risk / Danger', color: 'var(--danger)', accent: 'var(--danger)' }
     : gparRateNumber >= 31
@@ -307,7 +286,7 @@ export const renderDashboard = async () => {
       date: new Date(l.application_date || l.created),
       type: 'loan',
       title: 'Loan Application',
-      description: `Loan ${l.loan_no} for KES ${(l.amount_applied || 0).toLocaleString()} was submitted.`
+      description: `Loan ${l.loan_no} for KES ${formatMoney(l.amount_applied)} was submitted.`
     });
   });
 
@@ -321,7 +300,7 @@ export const renderDashboard = async () => {
       date: new Date(l.disbursement_date),
       type: 'disbursement',
       title: 'Loan Disbursed',
-      description: `Loan ${l.loan_no} (KES ${(l.approved_amount || 0).toLocaleString()}) was disbursed.`
+      description: `Loan ${l.loan_no} (KES ${formatMoney(l.approved_amount)}) was disbursed.`
     });
   });
 
@@ -336,7 +315,7 @@ export const renderDashboard = async () => {
       date: new Date(s.date || s.created),
       type: 'savings',
       title: 'Savings Deposit',
-      description: `KES ${s.amount.toLocaleString()} deposited by client.` // Client mapping omitted for brevity
+      description: `KES ${formatMoney(s.amount)} deposited by client.` // Client mapping omitted for brevity
     });
   });
 
@@ -347,9 +326,12 @@ export const renderDashboard = async () => {
   const recentActivities = activities.slice(0, 5);
 
   container.innerHTML = `
-    <div style="margin-bottom: 24px;">
-      <h1 class="text-xl">Dashboard Overview</h1>
-      <p class="text-muted">Welcome to the Inlet Capital management system.</p>
+    <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;">
+      <div>
+        <h1 class="text-xl">Dashboard Overview</h1>
+        <p class="text-muted">Welcome to the Inlet Capital management system.</p>
+      </div>
+      ${canUseOfficerFilter() ? '<select id="dashboard-officer-filter" class="form-control" style="min-width: 220px; width: auto;"><option value="all">All Loan Officers</option></select>' : ''}
     </div>
     
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 24px; margin-bottom: 32px;">
@@ -367,33 +349,21 @@ export const renderDashboard = async () => {
       </div>
       <div class="card">
         <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Total Savings (KES)</h3>
-        <p style="font-size: 2.5rem; font-weight: 700; color: var(--success);">${totalSavings.toLocaleString()}</p>
-      </div>
-      <div class="card" style="border-left: 4px solid ${savingsGrowthHealth.color};">
-        <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Savings Growth</h3>
-        <p style="font-size: 2.5rem; font-weight: 700; color: ${savingsGrowthHealth.color};">${savingsGrowthHealth.label}</p>
-        <p class="text-xs" style="margin-top: 8px; color: ${savingsGrowthHealth.color}; font-weight: 700;">${savingsGrowthHealth.note}</p>
-        <p class="text-xs text-muted" style="margin-top: 4px;">This month KES ${currentMonthSavings.toLocaleString()} vs last month KES ${previousMonthSavings.toLocaleString()}</p>
-      </div>
-      <div class="card" style="border-left: 4px solid ${loanGrowthHealth.color};">
-        <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Loan Growth</h3>
-        <p style="font-size: 2.5rem; font-weight: 700; color: ${loanGrowthHealth.color};">${loanGrowthHealth.label}</p>
-        <p class="text-xs" style="margin-top: 8px; color: ${loanGrowthHealth.color}; font-weight: 700;">${loanGrowthHealth.note}</p>
-        <p class="text-xs text-muted" style="margin-top: 4px;">Disbursed this month KES ${currentMonthLoans.toLocaleString()} vs last month KES ${previousMonthLoans.toLocaleString()}</p>
+        <p style="font-size: 2.5rem; font-weight: 700; color: var(--success);">${formatMoney(totalSavings)}</p>
       </div>
       <div class="card">
         <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Total Arrears (KES)</h3>
-        <p style="font-size: 2.5rem; font-weight: 700; color: var(--danger);">${totalArrears.toLocaleString()}</p>
+        <p style="font-size: 2.5rem; font-weight: 700; color: var(--danger);">${formatMoney(totalArrears)}</p>
       </div>
       <div class="card" style="border-left: 4px solid ${parHealth.accent};">
         <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Portfolio at Risk (PAR)</h3>
-        <p style="font-size: 2.5rem; font-weight: 700; color: ${parHealth.color};">${parRate}%</p>
+        <p style="font-size: 2.5rem; font-weight: 700; color: ${parHealth.color};">${parRate}</p>
         <p class="text-xs" style="margin-top: 8px; color: ${parHealth.color}; font-weight: 700;">${parHealth.label}</p>
         <p class="text-xs text-muted" style="margin-top: 4px;">Arrears / Active Loan Portfolio</p>
       </div>
       <div class="card" style="border-left: 4px solid ${gparHealth.accent};">
         <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Global Portfolio at Risk (GPAR)</h3>
-        <p style="font-size: 2.5rem; font-weight: 700; color: ${gparHealth.color};">${gparRate}%</p>
+        <p style="font-size: 2.5rem; font-weight: 700; color: ${gparHealth.color};">${gparRate}</p>
         <p class="text-xs" style="margin-top: 8px; color: ${gparHealth.color}; font-weight: 700;">${gparHealth.label}</p>
         <p class="text-xs text-muted" style="margin-top: 4px;">Overdue Outstanding / Loan Portfolio</p>
       </div>
@@ -444,6 +414,14 @@ export const renderDashboard = async () => {
       </div>
     </div>
   `;
+      const dashboardOfficerSelect = container.querySelector('#dashboard-officer-filter');
+      if (dashboardOfficerSelect) {
+        populateOfficerSelect(dashboardOfficerSelect, officerOptions, currentOfficerFilter);
+        dashboardOfficerSelect.onchange = () => {
+          currentOfficerFilter = dashboardOfficerSelect.value;
+          refresh();
+        };
+      }
       setTimeout(maybeShowWelcomeTour, 80);
     } catch (err) {
       console.error('[Dashboard] Refresh failed:', err);

@@ -3,7 +3,7 @@ import { memberService } from '../../services/memberService.js';
 import { groupService } from '../../services/groupService.js';
 import { authService } from '../../services/authService.js';
 import { navigate } from '../../core/router.js';
-import { formatDate } from '../../core/utils.js';
+import { formatDate, formatMoney } from '../../core/utils.js';
 import { setButtonLoading } from '../../core/uiState.js';
 import { getReturnTo, navigateToReturn } from '../../core/navigation.js';
 import Fuse from 'fuse.js';
@@ -488,7 +488,7 @@ export const renderSavingsLedger = async (params = {}) => {
           <div class="text-xs text-muted">${targetName} | ${formatDate(t.date)}</div>
         </div>
         <div class="font-semibold" style="color: ${t.type === 'deposit' ? 'var(--success)' : 'var(--danger)'};">
-          ${t.type === 'deposit' ? '+' : '-'}${t.amount.toLocaleString()}
+          ${t.type === 'deposit' ? '+' : '-'}${formatMoney(t.amount)}
         </div>
       </div>`;
     }).join('');

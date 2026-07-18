@@ -5,6 +5,7 @@ import { renderTableSkeletonRows, showDelayedLoading } from '../../core/uiState.
 import { pb } from '../../services/api.js';
 import { getMemberActivityStatus, getValidActivityDate } from '../../core/memberActivity.js';
 import { authService } from '../../services/authService.js';
+import { canUseOfficerFilter, loadOfficerOptions, populateOfficerSelect } from '../../core/officerScope.js';
 
 export const renderMemberList = async () => {
   const container = document.createElement('div');
@@ -15,8 +16,10 @@ export const renderMemberList = async () => {
   let statusFilter = 'all';
   let alphaSort = 'default';
   let totalItems = 0;
+  let officerFilter = 'all';
   let requestId = 0;
   const canManageLifecycle = authService.hasRole('super_admin');
+  const showOfficerFilter = canUseOfficerFilter();
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -36,6 +39,7 @@ export const renderMemberList = async () => {
             <option value="az">Name A-Z</option>
             <option value="za">Name Z-A</option>
           </select>
+          ${showOfficerFilter ? '<select id="member-officer-filter" class="form-control" style="min-width: 210px; padding: 6px 8px; font-size: 0.75rem;"><option value="all">All Loan Officers</option></select>' : ''}
           <div id="member-status-filter" style="display: flex; gap: 8px; flex-wrap: wrap;">
             <button type="button" class="btn btn-primary btn-sm" data-status-filter="all">All</button>
             <button type="button" class="btn btn-outline btn-sm" data-status-filter="active">Active</button>
@@ -79,6 +83,7 @@ export const renderMemberList = async () => {
   const paginationWrapper = container.querySelector('#pagination-wrapper');
   const searchInput = container.querySelector('#member-search');
   const alphaSortSelect = container.querySelector('#member-alpha-sort');
+  const officerFilterSelect = container.querySelector('#member-officer-filter');
   const statusFilterButtons = Array.from(container.querySelectorAll('[data-status-filter]'));
   const filterCountEl = container.querySelector('#member-filter-count');
 
@@ -294,7 +299,11 @@ export const renderMemberList = async () => {
     try {
       const searchFilter = buildSearchFilter(currentSearch);
       const lifecycleFilter = 'status!="suspended" && status!="closed"';
-      const filter = searchFilter ? `(${lifecycleFilter}) && (${searchFilter})` : lifecycleFilter;
+      const officerScopeFilter = officerFilter === 'all'
+        ? ''
+        : `(assigned_officer="${escapeFilterValue(officerFilter)}" || (assigned_officer="" && registered_by="${escapeFilterValue(officerFilter)}"))`;
+      const filterParts = [lifecycleFilter, searchFilter ? `(${searchFilter})` : '', officerScopeFilter].filter(Boolean);
+      const filter = filterParts.join(' && ');
       const sort = alphaSort === 'az' ? 'full_name' : (alphaSort === 'za' ? '-full_name' : '-created');
       const query = { page: currentPage, perPage: pageSize, filter, sort };
 
@@ -355,6 +364,14 @@ export const renderMemberList = async () => {
     currentPage = 1;
     loadMembers();
   };
+  if (officerFilterSelect) {
+    officerFilterSelect.onchange = () => {
+      officerFilter = officerFilterSelect.value;
+      currentPage = 1;
+      loadMembers();
+    };
+    loadOfficerOptions().then(options => populateOfficerSelect(officerFilterSelect, options, officerFilter));
+  }
   statusFilterButtons.forEach(btn => {
     btn.onclick = () => {
       statusFilter = btn.dataset.statusFilter;

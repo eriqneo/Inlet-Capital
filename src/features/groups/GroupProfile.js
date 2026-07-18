@@ -5,7 +5,7 @@ import { savingsService } from '../../services/savingsService.js';
 import { groupSummaryService } from '../../services/groupSummaryService.js';
 import { authService } from '../../services/authService.js';
 import { navigate } from '../../core/router.js';
-import { formatDate } from '../../core/utils.js';
+import { formatDate, formatMoney, formatPercent } from '../../core/utils.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { pb } from '../../services/api.js';
 import { dataCache } from '../../services/dataCache.js';
@@ -81,13 +81,13 @@ export const renderGroupProfile = async (params) => {
       </div>
 
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px;">
-        <div class="card" style="padding: 16px; border-left: 3px solid var(--success);"><div class="text-xs text-muted">Total Savings</div><div class="text-lg font-semibold text-success">KES ${totalSavings.toLocaleString()}</div></div>
-        <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);"><div class="text-xs text-muted">Outstanding Loan</div><div class="text-lg font-semibold text-danger">KES ${outstandingLoan.toLocaleString()}</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--success);"><div class="text-xs text-muted">Total Savings</div><div class="text-lg font-semibold text-success">KES ${formatMoney(totalSavings)}</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);"><div class="text-xs text-muted">Outstanding Loan</div><div class="text-lg font-semibold text-danger">KES ${formatMoney(outstandingLoan)}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--secondary);"><div class="text-xs text-muted">Total Repayments</div><div class="text-lg font-semibold" style="color: var(--secondary);">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">This Month Collections Expected</div><div class="text-lg font-semibold" style="color: var(--primary);">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);"><div class="text-xs text-muted">Total Fees</div><div class="text-lg font-semibold" style="color: var(--warning);">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">Total Members</div><div class="text-lg font-semibold text-primary">${memberCount}</div></div>
-        <div class="card" style="padding: 16px; border-left: 3px solid ${totalArrears > 0 ? 'var(--danger)' : 'var(--border-color)'};"><div class="text-xs text-muted">Total Arrears</div><div class="text-lg font-semibold" style="color: ${totalArrears > 0 ? 'var(--danger)' : 'inherit'};">KES ${totalArrears.toLocaleString()}</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid ${totalArrears > 0 ? 'var(--danger)' : 'var(--border-color)'};"><div class="text-xs text-muted">Total Arrears</div><div class="text-lg font-semibold" style="color: ${totalArrears > 0 ? 'var(--danger)' : 'inherit'};">KES ${formatMoney(totalArrears)}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);"><div class="text-xs text-muted">Portfolio at Risk (PAR)</div><div class="text-lg font-semibold" style="color: var(--warning);">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid ${membersInArrears > 0 ? 'var(--warning)' : 'var(--border-color)'};"><div class="text-xs text-muted">Members in Arrears</div><div class="text-lg font-semibold" style="color: ${membersInArrears > 0 ? 'var(--warning)' : 'inherit'};">${membersInArrears}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid ${inactiveMembers > 0 ? 'var(--danger)' : 'var(--border-color)'};"><div class="text-xs text-muted">Inactive Members</div><div class="text-lg font-semibold" style="color: ${inactiveMembers > 0 ? 'var(--danger)' : 'inherit'};">${inactiveMembers} <span class="text-xs text-muted" style="font-weight:normal;">(>90 days)</span></div></div>
@@ -468,27 +468,27 @@ export const renderGroupProfile = async (params) => {
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px;">
           <div class="card" style="padding: 16px; border-left: 3px solid var(--success);">
             <div class="text-xs text-muted">Total Savings</div>
-            <div class="text-lg font-semibold text-success" id="group-total-savings-kpi">KES ${totalGroupSavings.toLocaleString()}</div>
+            <div class="text-lg font-semibold text-success" id="group-total-savings-kpi">KES ${formatMoney(totalGroupSavings)}</div>
             <div class="text-xs" id="group-savings-movement-kpi" style="margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap;">
-              <span style="color: var(--success); font-weight: 700;">DEP ${initialSavingsMovement.deposits.toLocaleString()}</span>
-              <span style="color: var(--danger); font-weight: 700;">WIT ${initialSavingsMovement.withdrawals.toLocaleString()}</span>
+              <span style="color: var(--success); font-weight: 700;">DEP ${formatMoney(initialSavingsMovement.deposits)}</span>
+              <span style="color: var(--danger); font-weight: 700;">WIT ${formatMoney(initialSavingsMovement.withdrawals)}</span>
             </div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);">
             <div class="text-xs text-muted">Outstanding Loan</div>
-            <div class="text-lg font-semibold text-danger" id="group-outstanding-loan-kpi">KES ${totalOutstandingLoan.toLocaleString()}</div>
+            <div class="text-lg font-semibold text-danger" id="group-outstanding-loan-kpi">KES ${formatMoney(totalOutstandingLoan)}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid var(--secondary);">
             <div class="text-xs text-muted">Total Repayments</div>
-            <div class="text-lg font-semibold" id="group-total-repayments-kpi" style="color: var(--secondary);">KES ${calculateRepaymentsTotal(allRepayments).toLocaleString()}</div>
+            <div class="text-lg font-semibold" id="group-total-repayments-kpi" style="color: var(--secondary);">KES ${formatMoney(calculateRepaymentsTotal(allRepayments))}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);">
             <div class="text-xs text-muted">This Month Collections Expected</div>
-            <div class="text-lg font-semibold" id="group-this-month-expected-kpi" style="color: var(--primary);">KES ${thisMonthCollectionsExpected.toLocaleString()}</div>
+            <div class="text-lg font-semibold" id="group-this-month-expected-kpi" style="color: var(--primary);">KES ${formatMoney(thisMonthCollectionsExpected)}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);">
             <div class="text-xs text-muted">Total Fees</div>
-            <div class="text-lg font-semibold" id="group-total-fees-kpi" style="color: var(--warning);">KES ${calculateFeesTotal(allGroupMembers, groupLoans).toLocaleString()}</div>
+            <div class="text-lg font-semibold" id="group-total-fees-kpi" style="color: var(--warning);">KES ${formatMoney(calculateFeesTotal(allGroupMembers, groupLoans))}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);">
             <div class="text-xs text-muted">Total Members</div>
@@ -496,11 +496,11 @@ export const renderGroupProfile = async (params) => {
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid ${totalGroupArrears > 0 ? 'var(--danger)' : 'var(--border-color)'};">
             <div class="text-xs text-muted">Total Arrears</div>
-            <div class="text-lg font-semibold" id="group-total-arrears-kpi" style="color: ${totalGroupArrears > 0 ? 'var(--danger)' : 'inherit'};">KES ${totalGroupArrears.toLocaleString()}</div>
+            <div class="text-lg font-semibold" id="group-total-arrears-kpi" style="color: ${totalGroupArrears > 0 ? 'var(--danger)' : 'inherit'};">KES ${formatMoney(totalGroupArrears)}</div>
           </div>
           <div class="card" id="group-par-card" style="padding: 16px; border-left: 3px solid ${groupParHealth.accent};">
             <div class="text-xs text-muted">Portfolio at Risk (PAR)</div>
-            <div class="text-lg font-semibold" id="group-par-kpi" style="color: ${groupParHealth.color};">${groupParRateNumber.toFixed(1)}%</div>
+            <div class="text-lg font-semibold" id="group-par-kpi" style="color: ${groupParHealth.color};">${formatPercent(groupParRateNumber)}</div>
             <div class="text-xs" id="group-par-health" style="margin-top: 4px; color: ${groupParHealth.color}; font-weight: 700;">${groupParHealth.label}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid ${membersInArrearsCount > 0 ? 'var(--warning)' : 'var(--border-color)'};">
@@ -920,29 +920,29 @@ export const renderGroupProfile = async (params) => {
     const feesTotal = calculateFeesTotal(feeKpiMembers, groupLoans);
     const thisMonthExpected = calculateThisMonthCollectionsExpected(scopedLoansForCurrentMonthCollections, allSchedules, allRepayments);
 
-    container.querySelector('#group-total-savings-kpi').textContent = `KES ${savingsTotal.toLocaleString()}`;
+    container.querySelector('#group-total-savings-kpi').textContent = `KES ${formatMoney(savingsTotal)}`;
     const savingsMovementKpi = container.querySelector('#group-savings-movement-kpi');
     if (savingsMovementKpi) {
       savingsMovementKpi.innerHTML = `
-        <span style="color: var(--success); font-weight: 700;">DEP ${savingsMovement.deposits.toLocaleString()}</span>
-        <span style="color: var(--danger); font-weight: 700;">WIT ${savingsMovement.withdrawals.toLocaleString()}</span>
+        <span style="color: var(--success); font-weight: 700;">DEP ${formatMoney(savingsMovement.deposits)}</span>
+        <span style="color: var(--danger); font-weight: 700;">WIT ${formatMoney(savingsMovement.withdrawals)}</span>
       `;
     }
-    container.querySelector('#group-outstanding-loan-kpi').textContent = `KES ${outstandingLoan.toLocaleString()}`;
-    container.querySelector('#group-total-repayments-kpi').textContent = `KES ${repaymentsTotal.toLocaleString()}`;
+    container.querySelector('#group-outstanding-loan-kpi').textContent = `KES ${formatMoney(outstandingLoan)}`;
+    container.querySelector('#group-total-repayments-kpi').textContent = `KES ${formatMoney(repaymentsTotal)}`;
     const thisMonthExpectedKpi = container.querySelector('#group-this-month-expected-kpi');
-    if (thisMonthExpectedKpi) thisMonthExpectedKpi.textContent = `KES ${thisMonthExpected.toLocaleString()}`;
-    container.querySelector('#group-total-fees-kpi').textContent = `KES ${feesTotal.toLocaleString()}`;
+    if (thisMonthExpectedKpi) thisMonthExpectedKpi.textContent = `KES ${formatMoney(thisMonthExpected)}`;
+    container.querySelector('#group-total-fees-kpi').textContent = `KES ${formatMoney(feesTotal)}`;
     container.querySelector('#group-total-members-kpi').textContent = filteredMembers.length;
     const totalArrearsKpi = container.querySelector('#group-total-arrears-kpi');
-    totalArrearsKpi.textContent = `KES ${arrearsAmount.toLocaleString()}`;
+    totalArrearsKpi.textContent = `KES ${formatMoney(arrearsAmount)}`;
     totalArrearsKpi.style.color = arrearsAmount > 0 ? 'var(--danger)' : 'inherit';
     const parCard = container.querySelector('#group-par-card');
     const parKpi = container.querySelector('#group-par-kpi');
     const parHealthEl = container.querySelector('#group-par-health');
     if (parCard) parCard.style.borderLeftColor = parHealth.accent;
     if (parKpi) {
-      parKpi.textContent = `${parRate.toFixed(1)}%`;
+      parKpi.textContent = formatPercent(parRate);
       parKpi.style.color = parHealth.color;
     }
     if (parHealthEl) {
@@ -982,9 +982,9 @@ export const renderGroupProfile = async (params) => {
       <tr>
         <td><div class="font-semibold">${m.full_name}</div><div class="text-xs text-muted">${m.reg_no}</div></td>
         <td>${m.phone_number || m.phone || '-'}</td>
-        <td class="font-semibold text-success">${m.totalSavings.toLocaleString()}</td>
-        <td class="font-semibold text-primary">${olBalance.toLocaleString()}</td>
-        <td class="font-semibold text-danger">${totalArrears.toLocaleString()}</td>
+        <td class="font-semibold text-success">${formatMoney(m.totalSavings)}</td>
+        <td class="font-semibold text-primary">${formatMoney(olBalance)}</td>
+        <td class="font-semibold text-danger">${formatMoney(totalArrears)}</td>
         <td><span class="badge ${totalArrears > 0 ? 'badge-warning' : 'badge-outline'}" style="font-size: 0.65rem;">${totalArrears > 0 ? 'YES' : 'NO'}</span></td>
         <td><span class="badge ${m.isActive ? 'badge-success' : 'badge-danger'}">${m.isActive ? 'ACTIVE' : 'INACTIVE'}</span></td>
         <td><span class="text-sm ${m.isActive ? 'text-muted' : 'text-danger font-semibold'}">${m.lastSavingsDate ? formatDate(m.lastSavingsDate) : 'Never'}</span></td>
@@ -1035,7 +1035,7 @@ export const renderGroupProfile = async (params) => {
       <tr>
         <td><strong>${l.loan_no}</strong></td>
         <td><div class="font-semibold">${getOwnerName(l)}</div><div class="text-xs text-muted">${l.member ? 'Member' : 'Group account'}</div></td>
-        <td class="font-semibold text-danger">${calculateLoanBalance(l, allRepayments).toLocaleString()}</td>
+        <td class="font-semibold text-danger">${formatMoney(calculateLoanBalance(l, allRepayments))}</td>
         <td><span class="badge ${l.status === 'disbursed' ? 'badge-success' : (l.status === 'approved' || l.status === 'partial_approved') ? 'badge-primary' : l.status === 'pending' ? 'badge-warning' : 'badge-danger'}">${l.status.toUpperCase()}</span></td>
         <td>${formatDate(l.application_date)}</td>
         <td class="text-xs text-muted">${getLoanRemarks(l) || '-'}</td>
@@ -1057,7 +1057,7 @@ export const renderGroupProfile = async (params) => {
         <td>${formatDate(s.date)}</td>
         <td><div class="font-semibold">${getOwnerName(s)}</div><div class="text-xs text-muted">${s.member ? 'Member' : 'Group account'}</div></td>
         <td><span class="badge" style="background: ${s.type === 'deposit' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'}; color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type.toUpperCase()}</span></td>
-        <td class="font-semibold" style="color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type === 'deposit' ? '+' : '-'}${s.amount.toLocaleString()}</td>
+        <td class="font-semibold" style="color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type === 'deposit' ? '+' : '-'}${formatMoney(s.amount)}</td>
         <td class="text-xs text-muted">${formatSavingsReference(s)}</td>
         <td class="text-xs text-muted">${s.remarks || '-'}</td>
       </tr>`).join('');

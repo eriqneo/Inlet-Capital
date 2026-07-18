@@ -1,5 +1,6 @@
 import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
+import { addMonthsPreservingDay, getRepaymentScheduleAnchorDate } from '../core/repaymentSchedule.js';
 
 const requireAdminRecordManager = () => {
   const role = pb.authStore.model?.role;
@@ -161,6 +162,13 @@ export const loanService = {
     }, onUpdate);
   },
 
+  async getFullListFresh({ filter = '', sort = '-application_date', expand = 'member,member.group,group,processed_by', cacheKey = 'loans:all:expanded:v1' } = {}) {
+    const key = `${cacheKey}:${sort}:${filter}:${expand}`;
+    const options = { filter, sort };
+    if (expand) options.expand = expand;
+    return await dataCache.refresh(key, () => pb.collection('loans').getFullList(options));
+  },
+
   /**
    * Get a specific loan by its ID (the PocketBase record ID)
    */
@@ -261,6 +269,39 @@ export const loanService = {
     return record;
   },
 
+  async ensureRepaymentSchedule(loan) {
+    const period = Math.max(0, Number.parseInt(loan?.period, 10) || 0);
+    if (!loan?.id || period === 0) {
+      throw new Error('A valid loan period is required to generate the repayment schedule.');
+    }
+
+    const existing = await this.getScheduleForLoan(loan.id);
+    const existingInstallments = new Set(
+      existing.map(item => Number(item.installment_no)).filter(Number.isFinite)
+    );
+    const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
+    const liability = Number(loan.total_liability) || (principal + (Number(loan.interest_amount) || 0));
+    const installmentAmount = liability / period;
+    const startDate = getRepaymentScheduleAnchorDate(loan);
+    const created = [];
+
+    for (let installmentNo = 1; installmentNo <= period; installmentNo += 1) {
+      if (existingInstallments.has(installmentNo)) continue;
+      const dueDate = addMonthsPreservingDay(startDate, installmentNo);
+      created.push(await this.createScheduleInstallment({
+        loan: loan.id,
+        installment_no: installmentNo,
+        due_date: dueDate.toISOString(),
+        amount: installmentAmount,
+        paid: 0,
+        status: 'pending',
+        penalty_waived: false
+      }));
+    }
+
+    return [...existing, ...created].sort((a, b) => Number(a.installment_no) - Number(b.installment_no));
+  },
+
   async updateScheduleInstallment(id, data) {
     const record = await pb.collection('loan_schedule').update(id, data);
     await dataCache.invalidate('loan_schedule');
@@ -282,7 +323,18 @@ export const loanService = {
   },
 
   async recordRepayment(data) {
-    const record = await pb.collection('loan_repayments').create(data);
+    let record;
+    try {
+      record = await pb.collection('loan_repayments').create(data);
+    } catch (error) {
+      const hasAllocationFields = 'principal_amount' in data || 'interest_amount' in data;
+      if (error?.status !== 400 || !hasAllocationFields) throw error;
+      const compatibleData = { ...data };
+      delete compatibleData.principal_amount;
+      delete compatibleData.interest_amount;
+      record = await pb.collection('loan_repayments').create(compatibleData);
+      console.warn('[loanService] Repayment allocation fields are not installed yet; saved using the legacy schema.');
+    }
     await dataCache.invalidate('loan_repayments');
     await dataCache.invalidatePrefix('loan_repayments:');
     await dataCache.invalidatePrefix('loan_repayments');

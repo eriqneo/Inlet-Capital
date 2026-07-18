@@ -5,19 +5,32 @@ import { savingsService } from '../../services/savingsService.js';
 import { expenseService } from '../../services/expenseService.js';
 import { pb } from '../../services/api.js';
 import { renderPagination } from '../../components/Pagination.js';
-import { formatDate } from '../../core/utils.js';
+import { formatDate, formatMoney, formatPercent } from '../../core/utils.js';
 import { dataCache } from '../../services/dataCache.js';
 import { renderCardSkeleton, renderInlineSyncStatus, renderTableSkeletonRows, setButtonLoading } from '../../core/uiState.js';
 import { settingsService } from '../../services/settingsService.js';
 import { getArrearsTotal, getDaysInArrears, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
-import { calculateLoanPenaltyState, getRepaymentPrincipalAmount } from '../../core/loanPenalty.js';
+import { getRepaymentPrincipalAmount } from '../../core/loanPenalty.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
+import {
+  calculateCollectedInterest,
+  getLoanInterestAmount as getContractInterestAmount,
+  getLoanLiabilityAmount as getContractLiabilityAmount,
+  getLoanPrincipalAmount as getContractPrincipalAmount
+} from '../../core/repaymentAllocation.js';
+import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
+import { createLoanPortfolioCalculator, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
 
 export const renderReportsDashboard = async () => {
   const container = document.createElement('div');
   let members = [], groups = [], loans = [], expenses = [], schedules = [], savings = [], repayments = [];
   let lifecycleGroups = [], lifecycleMembers = [];
+  let sourceMembers = [], sourceGroups = [], sourceLoans = [], sourceSchedules = [], sourceSavings = [], sourceRepayments = [];
+  let sourceLifecycleGroups = [], sourceLifecycleMembers = [];
+  let officerFilter = 'all';
+  let repaymentsLoaded = false;
+  let repaymentLoadError = null;
   let orgSettings = {};
   try {
     orgSettings = await settingsService.getAll();
@@ -26,7 +39,13 @@ export const renderReportsDashboard = async () => {
   }
   const orgName = orgSettings.org_name || 'Inlet Capital';
   const orgLogo = orgSettings.org_logo || '';
-  const automaticPenaltyAmount = Number(orgSettings.penalty_amount) || 500;
+  const configuredPenaltyAmount = Number(orgSettings.penalty_amount);
+  const automaticPenaltyAmount = orgSettings.penalty_amount === null
+    || orgSettings.penalty_amount === undefined
+    || orgSettings.penalty_amount === ''
+    || !Number.isFinite(configuredPenaltyAmount)
+    ? 500
+    : configuredPenaltyAmount;
   const generatedAt = new Date();
   const pageSize = 10;
   let pages = {
@@ -104,6 +123,7 @@ export const renderReportsDashboard = async () => {
         <div id="filter-controls" style="display: flex; gap: 8px; flex-wrap: wrap;">
           <!-- Filters injected here -->
         </div>
+        ${canUseOfficerFilter() ? '<select id="report-officer-filter" class="form-control" style="min-width: 210px; padding: 6px 8px; font-size: 0.75rem;"><option value="all">All Loan Officers</option></select>' : ''}
         <div id="sort-controls" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border-left: 1px solid var(--border-color); padding-left: 12px;">
           <!-- Sort control injected here -->
         </div>
@@ -641,28 +661,30 @@ export const renderReportsDashboard = async () => {
     if (liability <= 0) return 0;
     return Math.max(0, liability - getLoanPrincipalAmount(loan));
   };
-  const getLoanLiabilityAmount = (loan) => {
-    const storedLiability = Number(loan?.total_liability) || 0;
-    if (storedLiability > 0) return storedLiability;
-    return getLoanPrincipalAmount(loan) + getLoanInterestAmount(loan);
-  };
-  const isLoanPortfolioRecord = (loan) => Boolean(loan?.disbursement_date)
-    && ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan?.status);
+  const getLoanLiabilityAmount = getContractLiabilityAmount;
+  const isLoanPortfolioRecord = isDisbursedLoanRecord;
   const getSchedulesForLoan = (loan) => schedules.filter(schedule => getScheduleLoanId(schedule) === loan?.id);
   const getRepaymentsForLoan = (loan) => repayments.filter(repayment => getRepaymentLoanId(repayment) === loan?.id);
-  const getLoanPenaltyState = (loan) => calculateLoanPenaltyState({
-    schedules: getSchedulesForLoan(loan),
-    repayments: getRepaymentsForLoan(loan),
-    penaltyAmount: automaticPenaltyAmount
-  });
   const getLoanPrincipalPaidAmount = (loan) => getRepaymentsForLoan(loan)
     .reduce((sum, repayment) => sum + getRepaymentPrincipalAmount(repayment), 0);
   const getLoanCashPaidAmount = (loan) => getRepaymentsForLoan(loan)
     .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
-  const getLoanOutstandingBalanceWithFines = (loan) => {
-    const penaltyState = getLoanPenaltyState(loan);
-    return Math.max(0, getLoanLiabilityAmount(loan) - getLoanPrincipalPaidAmount(loan) + penaltyState.outstandingFine);
+  let portfolioCalculatorCache = null;
+  let portfolioRepaymentsRef = null;
+  let portfolioSchedulesRef = null;
+  const getPortfolioCalculator = () => {
+    if (!portfolioCalculatorCache || portfolioRepaymentsRef !== repayments || portfolioSchedulesRef !== schedules) {
+      portfolioRepaymentsRef = repayments;
+      portfolioSchedulesRef = schedules;
+      portfolioCalculatorCache = createLoanPortfolioCalculator({
+        repayments,
+        schedules,
+        penaltyAmount: automaticPenaltyAmount
+      });
+    }
+    return portfolioCalculatorCache;
   };
+  const getLoanOutstandingBalanceWithFines = (loan) => getPortfolioCalculator().getOutstanding(loan);
   const toValidDate = (value) => {
     if (!value) return null;
     const date = new Date(value);
@@ -756,118 +778,26 @@ export const renderReportsDashboard = async () => {
     const getRegistrationFeeDate = (member) => member.registration_fee_details?.date || member.registration_fee_details?.captured_at || member.registration_date || member.created;
     const getProcessingFeeDate = (loan) => loan.processing_fee_details?.date || loan.processing_fee_details?.captured_at || loan.created;
     const repaymentsByLoanId = repayments.reduce((map, repayment) => {
-      const loanId = repayment.loan ? String(repayment.loan) : '';
+      const loanId = getRepaymentLoanId(repayment);
       if (!loanId) return map;
       if (!map.has(loanId)) map.set(loanId, []);
       map.get(loanId).push(repayment);
       return map;
     }, new Map());
-    const schedulesByLoanId = schedules.reduce((map, schedule) => {
-      const loanId = schedule.loan ? String(schedule.loan) : '';
-      if (!loanId) return map;
-      if (!map.has(loanId)) map.set(loanId, []);
-      map.get(loanId).push(schedule);
-      return map;
-    }, new Map());
-    const getLoanPrincipal = (loan) => {
-      const approved = Number(loan.approved_amount) || 0;
-      if (approved > 0) return approved;
-      const applied = Number(loan.amount_applied) || 0;
-      if (applied > 0) return applied;
-      const liability = Number(loan.total_liability) || 0;
-      const interest = Number(loan.interest_amount) || 0;
-      if (liability > 0) return Math.max(0, liability - interest);
-      return 0;
-    };
-    const getLoanInterest = (loan) => {
-      const storedInterest = Number(loan.interest_amount) || 0;
-      if (storedInterest > 0) return storedInterest;
-      const liability = Number(loan.total_liability) || 0;
-      if (liability <= 0) return 0;
-      return Math.max(0, liability - getLoanPrincipal(loan));
-    };
-    const getLoanLiabilityForInterest = (loan) => {
-      const storedLiability = Number(loan.total_liability) || 0;
-      if (storedLiability > 0) return storedLiability;
-      return getLoanPrincipal(loan) + getLoanInterest(loan);
-    };
     const getInterestCollectedInRange = (loan) => {
-      const expectedInterest = getLoanInterest(loan);
-      if (expectedInterest <= 0) return 0;
-      const liability = getLoanLiabilityForInterest(loan);
-      if (liability <= 0) return 0;
       const { fromDate, toDate } = getDateRangeBounds();
-      const loanRepayments = (repaymentsByLoanId.get(String(loan.id)) || [])
-        .map(repayment => ({
-          ...repayment,
-          _paidDate: toValidDate(repayment.date || repayment.created),
-          _amount: Math.max(0, Number(repayment.amount) || 0)
-        }))
-        .filter(repayment => repayment._paidDate && repayment._amount > 0)
-        .filter(repayment => !toDate || repayment._paidDate <= toDate)
-        .sort((a, b) => a._paidDate - b._paidDate);
-
-      const loanSchedules = (schedulesByLoanId.get(String(loan.id)) || [])
-        .slice()
-        .sort((a, b) => {
-          const installmentDiff = (Number(a.installment_no) || 0) - (Number(b.installment_no) || 0);
-          if (installmentDiff !== 0) return installmentDiff;
-          return (toValidDate(a.due_date)?.getTime() || 0) - (toValidDate(b.due_date)?.getTime() || 0);
-        });
-
-      if (loanSchedules.length === 0) {
-        const interestShare = expectedInterest / liability;
-        return loanRepayments
-          .filter(repayment => (!fromDate || repayment._paidDate >= fromDate))
-          .reduce((sum, repayment) => sum + Math.min(expectedInterest - sum, repayment._amount * interestShare), 0);
-      }
-
-      const period = Math.max(loanSchedules.length, Number(loan.period) || 0, 1);
-      const fallbackInstallmentAmount = liability / period;
-      const fallbackInstallmentInterest = expectedInterest / period;
-      const installmentState = loanSchedules.map(schedule => {
-        const amount = Number(schedule.amount) || fallbackInstallmentAmount;
-        const interestAmount = Math.min(amount, fallbackInstallmentInterest);
-        return {
-          amount,
-          paid: 0,
-          interestAmount,
-          interestCollected: 0
-        };
+      return calculateCollectedInterest({
+        loan,
+        repayments: repaymentsByLoanId.get(String(loan.id)) || [],
+        fromDate,
+        toDate
       });
-
-      let collectedInterest = 0;
-      for (const repayment of loanRepayments) {
-        let remainingPayment = repayment._amount;
-        const countThisPayment = (!fromDate || repayment._paidDate >= fromDate);
-
-        for (const installment of installmentState) {
-          if (remainingPayment <= 0) break;
-          const installmentRemaining = Math.max(0, installment.amount - installment.paid);
-          if (installmentRemaining <= 0) continue;
-
-          const applied = Math.min(remainingPayment, installmentRemaining);
-          const interestRatio = installment.amount > 0 ? installment.interestAmount / installment.amount : 0;
-          const interestApplied = Math.min(
-            Math.max(0, installment.interestAmount - installment.interestCollected),
-            applied * interestRatio
-          );
-
-          installment.paid += applied;
-          installment.interestCollected += interestApplied;
-          remainingPayment -= applied;
-
-          if (countThisPayment) collectedInterest += interestApplied;
-        }
-      }
-
-      return Math.min(expectedInterest, Math.max(0, collectedInterest));
     };
     const isIncomeLoan = (loan) => {
       if (!['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status)) return false;
       return !!(loan.disbursement_date || repaymentsByLoanId.has(String(loan.id)));
     };
-    const getLoanIncomeDate = (loan) => loan.disbursement_date || loan.approval_date || loan.application_date || loan.created;
+    const getLoanIncomeDate = (loan) => loan.disbursement_date || loan.approved_date || loan.application_date || loan.created;
     const approvedLoans = loans.filter(l => isIncomeLoan(l) && isWithinDateRange(getLoanIncomeDate(l)));
     const repaymentLoans = loans.filter(isIncomeLoan);
     const filteredExpenses = expenses.filter(e => isWithinDateRange(e.date || e.expense_date || e.created));
@@ -875,8 +805,8 @@ export const renderReportsDashboard = async () => {
     const filteredProcessingFeeLoans = loans.filter(l => l.processing_fee_paid && isWithinDateRange(getProcessingFeeDate(l)));
     const filteredFineRepayments = repayments.filter(r => isWithinDateRange(r.date || r.created));
     const totalExpenses = filteredExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-    const totalCapitalDisbursed = approvedLoans.reduce((sum, l) => sum + getLoanPrincipal(l), 0);
-    const expectedInterest = approvedLoans.reduce((sum, l) => sum + getLoanInterest(l), 0);
+    const totalCapitalDisbursed = approvedLoans.reduce((sum, l) => sum + getContractPrincipalAmount(l), 0);
+    const expectedInterest = approvedLoans.reduce((sum, l) => sum + getContractInterestAmount(l), 0);
     const collectedInterest = repaymentLoans.reduce((sum, loan) => sum + getInterestCollectedInRange(loan), 0);
     const collectedFines = filteredFineRepayments.reduce((sum, r) => sum + (Number(r.fine_amount) || 0), 0);
     const processingFeesCollected = filteredProcessingFeeLoans.reduce((sum, l) => sum + (l.processing_fee || 0), 0);
@@ -884,16 +814,20 @@ export const renderReportsDashboard = async () => {
     const totalIncome = registrationFeesCollected + processingFeesCollected + collectedInterest + collectedFines;
     const netIncome = totalIncome - totalExpenses;
 
-    container.querySelector('#pl-capital-disbursed').textContent = `KES ${totalCapitalDisbursed.toLocaleString()}`;
-    container.querySelector('#pl-registration-fees').textContent = `KES ${registrationFeesCollected.toLocaleString()}`;
-    container.querySelector('#pl-processing-fees').textContent = `KES ${processingFeesCollected.toLocaleString()}`;
-    container.querySelector('#pl-expected-interest').textContent = `KES ${expectedInterest.toLocaleString()}`;
-    container.querySelector('#pl-collected-interest').textContent = `KES ${collectedInterest.toLocaleString()}`;
-    container.querySelector('#pl-collected-fines').textContent = `KES ${collectedFines.toLocaleString()}`;
-    container.querySelector('#pl-total-income').textContent = `KES ${totalIncome.toLocaleString()}`;
-    container.querySelector('#pl-operating-costs').textContent = `KES ${totalExpenses.toLocaleString()}`;
+    container.querySelector('#pl-capital-disbursed').textContent = `KES ${formatMoney(totalCapitalDisbursed)}`;
+    container.querySelector('#pl-registration-fees').textContent = `KES ${formatMoney(registrationFeesCollected)}`;
+    container.querySelector('#pl-processing-fees').textContent = `KES ${formatMoney(processingFeesCollected)}`;
+    container.querySelector('#pl-expected-interest').textContent = `KES ${formatMoney(expectedInterest)}`;
+    const collectedInterestEl = container.querySelector('#pl-collected-interest');
+    collectedInterestEl.textContent = repaymentLoadError
+      ? 'Unavailable'
+      : repaymentsLoaded ? `KES ${formatMoney(collectedInterest)}` : 'Syncing...';
+    collectedInterestEl.title = repaymentLoadError?.message || '';
+    container.querySelector('#pl-collected-fines').textContent = `KES ${formatMoney(collectedFines)}`;
+    container.querySelector('#pl-total-income').textContent = `KES ${formatMoney(totalIncome)}`;
+    container.querySelector('#pl-operating-costs').textContent = `KES ${formatMoney(totalExpenses)}`;
     const netIncomeEl = container.querySelector('#pl-net-income');
-    netIncomeEl.textContent = `KES ${netIncome.toLocaleString()}`;
+    netIncomeEl.textContent = `KES ${formatMoney(netIncome)}`;
     netIncomeEl.style.color = netIncome >= 0 ? 'var(--success)' : 'var(--danger)';
   };
 
@@ -917,7 +851,8 @@ export const renderReportsDashboard = async () => {
       const totalRepaid = mLoans.reduce((sum, l) => sum + getLoanCashPaidAmount(l), 0);
       const principalPaid = mLoans.reduce((sum, l) => sum + getLoanPrincipalPaidAmount(l), 0);
       const olBalance = mLoans.reduce((sum, l) => sum + getLoanOutstandingBalanceWithFines(l), 0);
-      const percentRepaid = totalLiability > 0 ? ((principalPaid / totalLiability) * 100).toFixed(1) : (mLoans.length > 0 ? 100 : 0);
+      const percentRepaid = totalLiability > 0 ? (principalPaid / totalLiability) * 100 : (mLoans.length > 0 ? 100 : 0);
+      const percentRepaidLabel = formatPercent(percentRepaid);
       const overdueSchedules = schedules.filter(s => collectibleLoans.some(ml => ml.id === getScheduleLoanId(s)) && isScheduleInArrears(s));
       const onTrack = overdueSchedules.length === 0;
       const totalArrears = getArrearsTotal(overdueSchedules);
@@ -941,6 +876,7 @@ export const renderReportsDashboard = async () => {
         totalRepaid,
         totalArrears,
         percentRepaid,
+        percentRepaidLabel,
         onTrack,
         activityStatus
       };
@@ -966,37 +902,45 @@ export const renderReportsDashboard = async () => {
     const savingsAnalysisTotal = totalIndividualSavings + groupAccountNet;
     const savingsAnalysisDeposits = totalIndividualDeposits + groupAccountDeposits;
     const savingsAnalysisWithdrawals = totalIndividualWithdrawals + groupAccountWithdrawals;
-    const totalIndividualOlb = individualRows.reduce((sum, row) => sum + (Number(row.olBalance) || 0), 0);
+    const memberLoanOlb = loans
+      .filter(loan => isLoanPortfolioRecord(loan) && getLoanMemberId(loan))
+      .filter(loan => {
+        if (activeFilters.individuals === 'all') return true;
+        const member = loan.expand?.member || members.find(item => item.id === getLoanMemberId(loan));
+        const isGroupMember = Boolean(getRelationId(member?.group) || member?.expand?.group?.id);
+        return activeFilters.individuals === 'group' ? isGroupMember : !isGroupMember;
+      })
+      .reduce((sum, loan) => sum + getLoanOutstandingBalanceWithFines(loan), 0);
     const groupAccountOlb = loans
       .filter(loan => isLoanPortfolioRecord(loan) && !getLoanMemberId(loan) && getLoanGroupId(loan))
       .filter(() => activeFilters.individuals === 'all' || activeFilters.individuals === 'group')
       .reduce((sum, loan) => sum + getLoanOutstandingBalanceWithFines(loan), 0);
-    const olbAnalysisTotal = totalIndividualOlb + groupAccountOlb;
+    const olbAnalysisTotal = memberLoanOlb + groupAccountOlb;
     const totalIndividualArrears = individualRows.reduce((sum, row) => sum + (Number(row.totalArrears) || 0), 0);
     const savingsKpiEl = container.querySelector('#individuals-total-savings');
     const olbKpiEl = container.querySelector('#individuals-total-olb');
     const arrearsKpiEl = container.querySelector('#individuals-total-arrears');
     if (savingsKpiEl) {
       savingsKpiEl.innerHTML = `
-        <div>KES ${savingsAnalysisTotal.toLocaleString()}</div>
+        <div>KES ${formatMoney(savingsAnalysisTotal)}</div>
         <div class="text-xs" style="margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap;">
-          <span style="color: var(--success); font-weight: 700;">DEP ${savingsAnalysisDeposits.toLocaleString()}</span>
-          <span style="color: var(--danger); font-weight: 700;">WIT ${savingsAnalysisWithdrawals.toLocaleString()}</span>
-          <span style="color: var(--text-muted); font-weight: 700;">Members ${totalIndividualSavings.toLocaleString()}</span>
-          ${groupAccountNet !== 0 ? `<span style="color: var(--primary); font-weight: 700;">Group Acc ${groupAccountNet.toLocaleString()}</span>` : ''}
+          <span style="color: var(--success); font-weight: 700;">DEP ${formatMoney(savingsAnalysisDeposits)}</span>
+          <span style="color: var(--danger); font-weight: 700;">WIT ${formatMoney(savingsAnalysisWithdrawals)}</span>
+          <span style="color: var(--text-muted); font-weight: 700;">Members ${formatMoney(totalIndividualSavings)}</span>
+          ${groupAccountNet !== 0 ? `<span style="color: var(--primary); font-weight: 700;">Group Acc ${formatMoney(groupAccountNet)}</span>` : ''}
         </div>
       `;
     }
     if (olbKpiEl) {
       olbKpiEl.innerHTML = `
-        <div>KES ${olbAnalysisTotal.toLocaleString()}</div>
+        <div>KES ${formatMoney(olbAnalysisTotal)}</div>
         <div class="text-xs" style="margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap;">
-          <span style="color: var(--text-muted); font-weight: 700;">Members ${totalIndividualOlb.toLocaleString()}</span>
-          ${groupAccountOlb !== 0 ? `<span style="color: var(--primary); font-weight: 700;">Group Acc ${groupAccountOlb.toLocaleString()}</span>` : ''}
+          <span style="color: var(--text-muted); font-weight: 700;">Members ${formatMoney(memberLoanOlb)}</span>
+          ${groupAccountOlb !== 0 ? `<span style="color: var(--primary); font-weight: 700;">Group Acc ${formatMoney(groupAccountOlb)}</span>` : ''}
         </div>
       `;
     }
-    if (arrearsKpiEl) arrearsKpiEl.textContent = `KES ${totalIndividualArrears.toLocaleString()}`;
+    if (arrearsKpiEl) arrearsKpiEl.textContent = `KES ${formatMoney(totalIndividualArrears)}`;
     const entriesCountEl = container.querySelector('#individuals-entry-count');
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
 
@@ -1014,6 +958,7 @@ export const renderReportsDashboard = async () => {
         totalRepaid,
         totalArrears,
         percentRepaid,
+        percentRepaidLabel,
         onTrack,
         activityStatus
       } = row;
@@ -1023,16 +968,16 @@ export const renderReportsDashboard = async () => {
           <td><div class="font-semibold">${m.full_name}</div><div class="text-xs text-muted">${m.id_number}</div></td>
           <td><span class="badge badge-outline" style="font-size: 0.65rem;">${groupName}</span></td>
           <td>${getMemberPhone(m)}</td>
-          <td>${(totalSav || 0).toLocaleString()}</td>
-          <td class="text-danger font-semibold">${olBalance.toLocaleString()}</td>
-          <td class="text-success font-semibold">${totalRepaid.toLocaleString()}</td>
-          <td class="text-danger font-bold">${totalArrears.toLocaleString()}</td>
+          <td>${formatMoney(totalSav)}</td>
+          <td class="text-danger font-semibold">${formatMoney(olBalance)}</td>
+          <td class="text-success font-semibold">${formatMoney(totalRepaid)}</td>
+          <td class="text-danger font-bold">${formatMoney(totalArrears)}</td>
           <td>
             <div style="display: flex; align-items: center; gap: 8px;">
               <div style="flex: 1; height: 6px; background: var(--bg-light); border-radius: 3px; overflow: hidden; min-width: 60px;">
                 <div style="width: ${percentRepaid}%; height: 100%; background: ${percentRepaid >= 100 ? 'var(--success)' : 'var(--primary)'};"></div>
               </div>
-              <span class="text-xs font-semibold">${percentRepaid}%</span>
+              <span class="text-xs font-semibold">${percentRepaidLabel}</span>
             </div>
           </td>
           <td>
@@ -1150,11 +1095,11 @@ export const renderReportsDashboard = async () => {
           </div>
         </td>
         <td>${getGroupPhone(g)}</td>
-        <td>${(g.totalSavings || 0).toLocaleString()}</td>
-        <td>${(g.outstandingLoan || 0).toLocaleString()}</td>
+        <td>${formatMoney(g.totalSavings)}</td>
+        <td>${formatMoney(g.outstandingLoan)}</td>
         <td class="font-bold text-success">${g.activeCount}</td>
         <td class="font-bold text-danger">${g.inactiveCount}</td>
-        <td class="font-bold text-danger">${(g.arrearsAmount || 0).toLocaleString()}</td>
+        <td class="font-bold text-danger">${formatMoney(g.arrearsAmount)}</td>
         <td class="font-bold text-warning">${g.arrearsCount}</td>
       </tr>`).join('');
     
@@ -1204,7 +1149,7 @@ export const renderReportsDashboard = async () => {
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
     const totalDisbursed = filtered.reduce((sum, loan) => sum + (Number(loan.approved_amount || loan.amount_applied) || 0), 0);
     const totalDisbursedEl = container.querySelector('#disbursements-total-amount');
-    if (totalDisbursedEl) totalDisbursedEl.textContent = `KES ${totalDisbursed.toLocaleString()}`;
+    if (totalDisbursedEl) totalDisbursedEl.textContent = `KES ${formatMoney(totalDisbursed)}`;
 
     const sortedRows = sortReportRows('disbursements', filtered);
     const paginated = getReportRowsForView('disbursements', sortedRows);
@@ -1228,7 +1173,7 @@ export const renderReportsDashboard = async () => {
         <td class="font-semibold">${clientName}</td>
         <td>${clientPhone}</td>
         <td><span class="badge badge-outline" style="font-size: 0.65rem;">${groupName}</span></td>
-        <td class="text-success font-semibold">${(l.approved_amount || 0).toLocaleString()}</td>
+        <td class="text-success font-semibold">${formatMoney(l.approved_amount)}</td>
         <td>${formatDate(l.application_date)}</td>
         <td>${l.approved_date ? formatDate(l.approved_date) : '-'}</td>
         <td>${formatDate(l.disbursement_date)}</td>
@@ -1264,7 +1209,7 @@ export const renderReportsDashboard = async () => {
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
     const amountReceived = filtered.reduce((sum, member) => sum + (Number(member.registration_fee) || 0), 0);
     const amountReceivedEl = container.querySelector('#registrations-amount-received');
-    if (amountReceivedEl) amountReceivedEl.textContent = `KES ${amountReceived.toLocaleString()}`;
+    if (amountReceivedEl) amountReceivedEl.textContent = `KES ${formatMoney(amountReceived)}`;
 
     const sortedRows = sortReportRows('registrations', filtered);
     const paginated = getReportRowsForView('registrations', sortedRows);
@@ -1281,7 +1226,7 @@ export const renderReportsDashboard = async () => {
         </td>
         <td><span class="badge badge-outline" style="font-size: 0.65rem;">${groupName}</span></td>
         <td><div>${m.id_number}</div><div class="text-xs text-muted">${getMemberPhone(m)}</div></td>
-        <td>${(m.registration_fee || 0).toLocaleString()}</td>
+        <td>${formatMoney(m.registration_fee)}</td>
         <td>${m.nok_name} (${m.nok_relationship})</td>
         <td><a href="tel:${m.nok_phone}" style="color: var(--primary); text-decoration: none;">${m.nok_phone || '-'}</a></td>
       </tr>`;
@@ -1413,23 +1358,23 @@ export const renderReportsDashboard = async () => {
     container.querySelector('#cashflow-summary').innerHTML = `
       <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
         <div class="text-xs text-muted">Total Cash-In</div>
-        <div class="text-lg font-bold">KES ${total.toLocaleString()}</div>
+        <div class="text-lg font-bold">KES ${formatMoney(total)}</div>
       </div>
       <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--success);">
         <div class="text-xs text-muted">Savings Net</div>
-        <div class="text-lg font-bold">KES ${sTotal.toLocaleString()}</div>
+        <div class="text-lg font-bold">KES ${formatMoney(sTotal)}</div>
         <div class="text-xs" style="margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap;">
-          <span style="color: var(--success); font-weight: 700;">DEP ${savingsDeposits.toLocaleString()}</span>
-          <span style="color: var(--danger); font-weight: 700;">WIT ${savingsWithdrawals.toLocaleString()}</span>
+          <span style="color: var(--success); font-weight: 700;">DEP ${formatMoney(savingsDeposits)}</span>
+          <span style="color: var(--danger); font-weight: 700;">WIT ${formatMoney(savingsWithdrawals)}</span>
         </div>
       </div>
       <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--secondary);">
         <div class="text-xs text-muted">Repayments</div>
-        <div class="text-lg font-bold">KES ${rTotal.toLocaleString()}</div>
+        <div class="text-lg font-bold">KES ${formatMoney(rTotal)}</div>
       </div>
       <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--warning);">
         <div class="text-xs text-muted">Total Fees</div>
-        <div class="text-lg font-bold">KES ${fTotal.toLocaleString()}</div>
+        <div class="text-lg font-bold">KES ${formatMoney(fTotal)}</div>
       </div>
     `;
 
@@ -1450,7 +1395,7 @@ export const renderReportsDashboard = async () => {
           </td>
           <td><span class="badge badge-outline" style="font-size: 0.65rem;">${e.groupName}</span></td>
           <td>${e.ref || '-'}</td>
-          <td class="font-bold ${e.direction === 'out' ? 'text-danger' : 'text-success'}">${e.direction === 'out' ? '-' : ''}${(e.amount || 0).toLocaleString()}</td>
+          <td class="font-bold ${e.direction === 'out' ? 'text-danger' : 'text-success'}">${e.direction === 'out' ? '-' : ''}${formatMoney(e.amount)}</td>
           <td><span class="text-xs">${e.method}</span></td>
         </tr>`;
     }).join('');
@@ -1487,7 +1432,7 @@ export const renderReportsDashboard = async () => {
     });
     const totalWithdrawalsAmount = filtered.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
     const totalEl = container.querySelector('#withdrawals-total-amount');
-    if (totalEl) totalEl.textContent = `KES ${totalWithdrawalsAmount.toLocaleString()}`;
+    if (totalEl) totalEl.textContent = `KES ${formatMoney(totalWithdrawalsAmount)}`;
     const entriesCountEl = container.querySelector('#withdrawals-entry-count');
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
 
@@ -1501,7 +1446,7 @@ export const renderReportsDashboard = async () => {
           <td class="font-semibold">${row.name}</td>
           <td><span class="badge badge-outline" style="font-size: 0.65rem;">${row.groupName}</span></td>
           <td class="text-sm">${row.remarks}</td>
-          <td class="font-bold text-danger">${row.amount.toLocaleString()}</td>
+          <td class="font-bold text-danger">${formatMoney(row.amount)}</td>
         </tr>
       `).join('');
 
@@ -1556,17 +1501,15 @@ export const renderReportsDashboard = async () => {
       .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
 
     const totalPaid = repaymentRows.reduce((sum, row) => sum + row.paid, 0);
-    const uniqueLoanOlb = new Map();
-    repaymentRows.forEach(row => {
-      if (!uniqueLoanOlb.has(row.loan.id)) uniqueLoanOlb.set(row.loan.id, row.olb);
-    });
-    const totalOlb = Array.from(uniqueLoanOlb.values()).reduce((sum, value) => sum + value, 0);
+    const totalOlb = loans
+      .filter(isLoanPortfolioRecord)
+      .reduce((sum, loan) => sum + getLoanOutstandingBalanceWithFines(loan), 0);
 
     const totalPaidEl = container.querySelector('#repayments-total-paid');
     const totalOlbEl = container.querySelector('#repayments-total-olb');
     const entriesCountEl = container.querySelector('#repayments-entry-count');
-    if (totalPaidEl) totalPaidEl.textContent = `KES ${totalPaid.toLocaleString()}`;
-    if (totalOlbEl) totalOlbEl.textContent = `KES ${totalOlb.toLocaleString()}`;
+    if (totalPaidEl) totalPaidEl.textContent = `KES ${formatMoney(totalPaid)}`;
+    if (totalOlbEl) totalOlbEl.textContent = `KES ${formatMoney(totalOlb)}`;
     if (entriesCountEl) entriesCountEl.textContent = repaymentRows.length.toLocaleString();
 
     const sortedRows = sortReportRows('repayments', repaymentRows);
@@ -1579,10 +1522,10 @@ export const renderReportsDashboard = async () => {
           <td class="font-semibold">${row.loan.loan_no || '-'}</td>
           <td class="font-semibold">${row.clientName}</td>
           <td><span class="badge badge-outline" style="font-size: 0.65rem;">${row.groupName}</span></td>
-          <td class="font-bold text-danger">${row.olb.toLocaleString()}</td>
+          <td class="font-bold text-danger">${formatMoney(row.olb)}</td>
           <td><span class="badge ${row.statusClass}" style="font-size: 0.65rem;">${row.status}</span></td>
           <td>${formatDate(row.dueDate)}</td>
-          <td class="font-bold text-success">${row.paid.toLocaleString()}</td>
+          <td class="font-bold text-success">${formatMoney(row.paid)}</td>
           <td>
             <button class="btn btn-primary btn-xs" onclick="window.location.hash = '${withReturnTo(`#/loans/${row.loan.loan_no}`, '#/reports?tab=repayments')}'">View Profile</button>
           </td>
@@ -1669,7 +1612,7 @@ export const renderReportsDashboard = async () => {
     const count31To60El = container.querySelector('#arrears-31-60-count');
     const count61PlusEl = container.querySelector('#arrears-61-plus-count');
     const entriesCountEl = container.querySelector('#arrears-entry-count');
-    if (totalAmountEl) totalAmountEl.textContent = `KES ${totalArrearsAmount.toLocaleString()}`;
+    if (totalAmountEl) totalAmountEl.textContent = `KES ${formatMoney(totalArrearsAmount)}`;
     if (count1To30El) count1To30El.textContent = count1To30.toLocaleString();
     if (count31To60El) count31To60El.textContent = count31To60.toLocaleString();
     if (count61PlusEl) count61PlusEl.textContent = count61Plus.toLocaleString();
@@ -1689,8 +1632,8 @@ export const renderReportsDashboard = async () => {
           <td>${formatDate(row.dueDate)}</td>
           <td class="font-bold" style="color: ${row.ageBand.color};">${row.daysLate}</td>
           <td><span class="badge ${row.ageBand.badgeClass}" style="font-size: 0.65rem;">${row.ageBand.label}</span></td>
-          <td class="font-bold text-danger">${row.arrearsAmount.toLocaleString()}</td>
-          <td class="font-bold text-danger">${row.olb.toLocaleString()}</td>
+          <td class="font-bold text-danger">${formatMoney(row.arrearsAmount)}</td>
+          <td class="font-bold text-danger">${formatMoney(row.olb)}</td>
           <td>
             <button class="btn btn-primary btn-xs" onclick="window.location.hash = '${withReturnTo(`#/loans/${row.loan.loan_no}`, '#/reports?tab=arrears')}'">View Profile</button>
           </td>
@@ -1876,15 +1819,15 @@ export const renderReportsDashboard = async () => {
           </div>
           <div class="text-right">
             <div class="text-xs text-muted">Amount Due</div>
-            <div class="font-bold text-danger">KES ${Number(a.remainingAmount || 0).toLocaleString()}</div>
+            <div class="font-bold text-danger">KES ${formatMoney(Number(a.remainingAmount || 0))}</div>
           </div>
         </div>
         <div style="font-size: 0.8rem; margin-bottom: 16px; background: var(--bg-light); padding: 8px; border-radius: 6px;">
           <div style="display: flex; justify-content: space-between;"><span>Loan No:</span> <strong>${a.loanObj?.loan_no}</strong></div>
           <div style="display: flex; justify-content: space-between;"><span>Installment:</span> <strong>#${a.installment_no}</strong></div>
           <div style="display: flex; justify-content: space-between;"><span>Due Date:</span> <strong>${formatDate(a.due_date)}</strong></div>
-          <div style="display: flex; justify-content: space-between;"><span>Installment Amount:</span> <strong>${Number(a.amount || 0).toLocaleString()}</strong></div>
-          <div style="display: flex; justify-content: space-between;"><span>Paid This Installment:</span> <strong>${Number(a.paid || 0).toLocaleString()}</strong></div>
+          <div style="display: flex; justify-content: space-between;"><span>Installment Amount:</span> <strong>${formatMoney(a.amount)}</strong></div>
+          <div style="display: flex; justify-content: space-between;"><span>Paid This Installment:</span> <strong>${formatMoney(a.paid)}</strong></div>
         </div>
         <div style="font-size: 0.8rem; margin-bottom: 16px;">
           <div>📞 <strong>Phone:</strong> ${getMemberPhone(a.member) !== '-' ? getMemberPhone(a.member) : getGroupPhone(a.loanObj?.expand?.group)}</div>
@@ -1928,6 +1871,7 @@ export const renderReportsDashboard = async () => {
   const sections = container.querySelectorAll('.report-section');
   const filterControls = container.querySelector('#filter-controls');
   const sortControls = container.querySelector('#sort-controls');
+  const reportOfficerSelect = container.querySelector('#report-officer-filter');
   const dateFromInput = container.querySelector('#report-date-from');
   const dateToInput = container.querySelector('#report-date-to');
   const dateClearBtn = container.querySelector('#report-date-clear');
@@ -1958,10 +1902,11 @@ export const renderReportsDashboard = async () => {
     const reportName = reportLabels[activeTab] || activeTab;
     const filterLabel = activeTab === 'pl' || activeTab === 'alerts' ? 'All Records' : getActiveFilterLabel(activeTab);
     const dateLabel = getDateRangeLabel();
+    const officerLabel = reportOfficerSelect?.selectedOptions?.[0]?.textContent || 'All Loan Officers';
     const reportNameEl = container.querySelector('#print-report-name');
     const reportMetaEl = container.querySelector('#print-report-meta');
     if (reportNameEl) reportNameEl.textContent = reportName;
-    if (reportMetaEl) reportMetaEl.textContent = `${filterLabel} • ${dateLabel} • Generated ${new Date().toLocaleString()}`;
+    if (reportMetaEl) reportMetaEl.textContent = `${officerLabel} • ${filterLabel} • ${dateLabel} • Generated ${new Date().toLocaleString()}`;
   };
 
   const refreshActiveReport = () => {
@@ -1978,6 +1923,18 @@ export const renderReportsDashboard = async () => {
     if (tab === 'lifecycle') updateLifecycle();
     if (tab === 'alerts') updateAlerts();
     updatePrintHeader();
+  };
+  const applyOfficerScope = () => {
+    const scope = createOfficerScope({ members: sourceMembers, groups: sourceGroups });
+    members = sourceMembers.filter(member => matchesOfficer(getMemberOfficerId(member), officerFilter));
+    groups = sourceGroups.filter(group => matchesOfficer(getGroupOfficerId(group), officerFilter));
+    lifecycleMembers = sourceLifecycleMembers.filter(member => matchesOfficer(getMemberOfficerId(member), officerFilter));
+    lifecycleGroups = sourceLifecycleGroups.filter(group => matchesOfficer(getGroupOfficerId(group), officerFilter));
+    loans = sourceLoans.filter(loan => matchesOfficer(scope.getLoanOfficerId(loan), officerFilter));
+    savings = sourceSavings.filter(saving => matchesOfficer(scope.getSavingOfficerId(saving), officerFilter));
+    const loanIds = new Set(loans.map(loan => loan.id));
+    schedules = sourceSchedules.filter(schedule => loanIds.has(getScheduleLoanId(schedule)));
+    repayments = sourceRepayments.filter(repayment => loanIds.has(getRepaymentLoanId(repayment)));
   };
   const renderFullActiveReport = () => {
     isFullReportRender = true;
@@ -2265,24 +2222,45 @@ export const renderReportsDashboard = async () => {
 
   const loadReportsData = async () => {
     try {
-      [members, groups, lifecycleGroups, lifecycleMembers, loans, expenses] = await Promise.all([
+      [sourceMembers, sourceGroups, sourceLifecycleGroups, sourceLifecycleMembers, sourceLoans, expenses] = await Promise.all([
         memberService.getAll(),
         groupService.getAll(),
         groupService.getAllIncludingLifecycle(),
         memberService.getAllIncludingLifecycle(),
-        loanService.getFullListCached({ expand: 'member,member.group,group,processed_by', cacheKey: 'loans:reports:expanded:v2' }),
+        loanService.getFullListFresh({ expand: 'member,member.group,group,processed_by', cacheKey: 'loans:financial:expanded:v1' }),
         dataCache.get('expenses', () => expenseService.getFullList())
       ]);
+
+      applyOfficerScope();
+      if (reportOfficerSelect) {
+        const options = await loadOfficerOptions({ members: sourceMembers, groups: sourceGroups, loans: sourceLoans });
+        populateOfficerSelect(reportOfficerSelect, options, officerFilter);
+      }
 
       updatePLSummary();
       updateDisbursements();
       updateRegistrations();
 
-      [schedules, savings, repayments] = await Promise.all([
+      const [scheduleResult, savingsResult, repaymentResult] = await Promise.allSettled([
         pb.collection('loan_schedule').getFullList(),
         savingsService.getFullListCached({ expand: 'member,member.group,group', cacheKey: 'savings:reports:expanded:v2' }),
         pb.collection('loan_repayments').getFullList({ expand: 'loan,loan.member,loan.group' })
       ]);
+
+      if (scheduleResult.status === 'fulfilled') sourceSchedules = scheduleResult.value;
+      else console.warn('[Reports] Loan schedules unavailable:', scheduleResult.reason?.message);
+      if (savingsResult.status === 'fulfilled') sourceSavings = savingsResult.value;
+      else console.warn('[Reports] Savings unavailable:', savingsResult.reason?.message);
+      if (repaymentResult.status === 'fulfilled') {
+        sourceRepayments = repaymentResult.value;
+        repaymentsLoaded = true;
+        repaymentLoadError = null;
+      } else {
+        repaymentLoadError = repaymentResult.reason || new Error('Repayments could not be loaded');
+        console.warn('[Reports] Loan repayments unavailable:', repaymentLoadError.message);
+      }
+
+      applyOfficerScope();
 
       updateIndividuals();
       updateGroups();
@@ -2302,6 +2280,15 @@ export const renderReportsDashboard = async () => {
       activeSection.innerHTML = `<div class="card text-center text-danger">Failed to load reports: ${err.message}</div>`;
     }
   };
+
+  if (reportOfficerSelect) {
+    reportOfficerSelect.onchange = () => {
+      officerFilter = reportOfficerSelect.value;
+      Object.keys(pages).forEach(key => { pages[key] = 1; });
+      applyOfficerScope();
+      refreshActiveReport();
+    };
+  }
 
   loadReportsData();
 

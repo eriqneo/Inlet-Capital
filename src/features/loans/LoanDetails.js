@@ -2,12 +2,13 @@ import { loanService } from '../../services/loanService.js';
 import { authService } from '../../services/authService.js';
 import { settingsService } from '../../services/settingsService.js';
 import { renderPagination } from '../../components/Pagination.js';
-import { formatDate } from '../../core/utils.js';
+import { formatDate, formatMoney, formatPercent } from '../../core/utils.js';
 import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
 import { getScheduleRemaining, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
 import { calculateLoanPenaltyState, getRepaymentPrincipalAmount } from '../../core/loanPenalty.js';
 import { getReturnTo } from '../../core/navigation.js';
-import { addMonthsPreservingDay, getRepaymentScheduleAnchorDate } from '../../core/repaymentSchedule.js';
+import { memberCommentService } from '../../services/memberCommentService.js';
+import { allocateRepayment, getRepaymentContractAmount } from '../../core/repaymentAllocation.js';
 
 export const renderLoanDetails = async (params) => {
   const { id: loanNo } = params;
@@ -44,16 +45,27 @@ export const renderLoanDetails = async (params) => {
     return;
   }
 
-  // Fetch related data — fall back to empty arrays on error (new collections may have auth issues)
-  let schedule = [], repayments = [];
-  try {
-    [schedule, repayments] = await Promise.all([
-      loanService.getScheduleForLoan(loan.id),
-      loanService.getRepaymentsForLoan(loan.id)
-    ]);
-  } catch (err) {
-    console.warn('[LoanDetails] Could not load schedule/repayments:', err.message);
-  }
+  // Keep optional features from blanking financial records when one request fails.
+  let schedule = [], repayments = [], memberComments = [];
+  let scheduleLoadError = null;
+  let repaymentLoadError = null;
+  let commentsLoadError = null;
+  const [scheduleResult, repaymentResult, commentsResult] = await Promise.allSettled([
+    loanService.getScheduleForLoan(loan.id),
+    loanService.getRepaymentsForLoan(loan.id),
+    loan.member ? memberCommentService.getByMember(loan.member) : Promise.resolve([])
+  ]);
+
+  if (scheduleResult.status === 'fulfilled') schedule = scheduleResult.value;
+  else scheduleLoadError = scheduleResult.reason;
+  if (repaymentResult.status === 'fulfilled') repayments = repaymentResult.value;
+  else repaymentLoadError = repaymentResult.reason;
+  if (commentsResult.status === 'fulfilled') memberComments = commentsResult.value;
+  else commentsLoadError = commentsResult.reason;
+
+  if (scheduleLoadError) console.warn('[LoanDetails] Could not load repayment schedule:', scheduleLoadError.message);
+  if (repaymentLoadError) console.warn('[LoanDetails] Could not load repayments:', repaymentLoadError.message);
+  if (commentsLoadError) console.warn('[LoanDetails] Could not load member comments:', commentsLoadError.message);
 
   // PocketBase Settings
   const settings = {
@@ -102,7 +114,12 @@ export const renderLoanDetails = async (params) => {
 
   let historyPage = 1;
   let schedulePage = 1;
+  let commentsPage = 1;
   const pageSize = 10;
+  const canRepairSchedule = authService.hasRole('super_admin', 'admin')
+    && loan.status === 'disbursed'
+    && !scheduleLoadError
+    && schedule.length < (Number(loan.period) || 0);
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
@@ -148,7 +165,7 @@ export const renderLoanDetails = async (params) => {
             "${loan.rejectionReason}"
           </div>
           <div style="margin-top: 12px; display: flex; gap: 20px; flex-wrap: wrap;">
-            <div style="font-size: 0.8rem; color: var(--text-muted);">📋 Applied Amount: <span class="font-semibold">KES ${loan.amount_applied.toLocaleString()}</span></div>
+            <div style="font-size: 0.8rem; color: var(--text-muted);">📋 Applied Amount: <span class="font-semibold">KES ${formatMoney(loan.amount_applied)}</span></div>
             <div style="font-size: 0.8rem; color: #ef4444;">❌ Approved Amount: <span class="font-semibold">Nil</span></div>
           </div>
         </div>
@@ -169,14 +186,14 @@ export const renderLoanDetails = async (params) => {
           </div>
           <div style="margin-bottom: 14px; background: white; border-radius: 8px; padding: 14px 16px; box-shadow: 0 2px 8px rgba(245,158,11,0.08);">
             <div style="display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 0.8rem;">
-              <span style="color: var(--text-muted);">Applied: <b>KES ${loan.amount_applied.toLocaleString()}</b></span>
-              <span style="color: #d97706;">Approved: <b>KES ${(loan.approved_amount || 0).toLocaleString()}</b></span>
+              <span style="color: var(--text-muted);">Applied: <b>KES ${formatMoney(loan.amount_applied)}</b></span>
+              <span style="color: #d97706;">Approved: <b>KES ${formatMoney(loan.approved_amount)}</b></span>
             </div>
             <div style="height: 10px; background: #fef3c7; border-radius: 5px; overflow: hidden;">
               <div style="height: 100%; width: ${Math.round(((loan.approved_amount || 0) / loan.amount_applied) * 100)}%; background: linear-gradient(90deg, #f59e0b, #d97706); border-radius: 5px;"></div>
             </div>
             <div style="margin-top: 6px; font-size: 0.75rem; color: #d97706; text-align: right; font-weight: 600;">
-              KES ${(loan.amount_applied - (loan.approved_amount || 0)).toLocaleString()} reduced (${Math.round(((loan.amount_applied - (loan.approved_amount || 0)) / loan.amount_applied) * 100)}% cut)
+              KES ${formatMoney(loan.amount_applied - (loan.approved_amount || 0))} reduced (${formatPercent(((loan.amount_applied - (loan.approved_amount || 0)) / loan.amount_applied) * 100)} cut)
             </div>
           </div>
           ${loan.approval_comment ? `
@@ -199,11 +216,12 @@ export const renderLoanDetails = async (params) => {
 
     <!-- Main Content Tabs -->
     <div class="card" style="padding: 0; margin-bottom: 24px;">
-      <div style="display: flex; border-bottom: 1px solid var(--border-color);">
+      <div class="loan-detail-tabs" style="display: flex; border-bottom: 1px solid var(--border-color); overflow-x: auto;">
         <button class="tab-btn active" data-tab="overview">📊 Overview</button>
         <button class="tab-btn" data-tab="history">📋 Repayment History</button>
         <button class="tab-btn" data-tab="record">💳 Record Payment</button>
         <button class="tab-btn" data-tab="schedule">🗓 Schedule</button>
+        <button class="tab-btn" data-tab="comments">💬 Comments</button>
       </div>
 
       <div id="tab-content" style="padding: 24px;">
@@ -215,7 +233,7 @@ export const renderLoanDetails = async (params) => {
                 🟢 Approved & Awaiting Disbursement
               </h3>
               <p class="text-sm text-muted" style="margin: 8px 0 0 0; line-height: 1.5;">
-                This loan has been successfully approved for <strong>KES ${loan.approved_amount?.toLocaleString() || loan.amount_applied.toLocaleString()}</strong>.<br>
+                This loan has been successfully approved for <strong>KES ${formatMoney(loan.approved_amount || loan.amount_applied)}</strong>.<br>
                 The physical funds are pending release to the applicant.
               </p>
               <div style="margin-top: 12px; font-size: 0.8rem; font-weight: 600; color: #b91c1c;">
@@ -255,12 +273,12 @@ export const renderLoanDetails = async (params) => {
             <div>
               <div class="text-sm text-muted" style="margin-bottom: 8px;">Outstanding Balance</div>
               <div style="font-size: 2.5rem; font-weight: 700; color: ${outstandingBalance > 0 ? 'var(--danger)' : 'var(--success)'};">
-                KES ${outstandingBalance.toLocaleString()}
+                KES ${formatMoney(outstandingBalance)}
               </div>
               <div style="margin-top: 20px;">
                 <div style="display: flex; justify-content: space-between; font-size: 0.875rem; margin-bottom: 6px;">
                   <span>Current Loan Progress</span>
-                  <span class="font-semibold">${percentRepaid.toFixed(1)}%</span>
+                  <span class="font-semibold">${formatPercent(percentRepaid)}</span>
                 </div>
                 <div style="width: 100%; height: 8px; background: var(--bg-light); border-radius: 4px; overflow: hidden;">
                   <div style="width: ${Math.max(0, Math.min(100, percentRepaid))}%; height: 100%; background: var(--success); transition: width 0.3s ease;"></div>
@@ -271,11 +289,11 @@ export const renderLoanDetails = async (params) => {
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Total Liability</div>
-                <div class="font-semibold">KES ${totalLiability.toLocaleString()}</div>
+                <div class="font-semibold">KES ${formatMoney(totalLiability)}</div>
               </div>
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Total Repaid</div>
-                <div class="font-semibold text-success">KES ${totalPaid.toLocaleString()}</div>
+                <div class="font-semibold text-success">KES ${formatMoney(totalPaid)}</div>
               </div>
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Period</div>
@@ -343,6 +361,7 @@ export const renderLoanDetails = async (params) => {
                 <tr>
                   <th>Date</th>
                   <th>Ref / Method</th>
+                  <th>Notes</th>
                   <th>Recorded By</th>
                   <th class="text-right">Fine</th>
                   <th class="text-right">Amount</th>
@@ -359,11 +378,11 @@ export const renderLoanDetails = async (params) => {
             <div class="form-group">
               <label class="form-label">Payment Amount (KES)</label>
               <input type="number" name="amount" class="form-control" required min="1" max="${outstandingBalance}" step="1" placeholder="Enter amount paid" />
-              <p class="text-xs text-muted" style="margin-top: 4px;">Max payable: KES ${outstandingBalance.toLocaleString()}</p>
+              <p class="text-xs text-muted" style="margin-top: 4px;">Max payable: KES ${formatMoney(outstandingBalance)}</p>
             </div>
             <div class="form-group" style="background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.22); border-radius: 8px; padding: 12px;">
               <label class="form-label">Automatic Late Fine Due</label>
-              <div class="font-semibold" style="color: ${penaltyState.outstandingFine > 0 ? 'var(--warning)' : 'var(--text-muted)'};">KES ${penaltyState.outstandingFine.toLocaleString()}</div>
+              <div class="font-semibold" style="color: ${penaltyState.outstandingFine > 0 ? 'var(--warning)' : 'var(--text-muted)'};">KES ${formatMoney(penaltyState.outstandingFine)}</div>
               <p class="text-xs text-muted" style="margin-top: 4px;">Applied automatically when a scheduled installment is overdue. The fine is included in the max payable amount.</p>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
@@ -395,6 +414,18 @@ export const renderLoanDetails = async (params) => {
         </div>
 
         <div id="schedule-tab" style="display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px;">
+            <div>
+              <h3 style="margin: 0;">Repayment Schedule</h3>
+              <div class="text-sm text-muted">${schedule.length} of ${Number(loan.period) || 0} installments</div>
+            </div>
+            ${canRepairSchedule ? '<button type="button" class="btn btn-primary btn-sm" id="repair-schedule-btn">Repair Schedule</button>' : ''}
+          </div>
+          ${scheduleLoadError ? `
+            <div class="alert alert-danger" style="margin-bottom: 16px;">
+              The repayment schedule could not be loaded. Please refresh or check access to the loan_schedule collection.
+            </div>
+          ` : ''}
           <div class="table-responsive">
             <table class="table">
               <thead>
@@ -410,12 +441,47 @@ export const renderLoanDetails = async (params) => {
           </div>
           <div id="loan-schedule-pagination"></div>
         </div>
+
+        <div id="comments-tab" style="display: none;">
+          ${loan.member ? `
+            <form id="loan-comment-form" class="card" style="box-shadow: none; border: 1px solid var(--border-color); margin-bottom: 18px;">
+              <div style="display: grid; grid-template-columns: minmax(180px, 220px) 1fr auto; gap: 14px; align-items: end;">
+                <div class="form-group" style="margin: 0;">
+                  <label class="form-label">Comment Date</label>
+                  <input type="date" name="comment_date" class="form-control" value="${todayInputValue}" required />
+                </div>
+                <div class="form-group" style="margin: 0;">
+                  <label class="form-label">Comment</label>
+                  <textarea name="comment" class="form-control" rows="2" placeholder="Capture follow-up notes, payment promise, visit outcome, or loan officer observation..." required></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">Save Comment</button>
+              </div>
+            </form>
+            <div class="table-responsive">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Comment</th>
+                    <th>Recorded By</th>
+                  </tr>
+                </thead>
+                <tbody id="loan-comments-body"></tbody>
+              </table>
+            </div>
+            <div id="loan-comments-pagination"></div>
+          ` : `
+            <div class="text-center text-muted" style="padding: 32px;">Comments are available for member loans only. This is a group account loan.</div>
+          `}
+        </div>
       </div>
     </div>
 
     <style>
       .tab-btn {
         flex: 1;
+        flex-basis: 150px;
+        min-width: 150px;
         padding: 16px;
         background: transparent;
         border: none;
@@ -438,13 +504,16 @@ export const renderLoanDetails = async (params) => {
     const paginated = repayments.slice(start, start + pageSize);
     const tbody = container.querySelector('#repayment-history-body');
     
-    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="5" class="text-center text-muted">No repayments recorded yet.</td></tr>' : paginated.map(r => `
+    tbody.innerHTML = repaymentLoadError
+      ? '<tr><td colspan="6" class="text-center text-danger">Repayment history could not be loaded.</td></tr>'
+      : paginated.length === 0 ? '<tr><td colspan="6" class="text-center text-muted">No repayments recorded yet.</td></tr>' : paginated.map(r => `
       <tr>
         <td>${formatDate(r.date)}</td>
         <td><div class="font-semibold">${r.reference || 'N/A'}</div><div class="text-xs text-muted">${r.method.toUpperCase()}</div></td>
+        <td class="text-sm">${r.note ? escapeHtml(r.note) : '<span class="text-muted">-</span>'}</td>
         <td class="text-xs text-muted">${r.expand?.recorded_by?.name || 'System'}</td>
-        <td class="text-right font-semibold ${Number(r.fine_amount) > 0 ? 'text-warning' : 'text-muted'}">${(Number(r.fine_amount) || 0).toLocaleString()}</td>
-        <td class="text-right font-semibold text-success">${(Number(r.amount) || 0).toLocaleString()}</td>
+        <td class="text-right font-semibold ${Number(r.fine_amount) > 0 ? 'text-warning' : 'text-muted'}">${formatMoney(r.fine_amount)}</td>
+        <td class="text-right font-semibold text-success">${formatMoney(r.amount)}</td>
       </tr>`).join('');
 
     const pag = container.querySelector('#repayment-history-pagination');
@@ -468,7 +537,9 @@ export const renderLoanDetails = async (params) => {
     });
     const isAdmin = authService.hasRole('super_admin', 'admin');
     
-    tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No schedule found.</td></tr>' : paginated.map(s => {
+    tbody.innerHTML = scheduleLoadError
+      ? '<tr><td colspan="4" class="text-center text-danger">Repayment schedule could not be loaded.</td></tr>'
+      : paginated.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No schedule found.</td></tr>' : paginated.map(s => {
       let amountDue = getScheduleRemaining(s);
       const isOverdue = isScheduleInArrears(s);
       const penaltyBalance = penaltyBalanceBySchedule.get(s.id) || 0;
@@ -483,9 +554,12 @@ export const renderLoanDetails = async (params) => {
         </td>
         <td>${formatDate(s.due_date)}</td>
         <td class="text-right">
-          <div class="font-semibold">${amountDue.toLocaleString()}</div>
-          ${hasPenalty ? `<div class="text-xs" style="color: var(--danger); margin-top: 2px;">+${penaltyBalance.toLocaleString()} automatic fine</div>` : ''}
-          ${s.penalty_waived ? `<div class="text-xs" style="color: var(--success); margin-top: 2px;">Fine waived</div>` : ''}
+          <div class="font-semibold">${formatMoney(amountDue)}</div>
+          ${hasPenalty ? `<div class="text-xs" style="color: var(--danger); margin-top: 2px;">+${formatMoney(penaltyBalance)} automatic fine</div>` : ''}
+          ${s.penalty_waived ? `
+            <div class="text-xs" style="color: var(--success); margin-top: 2px;">Fine waived</div>
+            ${s.penalty_waiver_reason ? `<div class="text-xs text-muted" style="margin-top: 2px;">Reason: ${escapeHtml(s.penalty_waiver_reason)}</div>` : ''}
+          ` : ''}
         </td>
         <td>
           <div style="display: flex; align-items: center; justify-content: space-between;">
@@ -508,45 +582,88 @@ export const renderLoanDetails = async (params) => {
         btn.onclick = async () => {
           const scheduleId = btn.dataset.id;
           const scheduleItem = schedule.find(s => s.id === scheduleId);
-          if (scheduleItem) {
-            if (window.confirmDialog) {
-              window.confirmDialog(
-                'Waive Penalty',
-                `Are you sure you want to waive the automatic fine for Installment #${scheduleItem.installment_no}?`,
-                async () => {
-                  const restoreButton = setButtonLoading(btn, 'Waiving...');
-                  try {
-                    await loanService.updateScheduleInstallment(scheduleId, { penalty_waived: true });
-                    if (window.notify) window.notify.success('Penalty waived successfully');
-                    scheduleItem.penalty_waived = true;
-                    updateScheduleUI();
-                  } catch (err) {
-                    if (window.notify) window.notify.error('Penalty waiver failed: ' + err.message);
-                    restoreButton();
-                  }
-                }
-              );
-            } else {
-              if (confirm('Waive penalty?')) {
-                const restoreButton = setButtonLoading(btn, 'Waiving...');
-                try {
-                  await loanService.updateScheduleInstallment(scheduleId, { penalty_waived: true });
-                  scheduleItem.penalty_waived = true;
-                  updateScheduleUI();
-                } catch (err) {
-                  if (window.notify) window.notify.error('Penalty waiver failed: ' + err.message);
-                  restoreButton();
-                }
-              }
-            }
+          if (!scheduleItem) return;
+
+          const reason = window.promptDialog
+            ? await window.promptDialog({
+                title: 'Waive Penalty',
+                message: `Enter the reason for waiving the automatic fine for Installment #${scheduleItem.installment_no}.`,
+                placeholder: 'e.g. Client paid on time but receipt was captured late',
+                required: true,
+                confirmText: 'Waive Fine',
+                cancelText: 'Cancel'
+              })
+            : window.prompt('Reason for waiving this penalty:');
+
+          const waiverReason = String(reason || '').trim();
+          if (!waiverReason) return;
+
+          const confirmed = window.confirmDialog
+            ? await window.confirmDialog({
+                title: 'Confirm Waiver',
+                message: `Waive the automatic fine for Installment #${scheduleItem.installment_no}? Reason: ${escapeHtml(waiverReason)}`,
+                confirmText: 'Confirm Waiver',
+                cancelText: 'Cancel',
+                type: 'warning'
+              })
+            : confirm(`Waive penalty for Installment #${scheduleItem.installment_no}?`);
+
+          if (!confirmed) return;
+
+          const restoreButton = setButtonLoading(btn, 'Waiving...');
+          try {
+            await loanService.updateScheduleInstallment(scheduleId, {
+              penalty_waived: true,
+              penalty_waiver_reason: waiverReason
+            });
+            if (window.notify) window.notify.success('Penalty waived successfully');
+            scheduleItem.penalty_waived = true;
+            scheduleItem.penalty_waiver_reason = waiverReason;
+            updateScheduleUI();
+          } catch (err) {
+            const schemaHint = err.status === 400
+              ? ' Confirm that loan_schedule has a penalty_waiver_reason text field in PocketHost.'
+              : '';
+            if (window.notify) window.notify.error('Penalty waiver failed: ' + err.message + schemaHint);
+            restoreButton();
           }
         };
       });
     }
   };
 
+  const updateCommentsUI = () => {
+    if (!loan.member) return;
+    const start = (commentsPage - 1) * pageSize;
+    const paginated = memberComments.slice(start, start + pageSize);
+    const tbody = container.querySelector('#loan-comments-body');
+    if (!tbody) return;
+
+    tbody.innerHTML = commentsLoadError
+      ? '<tr><td colspan="3" class="text-center text-danger">Comments could not be loaded. The loan schedule and repayments remain available.</td></tr>'
+      : paginated.length === 0
+      ? '<tr><td colspan="3" class="text-center text-muted">No comments recorded for this member yet.</td></tr>'
+      : paginated.map(comment => `
+        <tr>
+          <td class="font-semibold">${formatDate(comment.comment_date || comment.created)}</td>
+          <td class="text-sm" style="line-height: 1.5;">${escapeHtml(comment.comment)}</td>
+          <td class="text-xs text-muted">${escapeHtml(comment.expand?.created_by?.name || comment.expand?.created_by?.email || 'Loan officer')}</td>
+        </tr>
+      `).join('');
+
+    const pag = container.querySelector('#loan-comments-pagination');
+    if (!pag) return;
+    pag.innerHTML = '';
+    const ctrl = renderPagination(memberComments.length, pageSize, commentsPage, (p) => {
+      commentsPage = p;
+      updateCommentsUI();
+    });
+    if (ctrl) pag.appendChild(ctrl);
+  };
+
   updateHistoryUI();
   updateScheduleUI();
+  updateCommentsUI();
 
   // Tab switching logic
   const tabs = container.querySelectorAll('.tab-btn');
@@ -554,7 +671,8 @@ export const renderLoanDetails = async (params) => {
     overview: container.querySelector('#overview-tab'),
     history: container.querySelector('#history-tab'),
     record: container.querySelector('#record-tab'),
-    schedule: container.querySelector('#schedule-tab')
+    schedule: container.querySelector('#schedule-tab'),
+    comments: container.querySelector('#comments-tab')
   };
 
   tabs.forEach(tab => {
@@ -568,6 +686,60 @@ export const renderLoanDetails = async (params) => {
   const initialTab = contents[params.tab] ? params.tab : 'overview';
   const initialTabBtn = Array.from(tabs).find(tab => tab.dataset.tab === initialTab);
   if (initialTabBtn) initialTabBtn.click();
+
+  const repairScheduleBtn = container.querySelector('#repair-schedule-btn');
+  if (repairScheduleBtn) {
+    repairScheduleBtn.onclick = async () => {
+      const restoreButton = setButtonLoading(repairScheduleBtn, 'Repairing...');
+      try {
+        await loanService.ensureRepaymentSchedule(loan);
+        if (window.notify) window.notify.success('Repayment schedule repaired successfully.');
+        window.location.reload();
+      } catch (err) {
+        if (window.notify) window.notify.error('Schedule repair failed: ' + err.message);
+        restoreButton();
+      }
+    };
+  }
+
+  const commentForm = container.querySelector('#loan-comment-form');
+  if (commentForm) {
+    commentForm.onsubmit = async (event) => {
+      event.preventDefault();
+      const formData = new FormData(commentForm);
+      const comment = String(formData.get('comment') || '').trim();
+      const commentDate = String(formData.get('comment_date') || '').trim();
+      if (!comment || !commentDate) {
+        if (window.notify) window.notify.error('Enter a dated comment before saving.');
+        return;
+      }
+
+      const submitBtn = commentForm.querySelector('button[type="submit"]');
+      const restoreButton = setButtonLoading(submitBtn, 'Saving...');
+      try {
+        const userId = authService.getUser()?.id;
+        await memberCommentService.create({
+          member: loan.member,
+          comment,
+          comment_date: new Date(`${commentDate}T12:00:00`).toISOString(),
+          ...(userId ? { created_by: userId } : {})
+        });
+        memberComments = await memberCommentService.getByMember(loan.member);
+        commentForm.reset();
+        commentForm.elements.comment_date.value = todayInputValue;
+        commentsPage = 1;
+        updateCommentsUI();
+        if (window.notify) window.notify.success('Member comment saved.');
+      } catch (err) {
+        const schemaHint = err.status === 404 || err.status === 400
+          ? ' Confirm that the member_comments collection exists in PocketHost.'
+          : '';
+        if (window.notify) window.notify.error('Failed to save comment: ' + (err.message || 'Please try again.') + schemaHint);
+      } finally {
+        restoreButton();
+      }
+    };
+  }
 
   // Dynamic Payment Method Logic
   const repaymentMethod = container.querySelector('#repayment-method');
@@ -611,6 +783,16 @@ export const renderLoanDetails = async (params) => {
     }
     const fineAmount = Math.min(penaltyState.outstandingFine, amount);
     const principalPaymentAmount = Math.max(0, amount - fineAmount);
+    const priorContractPaid = repayments.reduce(
+      (sum, repaymentRecord) => sum + getRepaymentContractAmount(repaymentRecord),
+      0
+    );
+    const repaymentAllocation = allocateRepayment({
+      loan,
+      repaymentAmount: amount,
+      fineAmount,
+      priorContractPaid
+    });
 
     const btn = paymentForm.querySelector('button[type="submit"]');
     const restoreButton = setButtonLoading(btn, 'Recording...');
@@ -619,6 +801,8 @@ export const renderLoanDetails = async (params) => {
       loan: loan.id,
       amount: amount,
       fine_amount: fineAmount,
+      principal_amount: repaymentAllocation.principalAmount,
+      interest_amount: repaymentAllocation.interestAmount,
       date: new Date(data.date).toISOString(),
       method: data.method,
       reference: data.reference,
@@ -679,7 +863,7 @@ export const renderLoanDetails = async (params) => {
     disburseBtn.onclick = async () => {
       const confirmed = window.confirmDialog ? await window.confirmDialog({
         title: 'Disburse Funds',
-        message: `Are you sure you want to disburse KES ${(loan.approved_amount || loan.amount_applied).toLocaleString()} to this client now? This will generate the repayment schedule.`,
+        message: `Are you sure you want to disburse KES ${formatMoney(loan.approved_amount || loan.amount_applied)} to this client now? This will generate the repayment schedule.`,
         confirmText: 'Yes, Disburse 💸',
         type: 'success'
       }) : confirm('Disburse funds?');
@@ -705,7 +889,7 @@ export const renderLoanDetails = async (params) => {
           disbursement_date: disbursementDate
         });
         
-        await generateSchedule(updatedLoan);
+        await loanService.ensureRepaymentSchedule(updatedLoan);
         if (window.notify) window.notify.success('Funds disbursed successfully! Repayment schedule generated.');
         window.location.reload();
       } catch (err) {
@@ -743,24 +927,6 @@ export const renderLoanDetails = async (params) => {
         restoreButton();
       }
     };
-  }
-
-  // --- Helper: Generate Repayment Schedule ---
-  async function generateSchedule(loanObj) {
-    const installmentAmount = getLoanLiability(loanObj) / loanObj.period;
-    const startDate = getRepaymentScheduleAnchorDate(loanObj);
-    for (let i = 1; i <= loanObj.period; i++) {
-      const dueDate = addMonthsPreservingDay(startDate, i);
-      await loanService.createScheduleInstallment({
-        loan: loanObj.id,
-        installment_no: i,
-        due_date: dueDate.toISOString(),
-        amount: installmentAmount,
-        paid: 0,
-        status: 'pending',
-        penalty_waived: false
-      });
-    }
   }
 
   })();

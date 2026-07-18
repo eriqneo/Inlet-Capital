@@ -7,6 +7,7 @@ import { generateLoanNo } from '../../core/numberGen.js';
 import { openCamera } from '../../components/Camera.js';
 import { setButtonLoading } from '../../core/uiState.js';
 import { getReturnTo, navigateToReturn } from '../../core/navigation.js';
+import { formatMoney } from '../../core/utils.js';
 import Fuse from 'fuse.js';
 
 export const renderLoanApplicationForm = async (params = {}) => {
@@ -498,10 +499,10 @@ export const renderLoanApplicationForm = async (params = {}) => {
     const total = amount + interest;
     const processing = amount * (settings.processingFeeRate / 100);
 
-    sApplied.textContent = `KES ${amount.toLocaleString()}`;
-    sInterest.textContent = `KES ${interest.toLocaleString()}`;
-    sTotal.textContent = `KES ${total.toLocaleString()}`;
-    sProcessing.textContent = `KES ${processing.toLocaleString()}`;
+    sApplied.textContent = `KES ${formatMoney(amount)}`;
+    sInterest.textContent = `KES ${formatMoney(interest)}`;
+    sTotal.textContent = `KES ${formatMoney(total)}`;
+    sProcessing.textContent = `KES ${formatMoney(processing)}`;
     sInterestLabel.textContent = `Interest (${settings.interestRate}%):`;
     sProcessingLabel.textContent = `Processing Fee (${settings.processingFeeRate}%):`;
   };

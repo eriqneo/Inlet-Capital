@@ -4,6 +4,8 @@ import { debounce } from '../../services/dataCache.js';
 import { pb } from '../../services/api.js';
 import { setButtonLoading, showDelayedLoading } from '../../core/uiState.js';
 import { authService } from '../../services/authService.js';
+import { formatMoney } from '../../core/utils.js';
+import { canUseOfficerFilter, loadOfficerOptions, populateOfficerSelect } from '../../core/officerScope.js';
 
 export const renderGroupList = async () => {
   const container = document.createElement('div');
@@ -16,6 +18,7 @@ export const renderGroupList = async () => {
         <p class="text-muted">Manage table banking groups and joint entities.</p>
       </div>
       <div style="display: flex; gap: 12px; align-items: center;">
+        ${canUseOfficerFilter() ? '<select id="group-officer-filter" class="form-control" style="min-width: 210px;"><option value="all">All Loan Officers</option></select>' : ''}
         <div style="position: relative; width: 300px;">
           <input type="text" id="group-search" class="form-control" placeholder="Search groups by name or ID..." style="padding-left: 36px; border-radius: 20px;" />
           <span style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); opacity: 0.5;">🔍</span>
@@ -90,9 +93,11 @@ export const renderGroupList = async () => {
 
   const grid = container.querySelector('#groups-grid');
   const searchInput = container.querySelector('#group-search');
+  const officerFilterSelect = container.querySelector('#group-officer-filter');
   let groups = [];
   let currentPage = 1;
   let currentSearch = '';
+  let officerFilter = 'all';
   let totalItems = 0;
   let requestId = 0;
   const pageSize = 12; // Good for a 3-column or 4-column grid
@@ -188,7 +193,7 @@ export const renderGroupList = async () => {
 
         <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-color); padding-top: 12px;">
           <span class="text-sm text-muted">Total Savings</span>
-          <span class="font-semibold" style="color: var(--success);">KES ${(g.realtime_savings || 0).toLocaleString()}</span>
+          <span class="font-semibold" style="color: var(--success);">KES ${formatMoney(g.realtime_savings)}</span>
         </div>
       </div>
     `).join('');
@@ -219,6 +224,14 @@ export const renderGroupList = async () => {
   }, 300);
 
   searchInput.addEventListener('input', debouncedSearch);
+  if (officerFilterSelect) {
+    officerFilterSelect.onchange = () => {
+      officerFilter = officerFilterSelect.value;
+      currentPage = 1;
+      loadGroups();
+    };
+    loadOfficerOptions().then(options => populateOfficerSelect(officerFilterSelect, options, officerFilter));
+  }
 
   grid.addEventListener('click', async (event) => {
     const editBtn = event.target.closest('.group-edit-btn');
@@ -377,10 +390,14 @@ export const renderGroupList = async () => {
     };
 
     try {
+      const searchFilter = buildSearchFilter(currentSearch);
+      const officerScopeFilter = officerFilter === 'all'
+        ? ''
+        : `(assigned_officer="${escapeFilterValue(officerFilter)}" || (assigned_officer="" && created_by="${escapeFilterValue(officerFilter)}"))`;
       const query = {
         page: currentPage,
         perPage: pageSize,
-        filter: buildSearchFilter(currentSearch),
+        filter: [searchFilter, officerScopeFilter].filter(Boolean).map(value => `(${value})`).join(' && '),
         sort: 'name'
       };
       const groupResult = await groupService.listCached(query, freshResult => {

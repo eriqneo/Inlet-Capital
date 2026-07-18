@@ -1,10 +1,11 @@
 import { loanService } from '../../services/loanService.js';
 import { renderPagination } from '../../components/Pagination.js';
-import { formatDate } from '../../core/utils.js';
+import { formatDate, formatMoney } from '../../core/utils.js';
 import { dataCache, debounce } from '../../services/dataCache.js';
 import { renderTableSkeletonRows, setButtonLoading, showDelayedLoading } from '../../core/uiState.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { authService } from '../../services/authService.js';
+import { canUseOfficerFilter, createOfficerScope, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
 
 export const renderLoanList = async () => {
   const container = document.createElement('div');
@@ -19,6 +20,7 @@ export const renderLoanList = async () => {
   let searchTerm = '';
   let statusFilter = 'running';
   let alphaSort = 'default';
+  let officerFilter = 'all';
   let requestId = 0;
 
   container.innerHTML = `
@@ -55,6 +57,7 @@ export const renderLoanList = async () => {
           <option value="az">Client A-Z</option>
           <option value="za">Client Z-A</option>
         </select>
+        ${canUseOfficerFilter() ? '<select id="loan-officer-filter" class="form-control" style="min-width: 210px;"><option value="all">All Loan Officers</option></select>' : ''}
       </div>
       <div class="table-responsive">
         <table class="table">
@@ -78,7 +81,6 @@ export const renderLoanList = async () => {
       </div>
       <div id="pagination-wrapper"></div>
     </div>
-
     <!-- Fee Collection Modal -->
     <div id="fee-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 1000; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px);">
       <div class="card" style="width: 100%; max-width: 450px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); border: none;">
@@ -214,6 +216,11 @@ export const renderLoanList = async () => {
     if (!q) return items;
     return items.filter(loan => getLoanSearchText(loan).includes(q));
   };
+  const filterLoansByOfficer = (items) => {
+    if (officerFilter === 'all') return items;
+    const { getLoanOfficerId } = createOfficerScope();
+    return items.filter(loan => matchesOfficer(getLoanOfficerId(loan), officerFilter));
+  };
   const sortLoansAlphabetically = (items) => [...items].sort((a, b) => {
     const comparison = getLoanClientName(a).localeCompare(getLoanClientName(b), undefined, { sensitivity: 'base' });
     return alphaSort === 'za' ? -comparison : comparison;
@@ -290,18 +297,18 @@ export const renderLoanList = async () => {
               ${applicantBadge} ${clientReg}
               ${groupContext}
             </td>
-            <td>${l.amount_applied.toLocaleString()}</td>
-            <td>${l.total_liability.toLocaleString()}</td>
+            <td>${formatMoney(l.amount_applied)}</td>
+            <td>${formatMoney(l.total_liability)}</td>
             <td>
               <div class="fee-status-cell" data-loan="${l.id}">
                 ${l.processing_fee_paid
                   ? `<div style="display: flex; align-items: center; gap: 6px;">
                        <span class="badge badge-success" style="gap: 4px;">✓ PAID</span>
-                       <div class="text-xs text-muted">${l.processing_fee.toLocaleString()}</div>
+                       <div class="text-xs text-muted">${formatMoney(l.processing_fee)}</div>
                      </div>`
                   : `<div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start;">
                        <span class="badge badge-warning">⚠ UNPAID</span>
-                       <span class="text-xs text-muted">${l.processing_fee.toLocaleString()}</span>
+                       <span class="text-xs text-muted">${formatMoney(l.processing_fee)}</span>
                        ${l.status === 'pending' ? `<button class="btn-fee-pay" data-id="${l.id}" data-loan="${l.loan_no}" data-amount="${l.processing_fee}" style="font-size: 0.7rem; padding: 4px 10px; background: var(--secondary); color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 2px; font-weight: 600; transition: background 0.2s;">Record Payment</button>` : ''}
                      </div>`
                 }
@@ -323,6 +330,11 @@ export const renderLoanList = async () => {
             <td>
               <div class="loan-action-group">
                 <button type="button" class="loan-icon-action loan-row-action" data-action="view" data-id="${l.id}" title="View loan" aria-label="View loan">⊙</button>
+                <button type="button" class="loan-icon-action loan-row-action" data-action="comments" data-id="${l.id}" title="View comments" aria-label="View comments">
+                  <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+                    <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
                 ${canEditLoans ? `<button type="button" class="loan-icon-action loan-row-action" data-action="edit" data-id="${l.id}" title="Edit loan" aria-label="Edit loan">✎</button>` : ''}
                 ${canDeleteLoans ? `<button type="button" class="loan-icon-action danger loan-row-action" data-action="delete" data-id="${l.id}" title="Delete loan" aria-label="Delete loan">×</button>` : ''}
               </div>
@@ -336,6 +348,10 @@ export const renderLoanList = async () => {
             if (!loan) return;
             if (btn.dataset.action === 'view') {
               window.location.hash = withReturnTo(`#/loans/${loan.loan_no}`, '#/loans');
+              return;
+            }
+            if (btn.dataset.action === 'comments') {
+              window.location.hash = withReturnTo(`#/loans/${loan.loan_no}?tab=comments`, '#/loans');
               return;
             }
             if (btn.dataset.action === 'edit') {
@@ -354,7 +370,7 @@ export const renderLoanList = async () => {
             activeFeeRecordId = btn.dataset.id;
             activeFeeLoan = btn.dataset.loan;
             activeFeeAmount = parseFloat(btn.dataset.amount);
-            amountDisplay.textContent = `KES ${activeFeeAmount.toLocaleString()}`;
+            amountDisplay.textContent = `KES ${formatMoney(activeFeeAmount)}`;
             loanDisplay.textContent = `Loan Reference: ${activeFeeLoan}`;
             modal.style.display = 'flex';
           };
@@ -368,13 +384,14 @@ export const renderLoanList = async () => {
         if (pagination) paginationWrapper.appendChild(pagination);
       };
 
-      if (alphaSort !== 'default' || searchTerm) {
+      if (alphaSort !== 'default' || searchTerm || officerFilter !== 'all') {
         const allLoans = await loanService.getFullListCached({
           filter: pbFilter,
           sort: '-application_date',
           cacheKey: 'loans:list:alpha:expanded:v1'
         });
-        const searchedLoans = filterLoansBySearch(allLoans);
+        const officerLoans = filterLoansByOfficer(allLoans);
+        const searchedLoans = filterLoansBySearch(officerLoans);
         const sortedLoans = alphaSort !== 'default' ? sortLoansAlphabetically(searchedLoans) : searchedLoans;
         const start = (currentPage - 1) * pageSize;
         renderLoanResult({
@@ -559,6 +576,7 @@ export const renderLoanList = async () => {
   const searchInput = container.querySelector('#loan-search');
   const statusSelect = container.querySelector('#loan-status-filter');
   const alphaSortSelect = container.querySelector('#loan-alpha-sort');
+  const officerFilterSelect = container.querySelector('#loan-officer-filter');
   const debouncedSearch = debounce(() => {
     searchTerm = searchInput.value.trim();
     currentPage = 1;
@@ -575,6 +593,14 @@ export const renderLoanList = async () => {
     currentPage = 1;
     updateUI();
   };
+  if (officerFilterSelect) {
+    officerFilterSelect.onchange = () => {
+      officerFilter = officerFilterSelect.value;
+      currentPage = 1;
+      updateUI();
+    };
+    loadOfficerOptions().then(options => populateOfficerSelect(officerFilterSelect, options, officerFilter));
+  }
 
   updateUI();
 

@@ -3,7 +3,7 @@ import { groupService } from '../../services/groupService.js';
 import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
 import { renderPagination } from '../../components/Pagination.js';
-import { formatDate, initDateMask, parseInputDate, formatToInputDate } from '../../core/utils.js';
+import { formatDate, formatMoney, initDateMask, parseInputDate, formatToInputDate } from '../../core/utils.js';
 import { openCamera } from '../../components/Camera.js';
 import { navigate } from '../../core/router.js';
 import { setButtonLoading } from '../../core/uiState.js';
@@ -244,11 +244,11 @@ export const renderMemberProfile = async (params) => {
           <h3 style="font-size: 1rem; margin-bottom: 12px;">Financial Summary</h3>
           <div style="margin-bottom: 8px; display: flex; justify-content: space-between;">
             <span class="text-muted">Total Savings:</span>
-            <span class="font-semibold text-success" id="member-total-savings">KES ${totalSavings.toLocaleString()}</span>
+            <span class="font-semibold text-success" id="member-total-savings">KES ${formatMoney(totalSavings)}</span>
           </div>
           <div style="margin-bottom: 8px; display: flex; justify-content: space-between;">
             <span class="text-muted">Total Loans:</span>
-            <span class="font-semibold text-primary" id="member-total-loans">KES ${totalBorrowed.toLocaleString()}</span>
+            <span class="font-semibold text-primary" id="member-total-loans">KES ${formatMoney(totalBorrowed)}</span>
           </div>
         </div>
       </div>
@@ -277,7 +277,7 @@ export const renderMemberProfile = async (params) => {
                 <div>
                   <h4 class="text-sm text-muted" style="margin-bottom: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 6px;">Registration & NOK Info</h4>
                   <p style="margin-bottom: 8px;"><strong>Registration Date:</strong> ${member.registration_date ? formatDate(member.registration_date) : 'N/A'}</p>
-                  <p style="margin-bottom: 8px;"><strong>Fee Paid:</strong> KES ${(member.registration_fee || 0).toLocaleString()}</p>
+                  <p style="margin-bottom: 8px;"><strong>Fee Paid:</strong> KES ${formatMoney(member.registration_fee)}</p>
                   <p style="margin-bottom: 8px; margin-top: 16px;"><strong>Next of Kin:</strong> ${member.nok_name || 'N/A'} (${member.nok_relationship || 'N/A'})</p>
                   <p style="margin-bottom: 8px;"><strong>NOK Phone:</strong> <a href="tel:${member.nok_phone || ''}" style="color: var(--primary); font-weight: 500;">${member.nok_phone || 'N/A'}</a></p>
                 </div>
@@ -335,7 +335,7 @@ export const renderMemberProfile = async (params) => {
   };
   const updateLoanSummary = () => {
     const totalLoansEl = container.querySelector('#member-total-loans');
-    if (totalLoansEl) totalLoansEl.textContent = `KES ${calculateTotalBorrowed().toLocaleString()}`;
+    if (totalLoansEl) totalLoansEl.textContent = `KES ${formatMoney(calculateTotalBorrowed())}`;
   };
 
   const loanModal = container.querySelector('#loan-transaction-modal');
@@ -351,9 +351,9 @@ export const renderMemberProfile = async (params) => {
     loanModalBody.innerHTML = `
       <div class="detail-grid">
         <div class="detail-tile"><div class="detail-label">Loan No</div><div class="detail-value">${escapeHtml(loan.loan_no || '-')}</div></div>
-        <div class="detail-tile"><div class="detail-label">Applied Amount</div><div class="detail-value">KES ${(Number(loan.amount_applied) || 0).toLocaleString()}</div></div>
-        <div class="detail-tile"><div class="detail-label">Approved Amount</div><div class="detail-value">KES ${(Number(loan.approved_amount) || 0).toLocaleString()}</div></div>
-        <div class="detail-tile"><div class="detail-label">Total Liability</div><div class="detail-value">KES ${(Number(loan.total_liability) || 0).toLocaleString()}</div></div>
+        <div class="detail-tile"><div class="detail-label">Applied Amount</div><div class="detail-value">KES ${formatMoney(loan.amount_applied)}</div></div>
+        <div class="detail-tile"><div class="detail-label">Approved Amount</div><div class="detail-value">KES ${formatMoney(loan.approved_amount)}</div></div>
+        <div class="detail-tile"><div class="detail-label">Total Liability</div><div class="detail-value">KES ${formatMoney(loan.total_liability)}</div></div>
         <div class="detail-tile"><div class="detail-label">Status</div><div class="detail-value">${escapeHtml((loan.status || '').toUpperCase())}</div></div>
         <div class="detail-tile"><div class="detail-label">Application Date</div><div class="detail-value">${formatDate(loan.application_date)}</div></div>
         <div class="detail-tile"><div class="detail-label">Disbursement Date</div><div class="detail-value">${loan.disbursement_date ? formatDate(loan.disbursement_date) : 'Not disbursed'}</div></div>
@@ -480,7 +480,7 @@ export const renderMemberProfile = async (params) => {
     tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="7" class="text-center text-muted">No loan history found.</td></tr>' : paginated.map(l => `
       <tr>
         <td><strong>${l.loan_no}</strong></td>
-        <td>${(l.amount_applied || 0).toLocaleString()}</td>
+        <td>${formatMoney(l.amount_applied)}</td>
         <td><span class="badge ${l.status === 'disbursed' || l.status === 'completed' ? 'badge-success' : (l.status === 'approved' || l.status === 'partial_approved') ? 'badge-primary' : l.status === 'pending' ? 'badge-warning' : 'badge-danger'}" style="${l.status === 'approved' || l.status === 'partial_approved' ? 'background:#0d9488;color:white;' : ''}">${l.status.toUpperCase()}</span></td>
         <td>${formatDate(l.application_date)}</td>
         <td class="text-xs text-muted">${escapeHtml(formatSecurities(l.collaterals))}</td>
@@ -516,7 +516,7 @@ export const renderMemberProfile = async (params) => {
 
   const updateSavingsSummary = () => {
     const totalSavingsEl = container.querySelector('#member-total-savings');
-    if (totalSavingsEl) totalSavingsEl.textContent = `KES ${calculateSavingsBalance().toLocaleString()}`;
+    if (totalSavingsEl) totalSavingsEl.textContent = `KES ${formatMoney(calculateSavingsBalance())}`;
   };
 
   const savingsModal = container.querySelector('#savings-transaction-modal');
@@ -535,7 +535,7 @@ export const renderMemberProfile = async (params) => {
       <div class="detail-grid">
         <div class="detail-tile"><div class="detail-label">Date</div><div class="detail-value">${formatDate(saving.date)}</div></div>
         <div class="detail-tile"><div class="detail-label">Type</div><div class="detail-value">${escapeHtml((saving.type || '').toUpperCase())}</div></div>
-        <div class="detail-tile"><div class="detail-label">Amount</div><div class="detail-value">KES ${amount.toLocaleString()}</div></div>
+        <div class="detail-tile"><div class="detail-label">Amount</div><div class="detail-value">KES ${formatMoney(amount)}</div></div>
         <div class="detail-tile"><div class="detail-label">Payment Method</div><div class="detail-value">${formatSavingsMethod(method)}</div></div>
         <div class="detail-tile"><div class="detail-label">Reference</div><div class="detail-value">${escapeHtml(formatSavingsReference(saving))}</div></div>
         <div class="detail-tile"><div class="detail-label">Recorded By</div><div class="detail-value">${escapeHtml(saving.expand?.recorded_by?.name || saving.expand?.recorded_by?.email || 'System')}</div></div>
@@ -663,7 +663,7 @@ export const renderMemberProfile = async (params) => {
     }
     const confirmed = window.confirmDialog ? await window.confirmDialog({
       title: 'Delete Savings Transaction',
-      message: `This will permanently delete the ${saving.type} of KES ${(Number(saving.amount) || 0).toLocaleString()} from ${formatDate(saving.date)}. This affects the member balance and cannot be undone.`,
+      message: `This will permanently delete the ${saving.type} of KES ${formatMoney(saving.amount)} from ${formatDate(saving.date)}. This affects the member balance and cannot be undone.`,
       confirmText: 'Delete Transaction',
       cancelText: 'Keep Record',
       type: 'danger'
@@ -687,7 +687,7 @@ export const renderMemberProfile = async (params) => {
       <tr>
         <td>${formatDate(s.date)}</td>
         <td><span class="badge" style="background: ${s.type === 'deposit' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'}; color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type.toUpperCase()}</span></td>
-        <td class="font-semibold" style="color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type === 'deposit' ? '+' : '-'}${s.amount.toLocaleString()}</td>
+        <td class="font-semibold" style="color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type === 'deposit' ? '+' : '-'}${formatMoney(s.amount)}</td>
         <td class="text-xs text-muted">${escapeHtml(formatSavingsReference(s))}</td>
         <td class="text-xs text-muted">${escapeHtml(s.remarks || '-')}</td>
         <td style="white-space: nowrap;">

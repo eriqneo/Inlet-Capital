@@ -1,11 +1,10 @@
 import { loanService } from '../../services/loanService.js';
 import { settingsService } from '../../services/settingsService.js';
 import { navigate } from '../../core/router.js';
-import { formatDate } from '../../core/utils.js';
+import { formatDate, formatMoney } from '../../core/utils.js';
 import { pb } from '../../services/api.js'; // We'll use pb to get all loans for the queue
 import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
 import { getReturnTo, withReturnTo } from '../../core/navigation.js';
-import { addMonthsPreservingDay, getRepaymentScheduleAnchorDate } from '../../core/repaymentSchedule.js';
 
 const QUEUE_FILTER = 'status="pending" || status="approved" || status="partial_approved" || status="expired"';
 
@@ -152,7 +151,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
               <div style="display: flex; gap: 16px; align-items: center;">
                 <div style="background: var(--bg-light); padding: 12px; border-radius: 8px; text-align: center; min-width: 90px;">
                   <div class="text-xs text-muted">Applied</div>
-                  <div class="font-semibold">KES ${l.amount_applied.toLocaleString()}</div>
+                  <div class="font-semibold">KES ${formatMoney(l.amount_applied)}</div>
                 </div>
                 <div>
                   <h3 style="font-size: 1.125rem;">${l.loan_no}</h3>
@@ -178,7 +177,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
             ">
               <div>
                 <div style="font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em; color: ${feePaid ? 'var(--success)' : 'var(--warning)'}; text-transform: uppercase;">Processing Fee</div>
-                <div style="font-size: 1.5rem; font-weight: 700; margin-top: 2px;">KES ${l.processing_fee.toLocaleString()}</div>
+                <div style="font-size: 1.5rem; font-weight: 700; margin-top: 2px;">KES ${formatMoney(l.processing_fee)}</div>
                 ${feePaid
                   ? `<div class="text-xs text-muted" style="margin-top: 4px;">Received via ${l.processing_fee_details?.method || 'System'}</div>`
                   : `<div class="text-xs text-muted" style="margin-top: 4px;">Must be collected before approval is locked</div>`
@@ -214,7 +213,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
               </div>
               <div>
                 <div class="text-xs text-muted">Total Liability</div>
-                <div class="text-sm font-semibold">KES ${l.total_liability.toLocaleString()}</div>
+                <div class="text-sm font-semibold">KES ${formatMoney(l.total_liability)}</div>
               </div>
             </div>
 
@@ -263,11 +262,11 @@ export const renderLoanApprovalQueue = async (params = {}) => {
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; background: var(--bg-light); padding: 16px; border-radius: 8px;">
               <div>
                 <div class="text-xs text-muted">Approved Amount</div>
-                <div class="text-sm font-semibold text-success">KES ${l.approved_amount.toLocaleString()}</div>
+                <div class="text-sm font-semibold text-success">KES ${formatMoney(l.approved_amount)}</div>
               </div>
               <div>
                 <div class="text-xs text-muted">Total Repayment Amount</div>
-                <div class="text-sm font-semibold text-primary">KES ${l.total_liability.toLocaleString()}</div>
+                <div class="text-sm font-semibold text-primary">KES ${formatMoney(l.total_liability)}</div>
               </div>
               <div>
                 <div class="text-xs text-muted">Expiry Deadline</div>
@@ -321,7 +320,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; background: var(--bg-light); padding: 16px; border-radius: 8px;">
               <div>
                 <div class="text-xs text-muted">Approved Amount (Unreleased)</div>
-                <div class="text-sm font-semibold" style="text-decoration: line-through;">KES ${l.approved_amount.toLocaleString()}</div>
+                <div class="text-sm font-semibold" style="text-decoration: line-through;">KES ${formatMoney(l.approved_amount)}</div>
               </div>
               <div>
                 <div class="text-xs text-muted">Reason</div>
@@ -494,7 +493,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
     btn.onclick = () => {
       currentFeeLoanId = btn.dataset.id;
       const amount = parseFloat(btn.dataset.amount);
-      feeAmountText.textContent = `KES ${amount.toLocaleString()}`;
+      feeAmountText.textContent = `KES ${formatMoney(amount)}`;
       feeLoanText.textContent = `Loan Reference: ${btn.dataset.loan}`;
       feeModal.style.display = 'flex';
     };
@@ -605,7 +604,10 @@ export const renderLoanApprovalQueue = async (params = {}) => {
 
     try {
       const loan = await loanService.getById(activePartialLoanId);
-      const interestRate = await settingsService.getNumber('interest_rate_percent', 20);
+      const configuredInterestRate = await settingsService.getNumber('interest_rate_percent', 20);
+      const interestRate = Number.isFinite(Number(loan.interest_rate))
+        ? Number(loan.interest_rate)
+        : configuredInterestRate;
       const interestAmount = amount * (interestRate / 100);
       if (isInputDateBeforeRecordDate(partialApprovalDate.value, loan.application_date)) {
         if (window.notify) window.notify.error('Approval date cannot be before the application date.');
@@ -616,6 +618,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
       await loanService.update(activePartialLoanId, {
         status: 'partial_approved',
         approved_amount: amount,
+        interest_rate: interestRate,
         approved_date: dateInputToIso(partialApprovalDate.value),
         interest_amount: interestAmount,
         total_liability: amount + interestAmount,
@@ -648,7 +651,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
           return;
         }
         activeFullApprovalLoanId = id;
-        fullApprovalContext.textContent = `Approve ${loan.loan_no} for the full amount of KES ${loan.amount_applied.toLocaleString()}.`;
+        fullApprovalContext.textContent = `Approve ${loan.loan_no} for the full amount of KES ${formatMoney(loan.amount_applied)}.`;
         fullApprovalDate.value = toDateInputValue(loan.approved_date);
         fullApprovalComment.value = loan.approval_comment || '';
         fullApprovalModal.style.display = 'flex';
@@ -688,10 +691,10 @@ export const renderLoanApprovalQueue = async (params = {}) => {
 
         const confirmed = window.confirmDialog ? await window.confirmDialog({
           title: 'Disburse Funds',
-          message: `Are you sure you want to disburse KES ${loan.approved_amount.toLocaleString()} to this client now? This will generate the repayment schedule.`,
+          message: `Are you sure you want to disburse KES ${formatMoney(loan.approved_amount)} to this client now? This will generate the repayment schedule.`,
           confirmText: 'Yes, Disburse 💸',
           type: 'success'
-        }) : confirm(`Disburse KES ${loan.approved_amount.toLocaleString()}?`);
+        }) : confirm(`Disburse KES ${formatMoney(loan.approved_amount)}?`);
         
         if (!confirmed) return;
         
@@ -709,7 +712,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
           disbursement_date: dateInputToIso(disbursementDateInput?.value)
         });
         
-        await generateSchedule(updatedLoan);
+        await loanService.ensureRepaymentSchedule(updatedLoan);
         if (window.notify) window.notify.success('Funds disbursed successfully! Repayment schedule generated.');
         navigate('#/loans');
       }
@@ -761,24 +764,6 @@ export const renderLoanApprovalQueue = async (params = {}) => {
       }
     }
   });
-
-  // --- Helper: Generate Repayment Schedule ---
-  async function generateSchedule(loan) {
-    const installmentAmount = loan.total_liability / loan.period;
-    const startDate = getRepaymentScheduleAnchorDate(loan);
-    for (let i = 1; i <= loan.period; i++) {
-      const dueDate = addMonthsPreservingDay(startDate, i);
-      await loanService.createScheduleInstallment({
-        loan: loan.id,
-        installment_no: i,
-        due_date: dueDate.toISOString(),
-        amount: installmentAmount,
-        paid: 0,
-        status: 'pending',
-        penalty_waived: false
-      });
-    }
-  }
 
   return container;
 };

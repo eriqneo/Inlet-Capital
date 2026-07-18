@@ -9,6 +9,18 @@ export const formatDate = (dateInput) => {
   return `${day}/${month}/${year}`;
 };
 
+export const formatNumber = (value, decimals = 2) => {
+  const number = Number(value);
+  return (Number.isFinite(number) ? number : 0).toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  });
+};
+
+export const formatMoney = (value) => formatNumber(value, 2);
+
+export const formatPercent = (value) => `${formatNumber(value, 2)}%`;
+
 export const initDateMask = (inputElement) => {
   if (!inputElement) return;
   inputElement.placeholder = 'dd/mm/yyyy';

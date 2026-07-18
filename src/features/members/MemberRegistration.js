@@ -4,7 +4,7 @@ import { authService } from '../../services/authService.js';
 import { generateRegNo } from '../../core/numberGen.js';
 import { navigate } from '../../core/router.js';
 import { openCamera } from '../../components/Camera.js';
-import { initDateMask, parseInputDate } from '../../core/utils.js';
+import { formatMoney, initDateMask, parseInputDate } from '../../core/utils.js';
 import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderMemberRegistration = async () => {
@@ -111,7 +111,7 @@ export const renderMemberRegistration = async () => {
             <h4 style="margin-bottom: 12px; font-size: 0.875rem; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">Registration Summary</h4>
             <div style="display: flex; justify-content: space-between; font-size: 0.875rem; margin-bottom: 16px;">
               <span>Registration Fee</span>
-              <span id="registration-fee-display" class="font-semibold" style="color: var(--success);">KES ${regFee.toLocaleString()}</span>
+              <span id="registration-fee-display" class="font-semibold" style="color: var(--success);">KES ${formatMoney(regFee)}</span>
             </div>
 
             <div class="form-group" style="margin-bottom: 16px;">
@@ -150,7 +150,7 @@ export const renderMemberRegistration = async () => {
   settingsService.getNumber('individual_reg_fee', regFee).then(value => {
     regFee = Math.max(0, value);
     const feeDisplay = container.querySelector('#registration-fee-display');
-    if (feeDisplay) feeDisplay.textContent = `KES ${regFee.toLocaleString()}`;
+    if (feeDisplay) feeDisplay.textContent = `KES ${formatMoney(regFee)}`;
   }).catch(err => console.warn('[MemberRegistration] Registration fee fetch failed:', err));
 
   // Photo Capture logic
