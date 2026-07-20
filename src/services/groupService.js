@@ -1,5 +1,12 @@
 import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
+import {
+  filterGroupsForCurrentOfficer,
+  getGroupOfficerScopeFilter,
+  getOfficerScopeCacheKey,
+  paginateScopedItems,
+  shouldScopeToCurrentOfficer
+} from '../core/officerScope.js';
 
 const requireAdminRecordManager = () => {
   const role = pb.authStore.model?.role;
@@ -13,6 +20,14 @@ const combineFilters = (...filters) => filters.filter(Boolean).map(filter => `($
 
 export const groupService = {
   async list({ page = 1, perPage = 50, filter = '', sort = '-created', includeSuspended = false } = {}) {
+    if (shouldScopeToCurrentOfficer()) {
+      const items = await pb.collection('groups').getFullList({
+        filter: combineFilters(includeSuspended ? '' : visibleGroupFilter, filter, getGroupOfficerScopeFilter()),
+        sort,
+      });
+      return paginateScopedItems(items, { page, perPage });
+    }
+
     return await pb.collection('groups').getList(page, perPage, {
       filter: includeSuspended ? filter : combineFilters(visibleGroupFilter, filter),
       sort,
@@ -21,21 +36,24 @@ export const groupService = {
 
   async listCached(options = {}, onUpdate = null) {
     const { page = 1, perPage = 50, filter = '', sort = '-created', includeSuspended = false } = options;
-    const key = `groups:list:${page}:${perPage}:${sort}:${filter}:${includeSuspended ? 'with-suspended' : 'visible'}`;
+    const key = `groups:list:${getOfficerScopeCacheKey()}:${page}:${perPage}:${sort}:${filter}:${includeSuspended ? 'with-suspended' : 'visible'}`;
     return await dataCache.getLocalFirst(key, () => this.list({ page, perPage, filter, sort, includeSuspended }), onUpdate);
   },
 
   async getAll(onUpdate = null) {
-    return await dataCache.getLocalFirst('groups:all:visible', () => pb.collection('groups').getFullList({
-      filter: visibleGroupFilter,
+    const key = `groups:all:visible:${getOfficerScopeCacheKey()}`;
+    return await dataCache.getLocalFirst(key, async () => filterGroupsForCurrentOfficer(await pb.collection('groups').getFullList({
+      filter: combineFilters(visibleGroupFilter, shouldScopeToCurrentOfficer() ? getGroupOfficerScopeFilter() : ''),
       sort: 'name',
-    }), onUpdate);
+    })), onUpdate);
   },
 
   async getAllIncludingLifecycle(onUpdate = null) {
-    return await dataCache.getLocalFirst('groups:all:including-lifecycle', () => pb.collection('groups').getFullList({
+    const key = `groups:all:including-lifecycle:${getOfficerScopeCacheKey()}`;
+    return await dataCache.getLocalFirst(key, async () => filterGroupsForCurrentOfficer(await pb.collection('groups').getFullList({
+      filter: shouldScopeToCurrentOfficer() ? getGroupOfficerScopeFilter() : '',
       sort: 'name',
-    }), onUpdate);
+    })), onUpdate);
   },
 
   async getAllIncludingSuspended(onUpdate = null) {
@@ -43,7 +61,11 @@ export const groupService = {
   },
 
   async getById(id) {
-    return await pb.collection('groups').getOne(id);
+    const group = await pb.collection('groups').getOne(id);
+    if (shouldScopeToCurrentOfficer() && filterGroupsForCurrentOfficer([group]).length === 0) {
+      throw new Error('You can only access groups assigned to your portfolio.');
+    }
+    return group;
   },
 
   async create(data) {

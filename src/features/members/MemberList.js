@@ -308,11 +308,7 @@ export const renderMemberList = async () => {
       const query = { page: currentPage, perPage: pageSize, filter, sort };
 
       if (statusFilter !== 'all') {
-        const allMatchingMembers = await pb.collection('members').getFullList({
-          filter,
-          sort,
-          expand: 'group'
-        });
+        const allMatchingMembers = (await memberService.list({ page: 1, perPage: 10000, filter, sort })).items;
         const enrichedMembers = await enrichMembersWithActivity(allMatchingMembers);
         if (thisRequest !== requestId) return;
         const filteredMembers = filterMembersByActivity(enrichedMembers);

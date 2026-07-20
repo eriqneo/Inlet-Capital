@@ -1,5 +1,12 @@
 import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
+import {
+  filterMembersForCurrentOfficer,
+  getMemberOfficerScopeFilter,
+  getOfficerScopeCacheKey,
+  paginateScopedItems,
+  shouldScopeToCurrentOfficer
+} from '../core/officerScope.js';
 
 const normalizePhone = (value = '') => {
   let digits = String(value || '').replace(/\D/g, '');
@@ -41,6 +48,15 @@ const stripOptionalRegistrationFeeDetails = (data) => {
 
 export const memberService = {
   async list({ page = 1, perPage = 20, filter = '', sort = '-created' } = {}) {
+    if (shouldScopeToCurrentOfficer()) {
+      const items = await pb.collection('members').getFullList({
+        filter: combineFilters(visibleMemberFilter, filter, getMemberOfficerScopeFilter()),
+        sort,
+        expand: 'group',
+      });
+      return paginateScopedItems(items, { page, perPage });
+    }
+
     return await pb.collection('members').getList(page, perPage, {
       filter: combineFilters(visibleMemberFilter, filter),
       sort,
@@ -50,29 +66,36 @@ export const memberService = {
 
   async listCached(options = {}, onUpdate = null) {
     const { page = 1, perPage = 20, filter = '', sort = '-created' } = options;
-    const key = `members:list:${page}:${perPage}:${sort}:${filter}`;
+    const key = `members:list:${getOfficerScopeCacheKey()}:${page}:${perPage}:${sort}:${filter}`;
     return await dataCache.getLocalFirst(key, () => this.list({ page, perPage, filter, sort }), onUpdate);
   },
 
   async getAll(onUpdate = null) {
-    return await dataCache.getLocalFirst('members:all:visible', () => pb.collection('members').getFullList({
-      filter: visibleMemberFilter,
+    const key = `members:all:visible:${getOfficerScopeCacheKey()}`;
+    return await dataCache.getLocalFirst(key, async () => filterMembersForCurrentOfficer(await pb.collection('members').getFullList({
+      filter: combineFilters(visibleMemberFilter, shouldScopeToCurrentOfficer() ? getMemberOfficerScopeFilter() : ''),
       expand: 'group',
       sort: '-created'
-    }), onUpdate);
+    })), onUpdate);
   },
 
   async getAllIncludingLifecycle(onUpdate = null) {
-    return await dataCache.getLocalFirst('members:all:including-lifecycle', () => pb.collection('members').getFullList({
+    const key = `members:all:including-lifecycle:${getOfficerScopeCacheKey()}`;
+    return await dataCache.getLocalFirst(key, async () => filterMembersForCurrentOfficer(await pb.collection('members').getFullList({
+      filter: shouldScopeToCurrentOfficer() ? getMemberOfficerScopeFilter() : '',
       expand: 'group',
       sort: '-created'
-    }), onUpdate);
+    })), onUpdate);
   },
 
   async getById(id) {
-    return await pb.collection('members').getOne(id, {
+    const member = await pb.collection('members').getOne(id, {
       expand: 'group',
     });
+    if (shouldScopeToCurrentOfficer() && filterMembersForCurrentOfficer([member]).length === 0) {
+      throw new Error('You can only access members assigned to your portfolio.');
+    }
+    return member;
   },
 
   async getByRegNo(regNo) {

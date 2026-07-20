@@ -8,6 +8,13 @@ const PB_URL = 'https://inletcapital.pockethost.io';
 const ADMIN_EMAIL = 'aturaerick@gmail.com';
 const ADMIN_PASS = 'dGY@SrzA86PQc5n';
 
+const ADMIN_DATA_RULE = '@request.auth.role = "super_admin" || @request.auth.role = "admin"';
+const MEMBER_SCOPE_RULE = `${ADMIN_DATA_RULE} || assigned_officer = @request.auth.id || registered_by = @request.auth.id`;
+const GROUP_SCOPE_RULE = `${ADMIN_DATA_RULE} || assigned_officer = @request.auth.id || created_by = @request.auth.id`;
+const LOAN_SCOPE_RULE = `${ADMIN_DATA_RULE} || processed_by = @request.auth.id || member.assigned_officer = @request.auth.id || member.registered_by = @request.auth.id || group.assigned_officer = @request.auth.id || group.created_by = @request.auth.id`;
+const SAVINGS_SCOPE_RULE = `${ADMIN_DATA_RULE} || recorded_by = @request.auth.id || member.assigned_officer = @request.auth.id || member.registered_by = @request.auth.id || group.assigned_officer = @request.auth.id || group.created_by = @request.auth.id`;
+const LOAN_CHILD_SCOPE_RULE = `${ADMIN_DATA_RULE} || loan.processed_by = @request.auth.id || loan.member.assigned_officer = @request.auth.id || loan.member.registered_by = @request.auth.id || loan.group.assigned_officer = @request.auth.id || loan.group.created_by = @request.auth.id`;
+
 async function fetchPb(path, method = 'GET', body = null, token = null) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = token;
@@ -166,8 +173,8 @@ async function run() {
         { name: 'created_by', type: 'relation', collectionId: usersForGroupsColl.id, cascadeDelete: false, maxSelect: 1 },
         { name: 'assigned_officer', type: 'relation', collectionId: usersForGroupsColl.id, cascadeDelete: false, maxSelect: 1 }
       ],
-      listRule: '@request.auth.id != ""',
-      viewRule: '@request.auth.id != ""',
+      listRule: GROUP_SCOPE_RULE,
+      viewRule: GROUP_SCOPE_RULE,
       createRule: '@request.auth.role != "auditor"',
       updateRule: '@request.auth.role != "auditor"',
       deleteRule: '@request.auth.role = "super_admin"'
@@ -181,6 +188,16 @@ async function run() {
          try {
            const groupsColl = await fetchPb('collections/groups', 'GET', null, token);
            let changed = false;
+           if (groupsColl.listRule !== GROUP_SCOPE_RULE) {
+             groupsColl.listRule = GROUP_SCOPE_RULE;
+             changed = true;
+             console.log('Groups list rule scoped by assigned officer.');
+           }
+           if (groupsColl.viewRule !== GROUP_SCOPE_RULE) {
+             groupsColl.viewRule = GROUP_SCOPE_RULE;
+             changed = true;
+             console.log('Groups view rule scoped by assigned officer.');
+           }
            const statusField = groupsColl.fields.find(f => f.name === 'status');
            if (statusField && (!statusField.values.includes('suspended') || !statusField.values.includes('closed'))) {
              statusField.values = Array.from(new Set([...(statusField.values || []), 'suspended', 'closed']));
@@ -246,8 +263,8 @@ async function run() {
         { name: 'registered_by', type: 'relation', collectionId: usersForMembersColl.id, cascadeDelete: false, maxSelect: 1 },
         { name: 'assigned_officer', type: 'relation', collectionId: usersForMembersColl.id, cascadeDelete: false, maxSelect: 1 }
       ],
-      listRule: '@request.auth.id != ""',
-      viewRule: '@request.auth.id != ""',
+      listRule: MEMBER_SCOPE_RULE,
+      viewRule: MEMBER_SCOPE_RULE,
       createRule: '@request.auth.role != "auditor"',
       updateRule: '@request.auth.role != "auditor"',
       deleteRule: '@request.auth.role = "super_admin"'
@@ -261,6 +278,16 @@ async function run() {
          try {
            const membersColl = await fetchPb('collections/members', 'GET', null, token);
            let changed = false;
+           if (membersColl.listRule !== MEMBER_SCOPE_RULE) {
+             membersColl.listRule = MEMBER_SCOPE_RULE;
+             changed = true;
+             console.log('Members list rule scoped by assigned officer.');
+           }
+           if (membersColl.viewRule !== MEMBER_SCOPE_RULE) {
+             membersColl.viewRule = MEMBER_SCOPE_RULE;
+             changed = true;
+             console.log('Members view rule scoped by assigned officer.');
+           }
            const statusField = membersColl.fields.find(f => f.name === 'status');
            if (statusField && (!statusField.values.includes('suspended') || !statusField.values.includes('closed'))) {
              statusField.values = Array.from(new Set([...(statusField.values || []), 'suspended', 'closed']));
@@ -495,6 +522,16 @@ async function run() {
     try {
       const loansColl = await fetchPb('collections/loans', 'GET', null, token);
       let changed = false;
+      if (loansColl.listRule !== LOAN_SCOPE_RULE) {
+        loansColl.listRule = LOAN_SCOPE_RULE;
+        changed = true;
+        console.log('Loans list rule scoped by portfolio owner.');
+      }
+      if (loansColl.viewRule !== LOAN_SCOPE_RULE) {
+        loansColl.viewRule = LOAN_SCOPE_RULE;
+        changed = true;
+        console.log('Loans view rule scoped by portfolio owner.');
+      }
       if (loansColl.deleteRule !== '@request.auth.role = "super_admin"') {
         loansColl.deleteRule = '@request.auth.role = "super_admin"';
         changed = true;
@@ -527,10 +564,39 @@ async function run() {
       console.log('Error updating loans extra fields:', e.message);
     }
 
+    console.log('Ensuring savings access rules...');
+    try {
+      const savingsColl = await fetchPb('collections/savings', 'GET', null, token);
+      let changed = false;
+      if (savingsColl.listRule !== SAVINGS_SCOPE_RULE) {
+        savingsColl.listRule = SAVINGS_SCOPE_RULE;
+        changed = true;
+        console.log('Savings list rule scoped by portfolio owner.');
+      }
+      if (savingsColl.viewRule !== SAVINGS_SCOPE_RULE) {
+        savingsColl.viewRule = SAVINGS_SCOPE_RULE;
+        changed = true;
+        console.log('Savings view rule scoped by portfolio owner.');
+      }
+      if (changed) await fetchPb('collections/savings', 'PATCH', savingsColl, token);
+    } catch (e) {
+      console.log('Error updating savings access rules:', e.message);
+    }
+
     console.log('Ensuring loan repayment fine field...');
     try {
       const repaymentsColl = await fetchPb('collections/loan_repayments', 'GET', null, token);
       let changed = false;
+      if (repaymentsColl.listRule !== LOAN_CHILD_SCOPE_RULE) {
+        repaymentsColl.listRule = LOAN_CHILD_SCOPE_RULE;
+        changed = true;
+        console.log('Loan repayments list rule scoped by portfolio owner.');
+      }
+      if (repaymentsColl.viewRule !== LOAN_CHILD_SCOPE_RULE) {
+        repaymentsColl.viewRule = LOAN_CHILD_SCOPE_RULE;
+        changed = true;
+        console.log('Loan repayments view rule scoped by portfolio owner.');
+      }
       const expectedUpdateRule = '@request.auth.role = "super_admin" || @request.auth.role = "admin"';
       const expectedDeleteRule = '@request.auth.role = "super_admin"';
       if (repaymentsColl.updateRule !== expectedUpdateRule) {
@@ -595,17 +661,29 @@ async function run() {
     console.log('Ensuring loan schedule waiver reason field...');
     try {
       const scheduleColl = await fetchPb('collections/loan_schedule', 'GET', null, token);
+      let changed = false;
+      if (scheduleColl.listRule !== LOAN_CHILD_SCOPE_RULE) {
+        scheduleColl.listRule = LOAN_CHILD_SCOPE_RULE;
+        changed = true;
+        console.log('Loan schedule list rule scoped by portfolio owner.');
+      }
+      if (scheduleColl.viewRule !== LOAN_CHILD_SCOPE_RULE) {
+        scheduleColl.viewRule = LOAN_CHILD_SCOPE_RULE;
+        changed = true;
+        console.log('Loan schedule view rule scoped by portfolio owner.');
+      }
       if (!scheduleColl.fields.some(field => field.name === 'penalty_waiver_reason')) {
         scheduleColl.fields.push({
           name: 'penalty_waiver_reason',
           type: 'text',
           required: false
         });
-        await fetchPb('collections/loan_schedule', 'PATCH', scheduleColl, token);
+        changed = true;
         console.log('Loan schedule collection updated with penalty_waiver_reason field.');
       } else {
         console.log('Loan schedule collection already has penalty_waiver_reason field.');
       }
+      if (changed) await fetchPb('collections/loan_schedule', 'PATCH', scheduleColl, token);
     } catch (e) {
       console.log('Error updating loan schedule waiver reason field:', e.message);
     }

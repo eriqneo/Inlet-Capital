@@ -1,6 +1,12 @@
 import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
 import { addMonthsPreservingDay, getRepaymentScheduleAnchorDate } from '../core/repaymentSchedule.js';
+import {
+  filterLoansForCurrentOfficer,
+  getOfficerScopeCacheKey,
+  paginateScopedItems,
+  shouldScopeToCurrentOfficer
+} from '../core/officerScope.js';
 
 const requireAdminRecordManager = () => {
   const role = pb.authStore.model?.role;
@@ -177,6 +183,15 @@ export const loanService = {
    * Get paginated list of loans
    */
   async getAll({ page = 1, perPage = 50, filter = '', sort = '-application_date' } = {}) {
+    if (shouldScopeToCurrentOfficer()) {
+      const items = filterLoansForCurrentOfficer(await pb.collection('loans').getFullList({
+        filter,
+        sort,
+        expand: 'member,member.group,group,processed_by'
+      }));
+      return paginateScopedItems(items, { page, perPage });
+    }
+
     return await pb.collection('loans').getList(page, perPage, {
       filter,
       sort,
@@ -186,33 +201,40 @@ export const loanService = {
 
   async getAllCached(options = {}, onUpdate = null) {
     const { page = 1, perPage = 50, filter = '', sort = '-application_date' } = options;
-    const key = `loans:list:v2:${page}:${perPage}:${sort}:${filter}`;
+    const key = `loans:list:v2:${getOfficerScopeCacheKey()}:${page}:${perPage}:${sort}:${filter}`;
     return await dataCache.getLocalFirst(key, () => this.getAll({ page, perPage, filter, sort }), onUpdate);
   },
 
   async getFullListCached({ filter = '', sort = '-application_date', expand = 'member,member.group,group,processed_by', cacheKey = 'loans:all:expanded:v1' } = {}, onUpdate = null) {
-    const key = `${cacheKey}:${sort}:${filter}:${expand}`;
-    return await dataCache.getLocalFirst(key, () => {
+    const effectiveExpand = shouldScopeToCurrentOfficer() && !expand ? 'member,member.group,group,processed_by' : expand;
+    const key = `${cacheKey}:${getOfficerScopeCacheKey()}:${sort}:${filter}:${effectiveExpand}`;
+    return await dataCache.getLocalFirst(key, async () => {
       const options = { filter, sort };
-      if (expand) options.expand = expand;
-      return pb.collection('loans').getFullList(options);
+      if (effectiveExpand) options.expand = effectiveExpand;
+      const loans = await pb.collection('loans').getFullList(options);
+      return filterLoansForCurrentOfficer(loans);
     }, onUpdate);
   },
 
   async getFullListFresh({ filter = '', sort = '-application_date', expand = 'member,member.group,group,processed_by', cacheKey = 'loans:all:expanded:v1' } = {}) {
-    const key = `${cacheKey}:${sort}:${filter}:${expand}`;
+    const effectiveExpand = shouldScopeToCurrentOfficer() && !expand ? 'member,member.group,group,processed_by' : expand;
+    const key = `${cacheKey}:${getOfficerScopeCacheKey()}:${sort}:${filter}:${effectiveExpand}`;
     const options = { filter, sort };
-    if (expand) options.expand = expand;
-    return await dataCache.refresh(key, () => pb.collection('loans').getFullList(options));
+    if (effectiveExpand) options.expand = effectiveExpand;
+    return await dataCache.refresh(key, async () => filterLoansForCurrentOfficer(await pb.collection('loans').getFullList(options)));
   },
 
   /**
    * Get a specific loan by its ID (the PocketBase record ID)
    */
   async getById(id) {
-    return await pb.collection('loans').getOne(id, {
+    const loan = await pb.collection('loans').getOne(id, {
       expand: 'member,member.group,group,processed_by'
     });
+    if (shouldScopeToCurrentOfficer() && filterLoansForCurrentOfficer([loan]).length === 0) {
+      throw new Error('You can only access loans assigned to your portfolio.');
+    }
+    return loan;
   },
 
   /**
@@ -222,6 +244,9 @@ export const loanService = {
     const result = await pb.collection('loans').getFirstListItem(`loan_no="${loanNo}"`, {
       expand: 'member,member.group,group,processed_by'
     });
+    if (shouldScopeToCurrentOfficer() && filterLoansForCurrentOfficer([result]).length === 0) {
+      throw new Error('You can only access loans assigned to your portfolio.');
+    }
     return result;
   },
 
@@ -265,22 +290,22 @@ export const loanService = {
    * Get all loans for a specific member (PB relation ID)
    */
   async getByMember(memberId) {
-    return await pb.collection('loans').getFullList({
+    return filterLoansForCurrentOfficer(await pb.collection('loans').getFullList({
       filter: `member="${memberId}"`,
       sort: '-application_date',
       expand: 'member,member.group,group,processed_by'
-    });
+    }));
   },
 
   /**
    * Get all loans for a specific group (PB relation ID)
    */
   async getByGroup(groupId) {
-    return await pb.collection('loans').getFullList({
+    return filterLoansForCurrentOfficer(await pb.collection('loans').getFullList({
       filter: `group="${groupId}"`,
       sort: '-application_date',
       expand: 'member,member.group,group,processed_by'
-    });
+    }));
   },
 
   // --- Schedules ---

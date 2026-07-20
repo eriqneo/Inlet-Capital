@@ -181,6 +181,10 @@ export const renderDashboard = async () => {
       repayments = repayments.filter(repayment => scopedLoanIds.has(repayment.loan));
     }
 
+    const visibleLoanIds = new Set(loans.map(loan => loan.id));
+    schedules = schedules.filter(schedule => visibleLoanIds.has(schedule.loan));
+    repayments = repayments.filter(repayment => visibleLoanIds.has(repayment.loan));
+
     const savingsByMember = savings.reduce((map, saving) => {
       if (!saving.member) return map;
       const rows = map.get(saving.member) || [];

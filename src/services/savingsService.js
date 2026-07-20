@@ -1,5 +1,11 @@
 import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
+import {
+  filterSavingsForCurrentOfficer,
+  getOfficerScopeCacheKey,
+  paginateScopedItems,
+  shouldScopeToCurrentOfficer
+} from '../core/officerScope.js';
 
 const requireAdminRecordManager = () => {
   const role = pb.authStore.model?.role;
@@ -31,6 +37,15 @@ export const savingsService = {
    * Get all transactions with expanded member and group details
    */
   async getAll({ page = 1, perPage = 50, filter = '', sort = '-date' } = {}) {
+    if (shouldScopeToCurrentOfficer()) {
+      const items = filterSavingsForCurrentOfficer(await pb.collection('savings').getFullList({
+        filter,
+        sort,
+        expand: 'member,member.group,group,recorded_by'
+      }));
+      return paginateScopedItems(items, { page, perPage });
+    }
+
     return await pb.collection('savings').getList(page, perPage, {
       filter,
       sort,
@@ -40,11 +55,20 @@ export const savingsService = {
 
   async getAllCached(options = {}, onUpdate = null) {
     const { page = 1, perPage = 50, filter = '', sort = '-date' } = options;
-    const key = `savings:list:${page}:${perPage}:${sort}:${filter}:expanded:v2`;
+    const key = `savings:list:${getOfficerScopeCacheKey()}:${page}:${perPage}:${sort}:${filter}:expanded:v2`;
     return await dataCache.getLocalFirst(key, () => this.getAll({ page, perPage, filter, sort }), onUpdate);
   },
 
   async getAllBasic({ page = 1, perPage = 50, filter = '', sort = '-date' } = {}) {
+    if (shouldScopeToCurrentOfficer()) {
+      const items = filterSavingsForCurrentOfficer(await pb.collection('savings').getFullList({
+        filter,
+        sort,
+        expand: 'member,member.group,group,recorded_by'
+      }));
+      return paginateScopedItems(items, { page, perPage });
+    }
+
     return await pb.collection('savings').getList(page, perPage, {
       filter,
       sort
@@ -53,16 +77,17 @@ export const savingsService = {
 
   async getAllBasicCached(options = {}, onUpdate = null) {
     const { page = 1, perPage = 50, filter = '', sort = '-date' } = options;
-    const key = `savings:list:${page}:${perPage}:${sort}:${filter}:basic`;
+    const key = `savings:list:${getOfficerScopeCacheKey()}:${page}:${perPage}:${sort}:${filter}:basic`;
     return await dataCache.getLocalFirst(key, () => this.getAllBasic({ page, perPage, filter, sort }), onUpdate);
   },
 
   async getFullListCached({ filter = '', sort = '-date', expand = 'member,member.group,group,recorded_by', cacheKey = 'savings:all:expanded:v2' } = {}, onUpdate = null) {
-    const key = `${cacheKey}:${sort}:${filter}:${expand}`;
-    return await dataCache.getLocalFirst(key, () => {
+    const effectiveExpand = shouldScopeToCurrentOfficer() && !expand ? 'member,member.group,group,recorded_by' : expand;
+    const key = `${cacheKey}:${getOfficerScopeCacheKey()}:${sort}:${filter}:${effectiveExpand}`;
+    return await dataCache.getLocalFirst(key, async () => {
       const options = { filter, sort };
-      if (expand) options.expand = expand;
-      return pb.collection('savings').getFullList(options);
+      if (effectiveExpand) options.expand = effectiveExpand;
+      return filterSavingsForCurrentOfficer(await pb.collection('savings').getFullList(options));
     }, onUpdate);
   },
 
@@ -71,9 +96,10 @@ export const savingsService = {
    */
   async getMemberBalance(memberId) {
     // memberId here is the PocketBase relation ID for the member
-    const records = await pb.collection('savings').getFullList({
+    const records = filterSavingsForCurrentOfficer(await pb.collection('savings').getFullList({
       filter: `member="${memberId}" && is_reversed=false`,
-    });
+      expand: 'member,member.group,group'
+    }));
     
     return records.reduce((sum, record) => {
       return record.type === 'deposit' 
@@ -86,22 +112,22 @@ export const savingsService = {
    * Get all savings for a specific member
    */
   async getByMember(memberId) {
-    return await pb.collection('savings').getFullList({
+    return filterSavingsForCurrentOfficer(await pb.collection('savings').getFullList({
       filter: `member="${memberId}"`,
       sort: '-date',
-      expand: 'recorded_by'
-    });
+      expand: 'member,member.group,group,recorded_by'
+    }));
   },
 
   /**
    * Get all savings for a specific group
    */
   async getByGroup(groupId) {
-    return await pb.collection('savings').getFullList({
+    return filterSavingsForCurrentOfficer(await pb.collection('savings').getFullList({
       filter: `group="${groupId}"`,
       sort: '-date',
-      expand: 'recorded_by'
-    });
+      expand: 'member,member.group,group,recorded_by'
+    }));
   },
 
   async update(id, data) {

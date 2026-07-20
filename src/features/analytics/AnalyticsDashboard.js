@@ -47,6 +47,9 @@ export const renderAnalyticsDashboard = async () => {
       </div>`;
       return false;
     }
+    const visibleLoanIds = new Set(loans.map(loan => loan.id));
+    schedules = schedules.filter(schedule => visibleLoanIds.has(schedule.loan));
+    repayments = repayments.filter(repayment => visibleLoanIds.has(repayment.loan));
     return true;
   };
 

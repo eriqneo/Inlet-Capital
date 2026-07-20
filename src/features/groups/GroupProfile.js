@@ -12,6 +12,7 @@ import { dataCache } from '../../services/dataCache.js';
 import { setButtonLoading } from '../../core/uiState.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { getArrearsTotal, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
+import { getOfficerScopeCacheKey } from '../../core/officerScope.js';
 
 export const renderGroupProfile = async (params) => {
   const { id } = params;
@@ -27,9 +28,10 @@ export const renderGroupProfile = async (params) => {
 
   (async () => {
   let group;
+  const officerScopeKey = getOfficerScopeCacheKey();
   try {
     group = await dataCache.getLocalFirst(
-      `groups:profile:${id}:v1`,
+      `groups:profile:${officerScopeKey}:${id}:v1`,
       () => groupService.getById(id),
       null,
       { minRefreshInterval: 30 * 1000 }
@@ -257,7 +259,7 @@ export const renderGroupProfile = async (params) => {
   let allGroupMembers = [], groupLoans = [], groupSavings = [], allRepayments = [], allSchedules = [];
   try {
     allGroupMembers = await dataCache.getLocalFirst(
-      `groups:profile:${id}:members:v2`,
+      `groups:profile:${officerScopeKey}:${id}:members:v2`,
       () => pb.collection('members').getFullList({ filter: `group="${id}"`, expand: 'group' }),
       null,
       { minRefreshInterval: 20 * 1000 }
@@ -267,7 +269,7 @@ export const renderGroupProfile = async (params) => {
   try {
     [groupLoans, groupSavings] = await Promise.all([
       dataCache.getLocalFirst(
-        `groups:profile:${id}:loans:v3`,
+        `groups:profile:${officerScopeKey}:${id}:loans:v3`,
         () => pb.collection('loans').getFullList({
           filter: scopedGroupRecordFilter,
           sort: '-application_date',
@@ -277,7 +279,7 @@ export const renderGroupProfile = async (params) => {
         { minRefreshInterval: 10 * 1000 }
       ),
       dataCache.getLocalFirst(
-        `groups:profile:${id}:savings:v3`,
+        `groups:profile:${officerScopeKey}:${id}:savings:v3`,
         () => pb.collection('savings').getFullList({
           filter: scopedGroupRecordFilter,
           sort: '-date',
@@ -436,8 +438,8 @@ export const renderGroupProfile = async (params) => {
     if (unassignedMembersLoaded) return unassignedMembers;
     try {
       unassignedMembers = await dataCache.getLocalFirst(
-        'members:unassigned:v2',
-        () => pb.collection('members').getFullList({ filter: `group=""||group=null`, sort: 'full_name' }),
+        `members:unassigned:${officerScopeKey}:v2`,
+        async () => (await memberService.list({ page: 1, perPage: 10000, filter: `group=""||group=null`, sort: 'full_name' })).items,
         null,
         { minRefreshInterval: 20 * 1000 }
       );
