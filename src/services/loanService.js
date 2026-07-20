@@ -377,6 +377,53 @@ export const loanService = {
     return record;
   },
 
+  async updateRepayment(id, data) {
+    const role = pb.authStore.model?.role;
+    if (!['super_admin', 'admin'].includes(role)) {
+      throw new Error('Only admins can edit repayment records.');
+    }
+
+    let record;
+    try {
+      record = await pb.collection('loan_repayments').update(id, data);
+    } catch (error) {
+      const hasAllocationFields = 'principal_amount' in data || 'interest_amount' in data;
+      if (error?.status !== 400 || !hasAllocationFields) throw error;
+      const compatibleData = { ...data };
+      delete compatibleData.principal_amount;
+      delete compatibleData.interest_amount;
+      record = await pb.collection('loan_repayments').update(id, compatibleData);
+      console.warn('[loanService] Repayment allocation fields are not installed yet; updated using the legacy schema.');
+    }
+    await dataCache.invalidate('loan_repayments');
+    await dataCache.invalidatePrefix('loan_repayments:');
+    await dataCache.invalidatePrefix('loan_repayments');
+    await dataCache.invalidatePrefix('loans:');
+    await dataCache.invalidatePrefix('loans:all:');
+    await dataCache.invalidatePrefix('loans:analytics:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
+    return record;
+  },
+
+  async deleteRepayment(id) {
+    const role = pb.authStore.model?.role;
+    if (role !== 'super_admin') {
+      throw new Error('Only super admins can delete repayment records.');
+    }
+
+    await pb.collection('loan_repayments').delete(id);
+    await dataCache.invalidate('loan_repayments');
+    await dataCache.invalidatePrefix('loan_repayments:');
+    await dataCache.invalidatePrefix('loan_repayments');
+    await dataCache.invalidatePrefix('loans:');
+    await dataCache.invalidatePrefix('loans:all:');
+    await dataCache.invalidatePrefix('loans:analytics:');
+    await dataCache.invalidatePrefix('group_summary:');
+    await dataCache.invalidatePrefix('groups:profile:');
+    return true;
+  },
+
   subscribeToChanges(callback) {
     return pb.collection('loans').subscribe('*', callback);
   },

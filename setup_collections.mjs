@@ -531,6 +531,18 @@ async function run() {
     try {
       const repaymentsColl = await fetchPb('collections/loan_repayments', 'GET', null, token);
       let changed = false;
+      const expectedUpdateRule = '@request.auth.role = "super_admin" || @request.auth.role = "admin"';
+      const expectedDeleteRule = '@request.auth.role = "super_admin"';
+      if (repaymentsColl.updateRule !== expectedUpdateRule) {
+        repaymentsColl.updateRule = expectedUpdateRule;
+        changed = true;
+        console.log('Loan repayments update rule restricted to admins.');
+      }
+      if (repaymentsColl.deleteRule !== expectedDeleteRule) {
+        repaymentsColl.deleteRule = expectedDeleteRule;
+        changed = true;
+        console.log('Loan repayments delete rule restricted to super admins.');
+      }
       if (!repaymentsColl.fields.some(field => field.name === 'fine_amount')) {
         repaymentsColl.fields.push({
           name: 'fine_amount',

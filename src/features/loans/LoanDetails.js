@@ -123,6 +123,8 @@ export const renderLoanDetails = async (params) => {
   let commentsPage = 1;
   let editingCommentId = null;
   const pageSize = 10;
+  const canEditRepayments = authService.hasRole('super_admin', 'admin');
+  const canDeleteRepayments = authService.hasRole('super_admin');
   const canEditComments = authService.hasRole('super_admin', 'admin');
   const canDeleteComments = authService.hasRole('super_admin');
   const canRepairSchedule = authService.hasRole('super_admin', 'admin')
@@ -374,6 +376,7 @@ export const renderLoanDetails = async (params) => {
                   <th>Recorded By</th>
                   <th class="text-right">Fine</th>
                   <th class="text-right">Amount</th>
+                  ${(canEditRepayments || canDeleteRepayments) ? '<th class="text-right">Actions</th>' : ''}
                 </tr>
               </thead>
               <tbody id="repayment-history-body"></tbody>
@@ -490,6 +493,55 @@ export const renderLoanDetails = async (params) => {
       </div>
     </div>
 
+    <div id="repayment-edit-modal" class="modal" style="display: none; position: fixed; z-index: 1000; inset: 0; background: rgba(15,37,69,0.48); backdrop-filter: blur(6px); align-items: center; justify-content: center; padding: 20px;">
+      <div class="card" style="width: min(620px, 100%); padding: 0; overflow: hidden;">
+        <div style="padding: 20px 24px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; gap: 16px; align-items: center;">
+          <div>
+            <h2 class="text-lg">Edit Repayment</h2>
+            <p class="text-xs text-muted" id="repayment-edit-subtitle" style="margin-top: 4px;">Correct repayment amount, method, date, fine, or notes.</p>
+          </div>
+          <button type="button" id="repayment-edit-close" aria-label="Close" style="background: transparent; border: none; font-size: 24px; cursor: pointer; color: var(--text-muted);">&times;</button>
+        </div>
+        <form id="repayment-edit-form" style="padding: 24px;">
+          <input type="hidden" name="repayment_id" />
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px;">
+            <div class="form-group">
+              <label class="form-label">Payment Amount (KES)</label>
+              <input type="number" name="amount" class="form-control" min="1" step="1" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Fine (Optional)</label>
+              <input type="number" name="fine_amount" class="form-control" min="0" step="1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Date</label>
+              <input type="date" name="date" class="form-control" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Method</label>
+              <select name="method" id="edit-repayment-method" class="form-control">
+                <option value="mpesa">M-Pesa</option>
+                <option value="cash">Cash</option>
+                <option value="bank">Bank Transfer</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group" id="edit-repayment-ref-group">
+            <label class="form-label" id="edit-repayment-ref-label">M-Pesa Transaction Code</label>
+            <input type="text" name="reference" id="edit-repayment-ref-input" class="form-control" placeholder="e.g. QWE123RTY4" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Notes (Optional)</label>
+            <textarea name="note" class="form-control" rows="2"></textarea>
+          </div>
+          <div style="display: flex; justify-content: flex-end; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border-color);">
+            <button type="button" class="btn btn-outline" id="repayment-edit-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary">Update Repayment</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <style>
       .tab-btn {
         flex: 1;
@@ -509,13 +561,15 @@ export const renderLoanDetails = async (params) => {
         border-bottom-color: var(--secondary);
         background: rgba(27, 61, 114, 0.02);
       }
-      .loan-comment-actions {
+      .loan-comment-actions,
+      .loan-repayment-actions {
         display: inline-flex;
         align-items: center;
         justify-content: flex-end;
         gap: 8px;
       }
-      .loan-comment-action {
+      .loan-comment-action,
+      .loan-repayment-action {
         width: 32px;
         height: 32px;
         display: inline-flex;
@@ -529,15 +583,18 @@ export const renderLoanDetails = async (params) => {
         font-size: 0.9rem;
         transition: all 0.18s ease;
       }
-      .loan-comment-action:hover {
+      .loan-comment-action:hover,
+      .loan-repayment-action:hover {
         transform: translateY(-1px);
         box-shadow: 0 6px 12px rgba(15, 37, 69, 0.08);
         border-color: var(--primary);
       }
-      .loan-comment-action.danger {
+      .loan-comment-action.danger,
+      .loan-repayment-action.danger {
         color: var(--danger);
       }
-      .loan-comment-action.danger:hover {
+      .loan-comment-action.danger:hover,
+      .loan-repayment-action.danger:hover {
         border-color: var(--danger);
         background: rgba(239, 68, 68, 0.06);
       }
@@ -548,18 +605,69 @@ export const renderLoanDetails = async (params) => {
     const start = (historyPage - 1) * pageSize;
     const paginated = repayments.slice(start, start + pageSize);
     const tbody = container.querySelector('#repayment-history-body');
+    const columnCount = (canEditRepayments || canDeleteRepayments) ? 7 : 6;
     
     tbody.innerHTML = repaymentLoadError
-      ? '<tr><td colspan="6" class="text-center text-danger">Repayment history could not be loaded.</td></tr>'
-      : paginated.length === 0 ? '<tr><td colspan="6" class="text-center text-muted">No repayments recorded yet.</td></tr>' : paginated.map(r => `
+      ? `<tr><td colspan="${columnCount}" class="text-center text-danger">Repayment history could not be loaded.</td></tr>`
+      : paginated.length === 0 ? `<tr><td colspan="${columnCount}" class="text-center text-muted">No repayments recorded yet.</td></tr>` : paginated.map(r => `
       <tr>
         <td>${formatDate(r.date)}</td>
-        <td><div class="font-semibold">${r.reference || 'N/A'}</div><div class="text-xs text-muted">${r.method.toUpperCase()}</div></td>
+        <td><div class="font-semibold">${escapeHtml(r.reference || 'N/A')}</div><div class="text-xs text-muted">${escapeHtml(String(r.method || '-').toUpperCase())}</div></td>
         <td class="text-sm">${r.note ? escapeHtml(r.note) : '<span class="text-muted">-</span>'}</td>
         <td class="text-xs text-muted">${r.expand?.recorded_by?.name || 'System'}</td>
         <td class="text-right font-semibold ${Number(r.fine_amount) > 0 ? 'text-warning' : 'text-muted'}">${formatMoney(r.fine_amount)}</td>
         <td class="text-right font-semibold text-success">${formatMoney(r.amount)}</td>
+        ${(canEditRepayments || canDeleteRepayments) ? `
+          <td class="text-right">
+            <div class="loan-repayment-actions">
+              ${canEditRepayments ? `<button type="button" class="loan-repayment-action edit-repayment-btn" data-id="${r.id}" title="Edit repayment" aria-label="Edit repayment">✎</button>` : ''}
+              ${canDeleteRepayments ? `<button type="button" class="loan-repayment-action danger delete-repayment-btn" data-id="${r.id}" title="Delete repayment" aria-label="Delete repayment">×</button>` : ''}
+            </div>
+          </td>
+        ` : ''}
       </tr>`).join('');
+
+    if (canEditRepayments) {
+      tbody.querySelectorAll('.edit-repayment-btn').forEach(btn => {
+        btn.onclick = () => {
+          const repayment = repayments.find(item => item.id === btn.dataset.id);
+          if (repayment) openRepaymentEditModal(repayment);
+        };
+      });
+    }
+
+    if (canDeleteRepayments) {
+      tbody.querySelectorAll('.delete-repayment-btn').forEach(btn => {
+        btn.onclick = async () => {
+          const repayment = repayments.find(item => item.id === btn.dataset.id);
+          if (!repayment) return;
+          const confirmed = window.confirmDialog
+            ? await window.confirmDialog({
+                title: 'Delete Repayment',
+                message: `Delete repayment of KES ${formatMoney(repayment.amount)} recorded on ${formatDate(repayment.date)}? The loan schedule and balances will be recalculated.`,
+                confirmText: 'Delete',
+                cancelText: 'Cancel',
+                type: 'danger'
+              })
+            : confirm('Delete this repayment permanently?');
+          if (!confirmed) return;
+
+          const restoreButton = setButtonLoading(btn, '...');
+          try {
+            await loanService.deleteRepayment(repayment.id);
+            await recalculateRepaymentState();
+            if (window.notify) window.notify.success('Repayment deleted and loan balances recalculated.');
+            await refreshLoanDetails();
+          } catch (err) {
+            const schemaHint = err.status === 403
+              ? ' Confirm that your user is a super admin and the loan_repayments delete rule is updated in PocketHost.'
+              : '';
+            if (window.notify) window.notify.error('Failed to delete repayment: ' + (err.message || 'Please try again.') + schemaHint);
+            restoreButton();
+          }
+        };
+      });
+    }
 
     const pag = container.querySelector('#repayment-history-pagination');
     pag.innerHTML = '';
@@ -782,6 +890,133 @@ export const renderLoanDetails = async (params) => {
     if (cancelBtn) cancelBtn.style.display = 'none';
   };
 
+  const refreshLoanDetails = async () => {
+    const parent = container.parentNode;
+    if (parent) {
+      const freshContainer = await renderLoanDetails(params);
+      parent.replaceChild(freshContainer, container);
+    } else {
+      window.location.hash = window.location.hash;
+    }
+  };
+
+  const recalculateRepaymentState = async () => {
+    if (scheduleLoadError) {
+      throw new Error('Repayment schedule could not be loaded, so balances cannot be recalculated safely.');
+    }
+
+    const freshRepayments = await loanService.getRepaymentsForLoan(loan.id);
+    const orderedRepayments = [...freshRepayments].sort((a, b) => {
+      const aDate = new Date(a.date || a.created || 0).getTime();
+      const bDate = new Date(b.date || b.created || 0).getTime();
+      return aDate - bDate;
+    });
+
+    let priorContractPaid = 0;
+    for (const repayment of orderedRepayments) {
+      const amount = Number(repayment.amount) || 0;
+      const fineAmount = Math.min(amount, Number(repayment.fine_amount) || 0);
+      const allocation = allocateRepayment({
+        loan,
+        repaymentAmount: amount,
+        fineAmount,
+        priorContractPaid
+      });
+      priorContractPaid += allocation.contractAmount;
+
+      const principalChanged = Math.abs((Number(repayment.principal_amount) || 0) - allocation.principalAmount) > 0.01;
+      const interestChanged = Math.abs((Number(repayment.interest_amount) || 0) - allocation.interestAmount) > 0.01;
+      const fineChanged = Math.abs((Number(repayment.fine_amount) || 0) - fineAmount) > 0.01;
+      if (principalChanged || interestChanged || fineChanged) {
+        await loanService.updateRepayment(repayment.id, {
+          fine_amount: fineAmount,
+          principal_amount: allocation.principalAmount,
+          interest_amount: allocation.interestAmount
+        });
+        repayment.fine_amount = fineAmount;
+        repayment.principal_amount = allocation.principalAmount;
+        repayment.interest_amount = allocation.interestAmount;
+      }
+    }
+
+    let remainingContractPaid = orderedRepayments.reduce(
+      (sum, repayment) => sum + getRepaymentContractAmount(repayment),
+      0
+    );
+
+    const orderedSchedule = [...schedule].sort((a, b) => Number(a.installment_no) - Number(b.installment_no));
+    for (const installment of orderedSchedule) {
+      const installmentAmount = Number(installment.amount) || 0;
+      const paid = Math.min(installmentAmount, Math.max(0, remainingContractPaid));
+      remainingContractPaid -= paid;
+      const status = paid >= installmentAmount && installmentAmount > 0
+        ? 'paid'
+        : paid > 0 ? 'partial' : 'pending';
+      await loanService.updateScheduleInstallment(installment.id, { paid, status });
+    }
+
+    const contractPaid = orderedRepayments.reduce(
+      (sum, repayment) => sum + getRepaymentContractAmount(repayment),
+      0
+    );
+    const loanFullyPaid = totalLiability > 0 && contractPaid >= totalLiability - 0.01;
+    if (loanFullyPaid && !['completed', 'closed'].includes(loan.status)) {
+      await loanService.update(loan.id, { status: 'completed' });
+    } else if (!loanFullyPaid && loan.status === 'completed') {
+      await loanService.update(loan.id, { status: 'disbursed' });
+    }
+  };
+
+  const repaymentEditModal = container.querySelector('#repayment-edit-modal');
+  const repaymentEditForm = container.querySelector('#repayment-edit-form');
+  const repaymentEditSubtitle = container.querySelector('#repayment-edit-subtitle');
+  const editRepaymentMethod = container.querySelector('#edit-repayment-method');
+  const editRepaymentRefGroup = container.querySelector('#edit-repayment-ref-group');
+  const editRepaymentRefLabel = container.querySelector('#edit-repayment-ref-label');
+  const editRepaymentRefInput = container.querySelector('#edit-repayment-ref-input');
+
+  const updateEditRepaymentReferenceState = () => {
+    if (!editRepaymentMethod) return;
+    const val = editRepaymentMethod.value;
+    if (val === 'cash') {
+      editRepaymentRefGroup.style.display = 'none';
+      editRepaymentRefInput.removeAttribute('required');
+    } else if (val === 'bank') {
+      editRepaymentRefGroup.style.display = 'block';
+      editRepaymentRefLabel.textContent = 'Bank Transfer / Cheque Reference';
+      editRepaymentRefInput.placeholder = 'e.g. CHQ-987654';
+      editRepaymentRefInput.setAttribute('required', 'true');
+    } else {
+      editRepaymentRefGroup.style.display = 'block';
+      editRepaymentRefLabel.textContent = 'M-Pesa Transaction Code';
+      editRepaymentRefInput.placeholder = 'e.g. QWE123RTY4';
+      editRepaymentRefInput.setAttribute('required', 'true');
+    }
+  };
+
+  const closeRepaymentEditModal = () => {
+    if (!repaymentEditModal || !repaymentEditForm) return;
+    repaymentEditModal.style.display = 'none';
+    repaymentEditForm.reset();
+  };
+
+  const openRepaymentEditModal = (repayment) => {
+    if (!canEditRepayments) {
+      if (window.notify) window.notify.error('Only admins can edit repayment records.');
+      return;
+    }
+    repaymentEditForm.elements.repayment_id.value = repayment.id;
+    repaymentEditForm.elements.amount.value = Number(repayment.amount) || '';
+    repaymentEditForm.elements.fine_amount.value = Number(repayment.fine_amount) || '';
+    repaymentEditForm.elements.date.value = isoToDateInput(repayment.date || repayment.created);
+    repaymentEditForm.elements.method.value = repayment.method || 'mpesa';
+    repaymentEditForm.elements.reference.value = repayment.reference || '';
+    repaymentEditForm.elements.note.value = repayment.note || '';
+    repaymentEditSubtitle.textContent = `${formatDate(repayment.date)} · KES ${formatMoney(repayment.amount)}`;
+    updateEditRepaymentReferenceState();
+    repaymentEditModal.style.display = 'flex';
+  };
+
   updateHistoryUI();
   updateScheduleUI();
   updateCommentsUI();
@@ -880,6 +1115,72 @@ export const renderLoanDetails = async (params) => {
     if (cancelCommentEditBtn) {
       cancelCommentEditBtn.onclick = () => resetCommentForm();
     }
+  }
+
+  if (repaymentEditForm) {
+    container.querySelector('#repayment-edit-close').onclick = closeRepaymentEditModal;
+    container.querySelector('#repayment-edit-cancel').onclick = closeRepaymentEditModal;
+    repaymentEditModal.onclick = (event) => {
+      if (event.target === repaymentEditModal) closeRepaymentEditModal();
+    };
+    editRepaymentMethod.onchange = updateEditRepaymentReferenceState;
+
+    repaymentEditForm.onsubmit = async (event) => {
+      event.preventDefault();
+      if (!repaymentEditForm.reportValidity()) return;
+      const formData = new FormData(repaymentEditForm);
+      const data = Object.fromEntries(formData.entries());
+      const repaymentId = data.repayment_id;
+      const amount = Number(data.amount);
+      const requestedFineAmount = Number(data.fine_amount) || 0;
+      const fineAmount = Math.min(amount, requestedFineAmount);
+      if (!repaymentId) return;
+      if (!Number.isFinite(amount) || amount <= 0) {
+        if (window.notify) window.notify.error('Enter a valid repayment amount.');
+        return;
+      }
+      if (requestedFineAmount > amount) {
+        if (window.notify) window.notify.error('Fine cannot be greater than the repayment amount.');
+        return;
+      }
+
+      const currentRepayment = repayments.find(item => item.id === repaymentId);
+      const priorContractPaid = [...repayments]
+        .filter(item => item.id !== repaymentId)
+        .sort((a, b) => new Date(a.date || a.created || 0) - new Date(b.date || b.created || 0))
+        .filter(item => new Date(item.date || item.created || 0) <= new Date(`${data.date}T12:00:00`))
+        .reduce((sum, item) => sum + getRepaymentContractAmount(item), 0);
+      const allocation = allocateRepayment({
+        loan,
+        repaymentAmount: amount,
+        fineAmount,
+        priorContractPaid
+      });
+
+      const restoreButton = setButtonLoading(repaymentEditForm.querySelector('button[type="submit"]'), 'Updating...');
+      try {
+        await loanService.updateRepayment(repaymentId, {
+          amount,
+          fine_amount: fineAmount,
+          principal_amount: allocation.principalAmount,
+          interest_amount: allocation.interestAmount,
+          date: new Date(`${data.date}T12:00:00`).toISOString(),
+          method: data.method || currentRepayment?.method || 'mpesa',
+          reference: data.method === 'cash' ? '' : String(data.reference || '').trim(),
+          note: String(data.note || '').trim()
+        });
+        await recalculateRepaymentState();
+        closeRepaymentEditModal();
+        if (window.notify) window.notify.success('Repayment updated and loan balances recalculated.');
+        await refreshLoanDetails();
+      } catch (err) {
+        const schemaHint = err.status === 403
+          ? ' Confirm that your user is an admin and the loan_repayments update rule is updated in PocketHost.'
+          : '';
+        if (window.notify) window.notify.error('Failed to update repayment: ' + (err.message || 'Please try again.') + schemaHint);
+        restoreButton();
+      }
+    };
   }
 
   // Dynamic Payment Method Logic
