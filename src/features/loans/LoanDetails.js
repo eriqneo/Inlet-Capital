@@ -389,13 +389,20 @@ export const renderLoanDetails = async (params) => {
           <form id="payment-form" style="max-width: 500px;">
             <div class="form-group">
               <label class="form-label">Payment Amount (KES)</label>
-              <input type="number" name="amount" class="form-control" required min="1" max="${outstandingBalance}" step="1" placeholder="Enter amount paid" />
-              <p class="text-xs text-muted" style="margin-top: 4px;">Max payable: KES ${formatMoney(outstandingBalance)}</p>
+              <input type="number" name="amount" class="form-control" required min="1" step="1" placeholder="Enter total amount received" />
+              <p class="text-xs text-muted" style="margin-top: 4px;">Loan balance due: KES ${formatMoney(outstandingBalance)}. Include any fine collected in the total amount.</p>
             </div>
-            <div class="form-group" style="background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.22); border-radius: 8px; padding: 12px;">
-              <label class="form-label">Automatic Late Fine Due</label>
-              <div class="font-semibold" style="color: ${penaltyState.outstandingFine > 0 ? 'var(--warning)' : 'var(--text-muted)'};">KES ${formatMoney(penaltyState.outstandingFine)}</div>
-              <p class="text-xs text-muted" style="margin-top: 4px;">Applied automatically when a scheduled installment is overdue. The fine is included in the max payable amount.</p>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+              <div class="form-group" style="background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.22); border-radius: 8px; padding: 12px;">
+                <label class="form-label">Automatic Late Fine Due</label>
+                <div class="font-semibold" style="color: ${penaltyState.outstandingFine > 0 ? 'var(--warning)' : 'var(--text-muted)'};">KES ${formatMoney(penaltyState.outstandingFine)}</div>
+                <p class="text-xs text-muted" style="margin-top: 4px;">Applied automatically when a scheduled installment is overdue.</p>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Manual Fine (Optional)</label>
+                <input type="number" name="manual_fine_amount" class="form-control" min="0" step="1" value="0" placeholder="e.g. 500" />
+                <p class="text-xs text-muted" style="margin-top: 4px;">Use only when an additional fine is charged and collected.</p>
+              </div>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
               <div class="form-group">
@@ -1223,7 +1230,13 @@ export const renderLoanDetails = async (params) => {
       if (window.notify) window.notify.error('Enter a valid payment amount before recording.');
       return;
     }
-    const fineAmount = Math.min(penaltyState.outstandingFine, amount);
+    const manualFineAmount = Math.max(0, Number(data.manual_fine_amount) || 0);
+    if (manualFineAmount > amount) {
+      if (window.notify) window.notify.error('Manual fine cannot be greater than the total amount received.');
+      return;
+    }
+    const autoFinePaid = Math.min(penaltyState.outstandingFine, Math.max(0, amount - manualFineAmount));
+    const fineAmount = autoFinePaid + manualFineAmount;
     const principalPaymentAmount = Math.max(0, amount - fineAmount);
     const priorContractPaid = repayments.reduce(
       (sum, repaymentRecord) => sum + getRepaymentContractAmount(repaymentRecord),
@@ -1258,8 +1271,8 @@ export const renderLoanDetails = async (params) => {
     try {
       await loanService.recordRepayment(repayment);
       
-      const totalRepaidNow = totalPaid + amount;
-      const outstandingAfterPayment = Math.max(0, outstandingBalance - amount);
+      const balanceReduction = principalPaymentAmount + autoFinePaid;
+      const outstandingAfterPayment = Math.max(0, outstandingBalance - balanceReduction);
 
       if (totalLiability > 0 && outstandingAfterPayment <= 0) {
         await loanService.update(loan.id, { status: 'completed' });
