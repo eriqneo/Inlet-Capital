@@ -17,6 +17,8 @@ export const renderSavingsList = async () => {
   let requestId = 0;
   let alphaSort = 'default';
   let officerFilter = 'all';
+  let dateFrom = '';
+  let dateTo = '';
   let members = [];
   let groups = [];
   let latestTransactions = [];
@@ -52,6 +54,13 @@ export const renderSavingsList = async () => {
     <div class="card" style="padding: 0; overflow: hidden;">
       <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 12px; flex-wrap: wrap;">
         <div id="savings-reconcile-banner" style="margin-right: auto;"></div>
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <label class="text-xs text-muted" for="savings-date-from" style="font-weight: 700;">From</label>
+          <input type="date" id="savings-date-from" class="form-control" style="max-width: 160px;" />
+          <label class="text-xs text-muted" for="savings-date-to" style="font-weight: 700;">To</label>
+          <input type="date" id="savings-date-to" class="form-control" style="max-width: 160px;" />
+          <button type="button" class="btn btn-outline btn-sm" id="savings-date-clear">Clear</button>
+        </div>
         <select id="savings-alpha-sort" class="form-control" style="max-width: 180px;">
           <option value="default">Latest</option>
           <option value="az">Name A-Z</option>
@@ -105,6 +114,9 @@ export const renderSavingsList = async () => {
 
   const tableBody = container.querySelector('#savings-table-body');
   const paginationWrapper = container.querySelector('#pagination-wrapper');
+  const dateFromInput = container.querySelector('#savings-date-from');
+  const dateToInput = container.querySelector('#savings-date-to');
+  const dateClearBtn = container.querySelector('#savings-date-clear');
   const alphaSortSelect = container.querySelector('#savings-alpha-sort');
   const officerFilterSelect = container.querySelector('#savings-officer-filter');
   const savingsNetTotal = container.querySelector('#savings-net-total');
@@ -132,6 +144,14 @@ export const renderSavingsList = async () => {
   const getSavingsSignedAmount = (transaction) => {
     const amount = Number(transaction?.amount) || 0;
     return transaction?.type === 'withdrawal' ? -amount : amount;
+  };
+  const toStartOfDayIso = (value) => value ? new Date(`${value}T00:00:00`).toISOString() : '';
+  const toEndOfDayIso = (value) => value ? new Date(`${value}T23:59:59.999`).toISOString() : '';
+  const getDateFilter = () => {
+    const filters = [];
+    if (dateFrom) filters.push(`date>="${toStartOfDayIso(dateFrom)}"`);
+    if (dateTo) filters.push(`date<="${toEndOfDayIso(dateTo)}"`);
+    return filters.join(' && ');
   };
 
   const getTransactionTargetName = (transaction) => (
@@ -269,6 +289,7 @@ export const renderSavingsList = async () => {
       paginationWrapper.innerHTML = '';
     });
     try {
+      const dateFilter = getDateFilter();
       const renderResult = (result) => {
         if (thisRequest !== requestId) return;
         cancelLoading();
@@ -288,6 +309,7 @@ export const renderSavingsList = async () => {
       
       if (alphaSort !== 'default' || officerFilter !== 'all') {
         const allTransactions = await savingsService.getFullListCached({
+          filter: dateFilter,
           sort: '-date',
           cacheKey: 'savings:list:alpha:expanded:v1'
         });
@@ -308,16 +330,17 @@ export const renderSavingsList = async () => {
 
       let result;
       try {
-        const query = { page: currentPage, perPage: pageSize };
+        const query = { page: currentPage, perPage: pageSize, filter: dateFilter };
         result = await savingsService.getAllCached(query, freshResult => renderResult(freshResult));
       } catch (err) {
         console.warn('[SavingsList] Expanded transaction load failed, retrying basic query:', err);
-        const query = { page: currentPage, perPage: pageSize };
+        const query = { page: currentPage, perPage: pageSize, filter: dateFilter };
         result = await savingsService.getAllBasicCached(query, freshResult => renderResult(freshResult));
       }
 
       renderResult(result);
       const allForBanner = await savingsService.getFullListCached({
+        filter: dateFilter,
         sort: '-date',
         cacheKey: 'savings:reconcile:expanded:v1'
       });
@@ -383,6 +406,29 @@ export const renderSavingsList = async () => {
 
   alphaSortSelect.onchange = () => {
     alphaSort = alphaSortSelect.value;
+    currentPage = 1;
+    updateUI();
+  };
+
+  const onDateFilterChange = () => {
+    dateFrom = dateFromInput.value;
+    dateTo = dateToInput.value;
+    if (dateFrom && dateTo && dateFrom > dateTo) {
+      if (window.notify) window.notify.error('From date cannot be after To date.');
+      dateToInput.value = '';
+      dateTo = '';
+    }
+    currentPage = 1;
+    updateUI();
+  };
+
+  dateFromInput.onchange = onDateFilterChange;
+  dateToInput.onchange = onDateFilterChange;
+  dateClearBtn.onclick = () => {
+    dateFrom = '';
+    dateTo = '';
+    dateFromInput.value = '';
+    dateToInput.value = '';
     currentPage = 1;
     updateUI();
   };
