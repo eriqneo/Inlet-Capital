@@ -52,21 +52,28 @@ export const renderSavingsList = async () => {
     </div>
 
     <div class="card" style="padding: 0; overflow: hidden;">
-      <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 12px; flex-wrap: wrap;">
-        <div id="savings-reconcile-banner" style="margin-right: auto;"></div>
-        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-          <label class="text-xs text-muted" for="savings-date-from" style="font-weight: 700;">From</label>
-          <input type="date" id="savings-date-from" class="form-control" style="max-width: 160px;" />
-          <label class="text-xs text-muted" for="savings-date-to" style="font-weight: 700;">To</label>
-          <input type="date" id="savings-date-to" class="form-control" style="max-width: 160px;" />
-          <button type="button" class="btn btn-outline btn-sm" id="savings-date-clear">Clear</button>
+      <div class="savings-filter-bar">
+        <div id="savings-reconcile-banner" class="savings-reconcile-slot"></div>
+        <div class="savings-filter-controls">
+          <div class="savings-date-range">
+            <span class="savings-filter-label">Date Range</span>
+            <label class="savings-date-field" for="savings-date-from">
+              <span>From</span>
+              <input type="date" id="savings-date-from" />
+            </label>
+            <label class="savings-date-field" for="savings-date-to">
+              <span>To</span>
+              <input type="date" id="savings-date-to" />
+            </label>
+            <button type="button" class="savings-clear-filter" id="savings-date-clear">Clear</button>
+          </div>
+          <select id="savings-alpha-sort" class="form-control savings-filter-select">
+            <option value="default">Latest</option>
+            <option value="az">Name A-Z</option>
+            <option value="za">Name Z-A</option>
+          </select>
+          ${canUseOfficerFilter() ? '<select id="savings-officer-filter" class="form-control savings-filter-select savings-officer-select"><option value="all">All Loan Officers</option></select>' : ''}
         </div>
-        <select id="savings-alpha-sort" class="form-control" style="max-width: 180px;">
-          <option value="default">Latest</option>
-          <option value="az">Name A-Z</option>
-          <option value="za">Name Z-A</option>
-        </select>
-        ${canUseOfficerFilter() ? '<select id="savings-officer-filter" class="form-control" style="min-width: 210px;"><option value="all">All Loan Officers</option></select>' : ''}
       </div>
       <div class="table-responsive">
         <table class="table">
@@ -87,6 +94,121 @@ export const renderSavingsList = async () => {
       </div>
       <div id="pagination-wrapper"></div>
     </div>
+
+    <style>
+      .savings-filter-bar {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+        background: linear-gradient(180deg, #fff 0%, rgba(248, 250, 252, 0.72) 100%);
+      }
+      .savings-reconcile-slot {
+        flex: 1 1 260px;
+        min-width: 220px;
+      }
+      .savings-filter-controls {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+        flex: 2 1 640px;
+        flex-wrap: wrap;
+      }
+      .savings-date-range {
+        height: 40px;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px;
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        background: #fff;
+      }
+      .savings-filter-label {
+        padding: 0 8px;
+        font-size: 0.68rem;
+        font-weight: 800;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        white-space: nowrap;
+      }
+      .savings-date-field {
+        height: 30px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 8px;
+        border-left: 1px solid var(--border-color);
+        color: var(--text-muted);
+        font-size: 0.72rem;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      .savings-date-field input {
+        width: 130px;
+        height: 28px;
+        border: 0;
+        outline: none;
+        background: transparent;
+        color: var(--text-main);
+        font: inherit;
+        font-size: 0.82rem;
+        font-weight: 500;
+      }
+      .savings-clear-filter {
+        height: 30px;
+        padding: 0 12px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: var(--bg-light);
+        color: var(--primary);
+        font-size: 0.74rem;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      .savings-clear-filter:hover {
+        border-color: var(--primary);
+        background: rgba(27, 61, 114, 0.06);
+      }
+      .savings-filter-select {
+        width: auto;
+        min-width: 150px;
+        max-width: 190px;
+        height: 40px;
+        padding: 8px 34px 8px 12px;
+        border-radius: 8px;
+      }
+      .savings-officer-select {
+        min-width: 210px;
+        max-width: 240px;
+      }
+      @media (max-width: 820px) {
+        .savings-filter-controls,
+        .savings-date-range,
+        .savings-filter-select {
+          width: 100%;
+        }
+        .savings-date-range {
+          height: auto;
+          flex-wrap: wrap;
+          padding: 8px;
+        }
+        .savings-date-field {
+          flex: 1 1 180px;
+          border-left: 0;
+          border-top: 1px solid var(--border-color);
+          padding-top: 8px;
+        }
+        .savings-date-field input {
+          width: 100%;
+        }
+      }
+    </style>
 
     <div id="assign-savings-modal" class="modal" style="display: none; position: fixed; z-index: 1000; inset: 0; background: rgba(15,37,69,0.48); backdrop-filter: blur(6px); align-items: center; justify-content: center; padding: 20px;">
       <div class="card" style="width: min(520px, 100%); padding: 0; overflow: hidden;">
