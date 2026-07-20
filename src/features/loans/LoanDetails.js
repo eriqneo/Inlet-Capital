@@ -16,6 +16,12 @@ export const renderLoanDetails = async (params) => {
   const todayInputValue = new Date().toISOString().split('T')[0];
   const dateInputToDate = (value) => new Date(`${value || todayInputValue}T12:00:00`);
   const dateInputToIso = (value) => dateInputToDate(value).toISOString();
+  const isoToDateInput = (value) => {
+    if (!value) return todayInputValue;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return todayInputValue;
+    return date.toISOString().split('T')[0];
+  };
   const isInputDateBeforeRecordDate = (inputValue, recordValue) => {
     if (!recordValue) return false;
     const inputDate = dateInputToDate(inputValue);
@@ -115,7 +121,10 @@ export const renderLoanDetails = async (params) => {
   let historyPage = 1;
   let schedulePage = 1;
   let commentsPage = 1;
+  let editingCommentId = null;
   const pageSize = 10;
+  const canEditComments = authService.hasRole('super_admin', 'admin');
+  const canDeleteComments = authService.hasRole('super_admin');
   const canRepairSchedule = authService.hasRole('super_admin', 'admin')
     && loan.status === 'disbursed'
     && !scheduleLoadError
@@ -454,7 +463,10 @@ export const renderLoanDetails = async (params) => {
                   <label class="form-label">Comment</label>
                   <textarea name="comment" class="form-control" rows="2" placeholder="Capture follow-up notes, payment promise, visit outcome, or loan officer observation..." required></textarea>
                 </div>
-                <button type="submit" class="btn btn-primary">Save Comment</button>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <button type="submit" class="btn btn-primary" id="loan-comment-submit">Save Comment</button>
+                  <button type="button" class="btn btn-outline" id="loan-comment-cancel" style="display: none;">Cancel</button>
+                </div>
               </div>
             </form>
             <div class="table-responsive">
@@ -464,6 +476,7 @@ export const renderLoanDetails = async (params) => {
                     <th>Date</th>
                     <th>Comment</th>
                     <th>Recorded By</th>
+                    ${(canEditComments || canDeleteComments) ? '<th class="text-right">Actions</th>' : ''}
                   </tr>
                 </thead>
                 <tbody id="loan-comments-body"></tbody>
@@ -495,6 +508,38 @@ export const renderLoanDetails = async (params) => {
         color: var(--primary);
         border-bottom-color: var(--secondary);
         background: rgba(27, 61, 114, 0.02);
+      }
+      .loan-comment-actions {
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+      .loan-comment-action {
+        width: 32px;
+        height: 32px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        border: 1px solid var(--border-color);
+        background: #fff;
+        color: var(--primary);
+        cursor: pointer;
+        font-size: 0.9rem;
+        transition: all 0.18s ease;
+      }
+      .loan-comment-action:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 12px rgba(15, 37, 69, 0.08);
+        border-color: var(--primary);
+      }
+      .loan-comment-action.danger {
+        color: var(--danger);
+      }
+      .loan-comment-action.danger:hover {
+        border-color: var(--danger);
+        background: rgba(239, 68, 68, 0.06);
       }
     </style>
   `;
@@ -638,18 +683,82 @@ export const renderLoanDetails = async (params) => {
     const paginated = memberComments.slice(start, start + pageSize);
     const tbody = container.querySelector('#loan-comments-body');
     if (!tbody) return;
+    const columnCount = (canEditComments || canDeleteComments) ? 4 : 3;
 
     tbody.innerHTML = commentsLoadError
-      ? '<tr><td colspan="3" class="text-center text-danger">Comments could not be loaded. The loan schedule and repayments remain available.</td></tr>'
+      ? `<tr><td colspan="${columnCount}" class="text-center text-danger">Comments could not be loaded. The loan schedule and repayments remain available.</td></tr>`
       : paginated.length === 0
-      ? '<tr><td colspan="3" class="text-center text-muted">No comments recorded for this member yet.</td></tr>'
+      ? `<tr><td colspan="${columnCount}" class="text-center text-muted">No comments recorded for this member yet.</td></tr>`
       : paginated.map(comment => `
         <tr>
           <td class="font-semibold">${formatDate(comment.comment_date || comment.created)}</td>
           <td class="text-sm" style="line-height: 1.5;">${escapeHtml(comment.comment)}</td>
           <td class="text-xs text-muted">${escapeHtml(comment.expand?.created_by?.name || comment.expand?.created_by?.email || 'Loan officer')}</td>
+          ${(canEditComments || canDeleteComments) ? `
+            <td class="text-right">
+              <div class="loan-comment-actions">
+                ${canEditComments ? `<button type="button" class="loan-comment-action edit-comment-btn" data-id="${comment.id}" title="Edit comment" aria-label="Edit comment">✎</button>` : ''}
+                ${canDeleteComments ? `<button type="button" class="loan-comment-action danger delete-comment-btn" data-id="${comment.id}" title="Delete comment" aria-label="Delete comment">×</button>` : ''}
+              </div>
+            </td>
+          ` : ''}
         </tr>
       `).join('');
+
+    if (canEditComments) {
+      tbody.querySelectorAll('.edit-comment-btn').forEach(btn => {
+        btn.onclick = () => {
+          const item = memberComments.find(comment => comment.id === btn.dataset.id);
+          const form = container.querySelector('#loan-comment-form');
+          if (!item || !form) return;
+          editingCommentId = item.id;
+          form.elements.comment_date.value = isoToDateInput(item.comment_date || item.created);
+          form.elements.comment.value = item.comment || '';
+          const submitBtn = container.querySelector('#loan-comment-submit');
+          const cancelBtn = container.querySelector('#loan-comment-cancel');
+          if (submitBtn) submitBtn.textContent = 'Update Comment';
+          if (cancelBtn) cancelBtn.style.display = 'inline-flex';
+          form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          form.elements.comment.focus();
+        };
+      });
+    }
+
+    if (canDeleteComments) {
+      tbody.querySelectorAll('.delete-comment-btn').forEach(btn => {
+        btn.onclick = async () => {
+          const item = memberComments.find(comment => comment.id === btn.dataset.id);
+          if (!item) return;
+          const confirmed = window.confirmDialog
+            ? await window.confirmDialog({
+                title: 'Delete Comment',
+                message: 'Delete this member comment permanently? This should only be used for wrong or duplicate entries.',
+                confirmText: 'Delete',
+                cancelText: 'Cancel',
+                type: 'danger'
+              })
+            : confirm('Delete this member comment permanently?');
+          if (!confirmed) return;
+
+          const restoreButton = setButtonLoading(btn, '...');
+          try {
+            await memberCommentService.delete(item.id, loan.member);
+            memberComments = memberComments.filter(comment => comment.id !== item.id);
+            if (editingCommentId === item.id) resetCommentForm();
+            const totalPages = Math.max(1, Math.ceil(memberComments.length / pageSize));
+            commentsPage = Math.min(commentsPage, totalPages);
+            updateCommentsUI();
+            if (window.notify) window.notify.success('Comment deleted.');
+          } catch (err) {
+            const schemaHint = err.status === 403
+              ? ' Confirm that your user is a super admin and the member_comments delete rule is updated in PocketHost.'
+              : '';
+            if (window.notify) window.notify.error('Failed to delete comment: ' + (err.message || 'Please try again.') + schemaHint);
+            restoreButton();
+          }
+        };
+      });
+    }
 
     const pag = container.querySelector('#loan-comments-pagination');
     if (!pag) return;
@@ -659,6 +768,18 @@ export const renderLoanDetails = async (params) => {
       updateCommentsUI();
     });
     if (ctrl) pag.appendChild(ctrl);
+  };
+
+  const resetCommentForm = () => {
+    editingCommentId = null;
+    const form = container.querySelector('#loan-comment-form');
+    if (!form) return;
+    form.reset();
+    form.elements.comment_date.value = todayInputValue;
+    const submitBtn = container.querySelector('#loan-comment-submit');
+    const cancelBtn = container.querySelector('#loan-comment-cancel');
+    if (submitBtn) submitBtn.textContent = 'Save Comment';
+    if (cancelBtn) cancelBtn.style.display = 'none';
   };
 
   updateHistoryUI();
@@ -715,30 +836,50 @@ export const renderLoanDetails = async (params) => {
       }
 
       const submitBtn = commentForm.querySelector('button[type="submit"]');
-      const restoreButton = setButtonLoading(submitBtn, 'Saving...');
+      const wasEditing = Boolean(editingCommentId);
+      const editId = editingCommentId;
+      const restoreButton = setButtonLoading(submitBtn, wasEditing ? 'Updating...' : 'Saving...');
+      let completed = false;
       try {
         const userId = authService.getUser()?.id;
-        await memberCommentService.create({
+        const payload = {
           member: loan.member,
           comment,
-          comment_date: new Date(`${commentDate}T12:00:00`).toISOString(),
-          ...(userId ? { created_by: userId } : {})
-        });
+          comment_date: new Date(`${commentDate}T12:00:00`).toISOString()
+        };
+        if (wasEditing) {
+          if (!canEditComments) {
+            throw new Error('Only admins can edit member comments.');
+          }
+          await memberCommentService.update(editId, payload);
+        } else {
+          await memberCommentService.create({
+            ...payload,
+            ...(userId ? { created_by: userId } : {})
+          });
+        }
         memberComments = await memberCommentService.getByMember(loan.member);
-        commentForm.reset();
-        commentForm.elements.comment_date.value = todayInputValue;
         commentsPage = 1;
-        updateCommentsUI();
-        if (window.notify) window.notify.success('Member comment saved.');
+        completed = true;
+        if (window.notify) window.notify.success(wasEditing ? 'Member comment updated.' : 'Member comment saved.');
       } catch (err) {
         const schemaHint = err.status === 404 || err.status === 400
           ? ' Confirm that the member_comments collection exists in PocketHost.'
           : '';
-        if (window.notify) window.notify.error('Failed to save comment: ' + (err.message || 'Please try again.') + schemaHint);
+        if (window.notify) window.notify.error(`Failed to ${wasEditing ? 'update' : 'save'} comment: ` + (err.message || 'Please try again.') + schemaHint);
       } finally {
         restoreButton();
+        if (completed) {
+          resetCommentForm();
+          updateCommentsUI();
+        }
       }
     };
+
+    const cancelCommentEditBtn = container.querySelector('#loan-comment-cancel');
+    if (cancelCommentEditBtn) {
+      cancelCommentEditBtn.onclick = () => resetCommentForm();
+    }
   }
 
   // Dynamic Payment Method Logic

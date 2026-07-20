@@ -25,5 +25,17 @@ export const memberCommentService = {
     const record = await pb.collection('member_comments').create(data);
     await dataCache.invalidatePrefix(`member_comments:${data.member}:`);
     return record;
+  },
+
+  async update(id, data) {
+    const record = await pb.collection('member_comments').update(id, data);
+    await dataCache.invalidatePrefix(`member_comments:${record.member || data.member}:`);
+    return record;
+  },
+
+  async delete(id, memberId) {
+    await pb.collection('member_comments').delete(id);
+    if (memberId) await dataCache.invalidatePrefix(`member_comments:${memberId}:`);
+    return true;
   }
 };
