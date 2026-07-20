@@ -6,7 +6,7 @@ import { pb } from '../../services/api.js'; // We'll use pb to get all loans for
 import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
 import { getReturnTo, withReturnTo } from '../../core/navigation.js';
 
-const QUEUE_FILTER = 'status="pending" || status="approved" || status="partial_approved" || status="expired"';
+const QUEUE_FILTER = 'status="pending" || ((status="approved" || status="partial_approved") && disbursement_date="") || status="expired"';
 
 export const renderLoanApprovalQueue = async (params = {}) => {
   const container = document.createElement('div');
@@ -89,7 +89,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
 
   // Filter queues
   const pendingLoans = freshLoans.filter(l => l.status === 'pending');
-  const awaitingLoans = freshLoans.filter(l => ['approved', 'partial_approved'].includes(l.status));
+  const awaitingLoans = freshLoans.filter(l => ['approved', 'partial_approved'].includes(l.status) && !l.disbursement_date);
   const expiredLoans = freshLoans.filter(l => l.status === 'expired');
 
   // Helper to calculate days remaining for disbursement

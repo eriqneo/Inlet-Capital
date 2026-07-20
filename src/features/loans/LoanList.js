@@ -186,6 +186,7 @@ export const renderLoanList = async () => {
     return date.toISOString().split('T')[0];
   };
   const toPocketDate = (dateValue) => dateValue ? new Date(`${dateValue}T12:00:00`).toISOString() : '';
+  const disbursedStatuses = ['disbursed', 'completed', 'closed'];
   const getLoanRemarks = (loan) => loan.purpose || loan.remarks || loan.note || '';
   const getLoanClientName = (loan) => {
     const member = loan.expand?.member;
@@ -241,7 +242,7 @@ export const renderLoanList = async () => {
       } else if (statusFilter === 'pending') {
         filters.push('status="pending"');
       } else if (statusFilter === 'awaiting') {
-        filters.push('(status="approved" || status="partial_approved")');
+        filters.push('(status="approved" || status="partial_approved") && disbursement_date=""');
       } else if (statusFilter === 'declined') {
         filters.push('status="rejected"');
       } else if (statusFilter === 'completed') {
@@ -484,7 +485,13 @@ export const renderLoanList = async () => {
       purpose: data.purpose || ''
     };
     if (data.approved_date) payload.approved_date = toPocketDate(data.approved_date);
-    if (data.disbursement_date) payload.disbursement_date = toPocketDate(data.disbursement_date);
+    if (disbursedStatuses.includes(data.status)) {
+      if (!data.disbursement_date) {
+        if (window.notify) window.notify.error('Disbursement date is required once a loan is disbursed, completed, or closed.');
+        return;
+      }
+      payload.disbursement_date = toPocketDate(data.disbursement_date);
+    }
 
     const restoreButton = setButtonLoading(loanEditForm.querySelector('button[type="submit"]'), 'Saving...');
     try {

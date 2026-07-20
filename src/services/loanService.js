@@ -14,7 +14,44 @@ const normalizeGuarantorId = (value) => String(value || '').replace(/\D/g, '').t
 const activeGuarantorStatuses = ['pending', 'approved', 'partial_approved', 'disbursed'];
 const normalLoanRestrictedStatuses = ['pending', 'approved', 'partial_approved', 'disbursed'];
 const repeatLoanAllowedTypes = ['emergency', 'school_fees'];
-const disbursedLikeStatuses = ['disbursed', 'completed', 'closed'];
+const awaitingDisbursementStatuses = ['approved', 'partial_approved'];
+const preDisbursementStatuses = ['pending', 'approved', 'partial_approved', 'rejected', 'expired'];
+
+const normalizeLoanStatusPayload = async (id, data) => {
+  const payload = { ...data };
+  if (!payload.status) return payload;
+
+  const existing = await pb.collection('loans').getOne(id).catch(() => null);
+  const hasDisbursementDate = Boolean(payload.disbursement_date || existing?.disbursement_date);
+
+  if (payload.status === 'disbursed') {
+    if (!hasDisbursementDate) payload.disbursement_date = new Date().toISOString();
+    return payload;
+  }
+
+  if (['completed', 'closed'].includes(payload.status)) {
+    if (!hasDisbursementDate) {
+      throw new Error('A loan must be disbursed before it can be completed or closed.');
+    }
+    return payload;
+  }
+
+  if (preDisbursementStatuses.includes(payload.status)) {
+    payload.disbursement_date = null;
+  }
+
+  if (payload.status === 'pending') {
+    payload.approved_date = null;
+    payload.approved_amount = 0;
+    payload.expired_date = null;
+  }
+
+  if (awaitingDisbursementStatuses.includes(payload.status) && !payload.approved_date && existing?.approved_date) {
+    payload.approved_date = existing.approved_date;
+  }
+
+  return payload;
+};
 
 const getLoanOwnerLabel = (loan) => {
   const member = loan.expand?.member;
@@ -203,11 +240,7 @@ export const loanService = {
    * Update a loan (approve, disburse, reject, etc.)
    */
   async update(id, data) {
-    const payload = { ...data };
-    if (disbursedLikeStatuses.includes(payload.status) && !payload.disbursement_date) {
-      const existing = await pb.collection('loans').getOne(id).catch(() => null);
-      payload.disbursement_date = existing?.disbursement_date || new Date().toISOString();
-    }
+    const payload = await normalizeLoanStatusPayload(id, data);
     const record = await pb.collection('loans').update(id, payload);
     await dataCache.invalidatePrefix('loans:');
     await dataCache.invalidatePrefix('loans:all:');

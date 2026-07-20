@@ -428,12 +428,17 @@ export const renderMemberProfile = async (params) => {
       e.preventDefault();
       const formData = new FormData(editLoanForm);
       const data = Object.fromEntries(formData.entries());
+      const disbursedStatuses = ['disbursed', 'completed', 'closed'];
       const payload = {
         application_date: new Date(data.application_date).toISOString(),
         status: data.status,
         purpose: data.purpose || ''
       };
-      if (data.disbursement_date) {
+      if (disbursedStatuses.includes(data.status)) {
+        if (!data.disbursement_date) {
+          if (window.notify) window.notify.error('Disbursement date is required once a loan is disbursed, completed, or closed.');
+          return;
+        }
         payload.disbursement_date = new Date(`${data.disbursement_date}T12:00:00`).toISOString();
       }
       const restoreButton = setButtonLoading(editLoanForm.querySelector('button[type="submit"]'), 'Saving...');
