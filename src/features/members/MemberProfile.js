@@ -900,7 +900,10 @@ export const renderMemberProfile = async (params) => {
       const isMakingIndividual = targetGroupId === INDIVIDUAL_GROUP_VALUE;
       const restoreButton = setButtonLoading(confirmAssignGroupBtn, isMakingIndividual ? 'Updating...' : (currentGroupName ? 'Updating...' : 'Adding...'));
       try {
-        await memberService.update(member.id, { group: isMakingIndividual ? null : targetGroupId });
+        await memberService.update(member.id, {
+          group: isMakingIndividual ? null : targetGroupId,
+          group_joined_at: isMakingIndividual ? null : new Date().toISOString()
+        });
         const countUpdates = [updateGroupMemberCount(memberGroupId)];
         if (!isMakingIndividual) countUpdates.push(updateGroupMemberCount(targetGroupId));
         await Promise.all(countUpdates);

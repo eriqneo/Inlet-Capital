@@ -260,6 +260,7 @@ async function run() {
         { name: 'registration_date', type: 'date', required: true },
         { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['active', 'dormant', 'suspended', 'closed', 'exited'] },
         { name: 'group', type: 'relation', collectionId: groupsForMembersColl.id, cascadeDelete: false, maxSelect: 1 },
+        { name: 'group_joined_at', type: 'date' },
         { name: 'registered_by', type: 'relation', collectionId: usersForMembersColl.id, cascadeDelete: false, maxSelect: 1 },
         { name: 'assigned_officer', type: 'relation', collectionId: usersForMembersColl.id, cascadeDelete: false, maxSelect: 1 }
       ],
@@ -309,6 +310,11 @@ async function run() {
              });
              changed = true;
              console.log('Members collection updated with assigned_officer field.');
+           }
+           if (!membersColl.fields.some(field => field.name === 'group_joined_at')) {
+             membersColl.fields.push({ name: 'group_joined_at', type: 'date' });
+             changed = true;
+             console.log('Members collection updated with group_joined_at field.');
            }
            if (changed) await fetchPb('collections/members', 'PATCH', membersColl, token);
          } catch (updateErr) {
@@ -387,7 +393,8 @@ async function run() {
         { name: 'kraPin', type: 'text' },
         { name: 'passportPhoto', type: 'text' },
         { name: 'passport_photo', type: 'file', maxSelect: 1, maxSize: 524288, mimeTypes: ['image/jpeg', 'image/png', 'image/webp'] },
-        { name: 'registration_fee_details', type: 'json' }
+        { name: 'registration_fee_details', type: 'json' },
+        { name: 'group_joined_at', type: 'date' }
       ];
       const existingFieldNames = new Set(membersColl.fields.map(field => field.name));
       const missingFields = profileFields.filter(field => !existingFieldNames.has(field.name));
@@ -425,6 +432,26 @@ async function run() {
       console.log(`Assigned officer backfill complete. Members: ${memberBackfilled}, Groups: ${groupBackfilled}.`);
     } catch (e) {
       console.log('Error backfilling assigned officers:', e.message);
+    }
+
+    console.log('Backfilling member group joined dates...');
+    try {
+      const groupedMembers = await getFullList('members', token, 'fields=id,group,group_joined_at,updated,created');
+      const pendingGroupJoinedBackfill = groupedMembers
+        .filter(member => member.group && !member.group_joined_at)
+        .slice(0, 5);
+      let groupJoinedBackfilled = 0;
+      for (const member of pendingGroupJoinedBackfill) {
+        await fetchPb(`collections/members/records/${member.id}`, 'PATCH', {
+          group_joined_at: member.updated || member.created || new Date().toISOString()
+        }, token);
+        groupJoinedBackfilled += 1;
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      const remaining = groupedMembers.filter(member => member.group && !member.group_joined_at).length - groupJoinedBackfilled;
+      console.log(`Member group joined date backfill complete. Members: ${groupJoinedBackfilled}${remaining > 0 ? `, remaining for future runs: ${remaining}` : ''}.`);
+    } catch (e) {
+      console.log('Error backfilling member group joined dates:', e.message);
     }
 
     console.log('Ensuring member unique identity fields...');

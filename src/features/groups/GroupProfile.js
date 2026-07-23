@@ -228,6 +228,19 @@ export const renderGroupProfile = async (params) => {
     });
     return paidMap;
   };
+  const getMemberGroupJoinedDate = (member) => member.group_joined_at
+    || member.updated
+    || member.registration_date
+    || member.created
+    || '';
+  const sortMembersByGroupJoinedAsc = (members) => [...members].sort((a, b) => {
+    const aTime = new Date(getMemberGroupJoinedDate(a)).getTime();
+    const bTime = new Date(getMemberGroupJoinedDate(b)).getTime();
+    const safeATime = Number.isNaN(aTime) ? 0 : aTime;
+    const safeBTime = Number.isNaN(bTime) ? 0 : bTime;
+    if (safeATime !== safeBTime) return safeATime - safeBTime;
+    return String(a.full_name || '').localeCompare(String(b.full_name || ''));
+  });
   const calculateThisMonthCollectionsExpected = (loans, schedules, repayments) => {
     const monthStart = new Date();
     monthStart.setDate(1);
@@ -259,8 +272,12 @@ export const renderGroupProfile = async (params) => {
   let allGroupMembers = [], groupLoans = [], groupSavings = [], allRepayments = [], allSchedules = [];
   try {
     allGroupMembers = await dataCache.getLocalFirst(
-      `groups:profile:${officerScopeKey}:${id}:members:v2`,
-      () => pb.collection('members').getFullList({ filter: `group="${id}"`, expand: 'group' }),
+      `groups:profile:${officerScopeKey}:${id}:members:v3`,
+      async () => sortMembersByGroupJoinedAsc(await pb.collection('members').getFullList({
+        filter: `group="${id}"`,
+        sort: 'group_joined_at,created',
+        expand: 'group'
+      })),
       null,
       { minRefreshInterval: 20 * 1000 }
     );
@@ -352,7 +369,7 @@ export const renderGroupProfile = async (params) => {
     return !Number.isNaN(date.getTime()) && date >= meetingCycleStart;
   });
 
-  const enrichedMembers = allGroupMembers.map((m) => {
+  const enrichedMembers = sortMembersByGroupJoinedAsc(allGroupMembers).map((m) => {
     const mSavings = groupSavings.filter(s => s.member === m.id);
     const mLoans = groupLoans.filter(l => l.member === m.id);
 
@@ -767,7 +784,7 @@ export const renderGroupProfile = async (params) => {
     }
     const restoreButton = setButtonLoading(btn, 'Adding...');
     try {
-      await memberService.update(memberId, { group: id });
+      await memberService.update(memberId, { group: id, group_joined_at: new Date().toISOString() });
       group.member_count = (group.member_count || 0) + 1;
       await groupService.update(group.id, { member_count: group.member_count });
       await Promise.all([
@@ -1097,7 +1114,11 @@ export const renderGroupProfile = async (params) => {
   // Real-time updates
   const fetchAndRenderMembers = async () => {
     try {
-      const freshMembers = await pb.collection('members').getFullList({ filter: `group="${id}"`, expand: 'group' });
+      const freshMembers = sortMembersByGroupJoinedAsc(await pb.collection('members').getFullList({
+        filter: `group="${id}"`,
+        sort: 'group_joined_at,created',
+        expand: 'group'
+      }));
       // update count in UI
       const countEl = container.querySelector('#group-total-members-kpi');
       if (countEl) countEl.textContent = freshMembers.length;
