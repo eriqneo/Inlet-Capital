@@ -17,15 +17,16 @@ export const renderAnalyticsDashboard = async () => {
   container.innerHTML = `<div class="card text-center text-muted" style="padding:40px;">Loading analytics...</div>`;
   
   // Data variables
-  let members = [], loans = [], repayments = [], groups = [], savings = [], schedules = [], users = [];
+  let members = [], loans = [], repayments = [], settlements = [], groups = [], savings = [], schedules = [], users = [];
   let automaticPenaltyAmount = 500;
 
   const refresh = async () => {
     try {
-      [members, loans, repayments, groups, savings, schedules, users, automaticPenaltyAmount] = await Promise.all([
+      [members, loans, repayments, settlements, groups, savings, schedules, users, automaticPenaltyAmount] = await Promise.all([
         memberService.getAll(),
         loanService.getFullListFresh({ cacheKey: 'loans:financial:expanded:v1' }),
         pb.collection('loan_repayments').getFullList(),
+        loanService.getBalanceOffsFullList({ expand: '' }),
         groupService.getAll(),
         savingsService.getFullListCached({ expand: '', cacheKey: 'savings:analytics:basic:v1' }),
         pb.collection('loan_schedule').getFullList(),
@@ -50,6 +51,7 @@ export const renderAnalyticsDashboard = async () => {
     const visibleLoanIds = new Set(loans.map(loan => loan.id));
     schedules = schedules.filter(schedule => visibleLoanIds.has(schedule.loan));
     repayments = repayments.filter(repayment => visibleLoanIds.has(repayment.loan));
+    settlements = settlements.filter(settlement => visibleLoanIds.has(settlement.loan) && settlement.status !== 'reversed');
     return true;
   };
 
@@ -252,7 +254,14 @@ export const renderAnalyticsDashboard = async () => {
       });
 
       const repaymentsByLoan = new Map();
-      repayments.forEach(repayment => {
+      [
+        ...repayments,
+        ...settlements.map(settlement => ({
+          ...settlement,
+          amount: Number(settlement.amount) || 0,
+          date: settlement.effective_date || settlement.created
+        }))
+      ].forEach(repayment => {
         if (!repayment.loan) return;
         if (!repaymentsByLoan.has(repayment.loan)) repaymentsByLoan.set(repayment.loan, []);
         repaymentsByLoan.get(repayment.loan).push(repayment);
@@ -290,6 +299,7 @@ export const renderAnalyticsDashboard = async () => {
     const getEffectiveScheduleRemaining = (schedule) => Math.max(0, (Number(schedule.amount) || 0) - getEffectiveSchedulePaid(schedule));
     const portfolioCalculator = createLoanPortfolioCalculator({
       repayments,
+      settlements,
       schedules,
       penaltyAmount: automaticPenaltyAmount
     });

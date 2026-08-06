@@ -9,6 +9,7 @@ import { formatMoney, formatPercent } from '../../core/utils.js';
 import { getArrearsTotal, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
 import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
+import { createLoanPortfolioCalculator } from '../../core/loanPortfolio.js';
 
 export const renderDashboard = async () => {
   const container = document.createElement('div');
@@ -144,7 +145,7 @@ export const renderDashboard = async () => {
   
   const refresh = async () => {
     try {
-    let members, groups, loans, savings, schedules, repayments;
+    let members, groups, loans, savings, schedules, repayments, settlements;
     const today = new Date();
     const upcomingThreshold = new Date();
     upcomingThreshold.setDate(upcomingThreshold.getDate() + 7);
@@ -155,7 +156,8 @@ export const renderDashboard = async () => {
       loans,
       savings,
       schedules,
-      repayments
+      repayments,
+      settlements
     ] = await Promise.all([
       safe('members', () => memberService.getAll(), []),
       safe('groups', () => groupService.getAll(), []),
@@ -166,7 +168,8 @@ export const renderDashboard = async () => {
         cacheKey: 'savings:dashboard:active:v1'
       }), []),
       safe('loan schedules', () => dataCache.getLocalFirst('loan_schedule:dashboard:all', () => pb.collection('loan_schedule').getFullList()), []),
-      safe('loan repayments', () => dataCache.getLocalFirst('loan_repayments:dashboard:all', () => pb.collection('loan_repayments').getFullList()), [])
+      safe('loan repayments', () => dataCache.getLocalFirst('loan_repayments:dashboard:all', () => pb.collection('loan_repayments').getFullList()), []),
+      safe('loan balance-offs', () => loanService.getBalanceOffsFullList({ expand: '' }), [])
     ]);
 
     if (canUseOfficerFilter()) {
@@ -179,11 +182,13 @@ export const renderDashboard = async () => {
       const scopedLoanIds = new Set(loans.map(loan => loan.id));
       schedules = schedules.filter(schedule => scopedLoanIds.has(schedule.loan));
       repayments = repayments.filter(repayment => scopedLoanIds.has(repayment.loan));
+      settlements = settlements.filter(settlement => scopedLoanIds.has(settlement.loan));
     }
 
     const visibleLoanIds = new Set(loans.map(loan => loan.id));
     schedules = schedules.filter(schedule => visibleLoanIds.has(schedule.loan));
     repayments = repayments.filter(repayment => visibleLoanIds.has(repayment.loan));
+    settlements = settlements.filter(settlement => visibleLoanIds.has(settlement.loan) && settlement.status !== 'reversed');
 
     const savingsByMember = savings.reduce((map, saving) => {
       if (!saving.member) return map;
@@ -206,15 +211,8 @@ export const renderDashboard = async () => {
       const principal = Number(loan?.approved_amount || loan?.amount_applied) || 0;
       return principal + (Number(loan?.interest_amount) || 0);
     };
-    const repaymentsByLoan = repayments.reduce((map, repayment) => {
-      if (!repayment.loan) return map;
-      map.set(repayment.loan, (map.get(repayment.loan) || 0) + (Number(repayment.amount) || 0));
-      return map;
-    }, new Map());
-    const getLoanOutstandingBalance = (loan) => Math.max(
-      0,
-      getLoanLiability(loan) - (repaymentsByLoan.get(loan?.id) || 0)
-    );
+    const portfolioCalculator = createLoanPortfolioCalculator({ repayments, settlements, schedules });
+    const getLoanOutstandingBalance = portfolioCalculator.getOutstanding;
     const overdueSchedules = schedules.filter(s => isCollectibleLoan(loansById.get(s.loan)) && isScheduleInArrears(s, today));
     const alertSchedules = schedules.filter(s => !isSchedulePaid(s) && new Date(s.due_date) <= upcomingThreshold);
 

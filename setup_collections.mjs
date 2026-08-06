@@ -715,6 +715,76 @@ async function run() {
       console.log('Error updating loan schedule waiver reason field:', e.message);
     }
 
+    console.log('Ensuring loan balance-off collection...');
+    try {
+      const loansColl = await fetchPb('collections/loans', 'GET', null, token);
+      const membersColl = await fetchPb('collections/members', 'GET', null, token);
+      const groupsColl = await fetchPb('collections/groups', 'GET', null, token);
+      const usersColl = await fetchPb('collections/users', 'GET', null, token);
+      const savingsColl = await fetchPb('collections/savings', 'GET', null, token);
+      const balanceOffDef = {
+        name: 'loan_balance_offs',
+        type: 'base',
+        fields: [
+          { name: 'loan', type: 'relation', required: true, collectionId: loansColl.id, cascadeDelete: true, maxSelect: 1 },
+          { name: 'member', type: 'relation', required: true, collectionId: membersColl.id, cascadeDelete: false, maxSelect: 1 },
+          { name: 'group', type: 'relation', collectionId: groupsColl.id, cascadeDelete: false, maxSelect: 1 },
+          { name: 'amount', type: 'number', required: true },
+          { name: 'surcharge_amount', type: 'number' },
+          { name: 'principal_amount', type: 'number' },
+          { name: 'interest_amount', type: 'number' },
+          { name: 'reason', type: 'text', required: true },
+          { name: 'effective_date', type: 'date', required: true },
+          { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['completed', 'reversed'] },
+          { name: 'savings_transaction', type: 'relation', collectionId: savingsColl.id, cascadeDelete: false, maxSelect: 1 },
+          { name: 'recorded_by', type: 'relation', collectionId: usersColl.id, cascadeDelete: false, maxSelect: 1 },
+          { name: 'reversal_reason', type: 'text' },
+          { name: 'reversed_by', type: 'relation', collectionId: usersColl.id, cascadeDelete: false, maxSelect: 1 },
+          { name: 'reversed_at', type: 'date' }
+        ],
+        listRule: LOAN_CHILD_SCOPE_RULE,
+        viewRule: LOAN_CHILD_SCOPE_RULE,
+        createRule: '@request.auth.role = "super_admin" || @request.auth.role = "admin"',
+        updateRule: '@request.auth.role = "super_admin"',
+        deleteRule: '@request.auth.role = "super_admin"'
+      };
+
+      try {
+        await fetchPb('collections', 'POST', balanceOffDef, token);
+        console.log('Loan balance-off collection created.');
+      } catch (createErr) {
+        if (!createErr.message.includes('validation_collection_name_exists')) throw createErr;
+        const balanceOffColl = await fetchPb('collections/loan_balance_offs', 'GET', null, token);
+        let changed = false;
+        const existingFieldNames = new Set(balanceOffColl.fields.map(field => field.name));
+        balanceOffDef.fields.forEach(field => {
+          if (!existingFieldNames.has(field.name)) {
+            balanceOffColl.fields.push(field);
+            changed = true;
+          }
+        });
+        ['listRule', 'viewRule', 'createRule', 'updateRule', 'deleteRule'].forEach(ruleName => {
+          if (balanceOffColl[ruleName] !== balanceOffDef[ruleName]) {
+            balanceOffColl[ruleName] = balanceOffDef[ruleName];
+            changed = true;
+          }
+        });
+        const statusField = balanceOffColl.fields.find(field => field.name === 'status');
+        if (statusField && (!statusField.values.includes('completed') || !statusField.values.includes('reversed'))) {
+          statusField.values = Array.from(new Set([...(statusField.values || []), 'completed', 'reversed']));
+          changed = true;
+        }
+        if (changed) {
+          await fetchPb('collections/loan_balance_offs', 'PATCH', balanceOffColl, token);
+          console.log('Loan balance-off collection updated.');
+        } else {
+          console.log('Loan balance-off collection already configured.');
+        }
+      }
+    } catch (e) {
+      console.log('Error ensuring loan balance-off collection:', e.message);
+    }
+
     console.log('Ensuring user login activity collection...');
     try {
       const usersColl = await fetchPb('collections/users', 'GET', null, token);

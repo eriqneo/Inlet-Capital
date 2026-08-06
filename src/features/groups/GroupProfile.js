@@ -13,6 +13,7 @@ import { setButtonLoading } from '../../core/uiState.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { getArrearsTotal, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
 import { getOfficerScopeCacheKey } from '../../core/officerScope.js';
+import { getSettlementContractAmount } from '../../core/repaymentAllocation.js';
 
 export const renderGroupProfile = async (params) => {
   const { id } = params;
@@ -130,12 +131,15 @@ export const renderGroupProfile = async (params) => {
     const principal = Number(loan?.approved_amount || loan?.amount_applied) || 0;
     return principal + (Number(loan?.interest_amount) || 0);
   };
-  const calculateLoanBalance = (loan, repayments) => {
+  const calculateLoanBalance = (loan, repayments, settlements = []) => {
     if (!isDisbursedLoanForBalance(loan)) return 0;
     const liability = getLoanLiability(loan);
     const paid = repayments
       .filter(r => r.loan === loan.id)
-      .reduce((repaymentSum, r) => repaymentSum + (Number(r.amount) || 0), 0);
+      .reduce((repaymentSum, r) => repaymentSum + (Number(r.amount) || 0), 0)
+      + settlements
+        .filter(s => s.loan === loan.id && s.status !== 'reversed')
+        .reduce((settlementSum, s) => settlementSum + getSettlementContractAmount(s), 0);
     return Math.max(0, liability - paid);
   };
   const calculateActiveLoanPortfolio = (loans) => loans
@@ -148,9 +152,9 @@ export const renderGroupProfile = async (params) => {
       : parRate >= 6
         ? { label: 'Good', color: 'var(--primary)', accent: 'var(--primary)' }
         : { label: 'Excellent', color: 'var(--success)', accent: 'var(--success)' };
-  const calculateOutstandingLoanBalance = (loans, repayments) => loans
+  const calculateOutstandingLoanBalance = (loans, repayments, settlements = []) => loans
     .filter(isDisbursedLoanForBalance)
-    .reduce((sum, loan) => sum + calculateLoanBalance(loan, repayments), 0);
+    .reduce((sum, loan) => sum + calculateLoanBalance(loan, repayments, settlements), 0);
   const calculateRepaymentsTotal = (repayments) => repayments
     .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
   const getRegistrationFeeDate = (member) => member.registration_fee_details?.date
@@ -179,7 +183,7 @@ export const renderGroupProfile = async (params) => {
       .reduce((sum, loan) => sum + (Number(loan.processing_fee) || 0), 0);
     return registrationFees + processingFees;
   };
-  const buildEffectiveSchedulePaidMap = (schedules, repayments) => {
+  const buildEffectiveSchedulePaidMap = (schedules, repayments, settlements = []) => {
     const schedulesByLoan = new Map();
     schedules.forEach(schedule => {
       if (!schedule.loan) return;
@@ -195,7 +199,16 @@ export const renderGroupProfile = async (params) => {
     });
 
     const repaymentsByLoan = new Map();
-    repayments.forEach(repayment => {
+    [
+      ...repayments,
+      ...settlements
+        .filter(settlement => settlement.status !== 'reversed')
+        .map(settlement => ({
+          ...settlement,
+          amount: getSettlementContractAmount(settlement),
+          date: settlement.effective_date || settlement.created
+        }))
+    ].forEach(repayment => {
       if (!repayment.loan) return;
       if (!repaymentsByLoan.has(repayment.loan)) repaymentsByLoan.set(repayment.loan, []);
       repaymentsByLoan.get(repayment.loan).push(repayment);
@@ -241,13 +254,13 @@ export const renderGroupProfile = async (params) => {
     if (safeATime !== safeBTime) return safeATime - safeBTime;
     return String(a.full_name || '').localeCompare(String(b.full_name || ''));
   });
-  const calculateThisMonthCollectionsExpected = (loans, schedules, repayments) => {
+  const calculateThisMonthCollectionsExpected = (loans, schedules, repayments, settlements = []) => {
     const monthStart = new Date();
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
     const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0, 23, 59, 59, 999);
     const activeLoanIds = new Set(loans.filter(isCollectibleLoan).map(loan => loan.id));
-    const effectivePaidMap = buildEffectiveSchedulePaidMap(schedules, repayments);
+    const effectivePaidMap = buildEffectiveSchedulePaidMap(schedules, repayments, settlements);
     return schedules
       .filter(schedule => activeLoanIds.has(schedule.loan))
       .filter(schedule => {
@@ -269,7 +282,7 @@ export const renderGroupProfile = async (params) => {
   }[char]));
 
   // Fetch group data in cached batches. This avoids a per-member/per-loan network waterfall.
-  let allGroupMembers = [], groupLoans = [], groupSavings = [], allRepayments = [], allSchedules = [];
+  let allGroupMembers = [], groupLoans = [], groupSavings = [], allRepayments = [], allSchedules = [], allBalanceOffs = [];
   try {
     allGroupMembers = await dataCache.getLocalFirst(
       `groups:profile:${officerScopeKey}:${id}:members:v3`,
@@ -313,7 +326,7 @@ export const renderGroupProfile = async (params) => {
 
   if (activeLoanIds.size > 0) {
     try {
-      [allRepayments, allSchedules] = await Promise.all([
+      [allRepayments, allSchedules, allBalanceOffs] = await Promise.all([
         dataCache.getLocalFirst(
           `groups:profile:${id}:repayments:v2`,
           () => pb.collection('loan_repayments').getFullList({
@@ -328,6 +341,15 @@ export const renderGroupProfile = async (params) => {
           () => pb.collection('loan_schedule').getFullList({
             filter: `loan.group="${id}" || loan.member.group="${id}"`,
             sort: 'installment_no'
+          }),
+          null,
+          { minRefreshInterval: 10 * 1000 }
+        ),
+        dataCache.getLocalFirst(
+          `groups:profile:${id}:balanceoffs:v1`,
+          () => loanService.getBalanceOffsFullList({
+            filter: `loan.group="${id}" || loan.member.group="${id}"`,
+            expand: ''
           }),
           null,
           { minRefreshInterval: 10 * 1000 }
@@ -380,7 +402,7 @@ export const renderGroupProfile = async (params) => {
     const overdue = allSchedules.filter(s => memberLoanIds.has(s.loan) && isScheduleInArrears(s));
     const totalArrears = getArrearsTotal(overdue);
 
-    const olBalance = calculateOutstandingLoanBalance(mLoans, allRepayments);
+    const olBalance = calculateOutstandingLoanBalance(mLoans, allRepayments, allBalanceOffs);
     const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
     const isActive = lastSavingsDate && (new Date() - lastSavingsDate <= 90 * 24 * 60 * 60 * 1000);
 
@@ -409,8 +431,8 @@ export const renderGroupProfile = async (params) => {
     if (m.totalArrears > 0) membersInArrearsCount++;
     if (!m.isActive) inactiveMembersCount++;
   }
-  let totalOutstandingLoan = calculateOutstandingLoanBalance(groupLoans, allRepayments);
-  const thisMonthCollectionsExpected = calculateThisMonthCollectionsExpected(groupLoans, allSchedules, allRepayments);
+  let totalOutstandingLoan = calculateOutstandingLoanBalance(groupLoans, allRepayments, allBalanceOffs);
+  const thisMonthCollectionsExpected = calculateThisMonthCollectionsExpected(groupLoans, allSchedules, allRepayments, allBalanceOffs);
   const activeLoanPortfolio = calculateActiveLoanPortfolio(groupLoans);
   const groupParRateNumber = activeLoanPortfolio > 0 ? (totalGroupArrears / activeLoanPortfolio) * 100 : 0;
   const groupParHealth = getParHealth(groupParRateNumber);
@@ -877,7 +899,7 @@ export const renderGroupProfile = async (params) => {
     const memberLoanIds = getMemberActiveLoanIds(member);
     return getArrearsTotal(allSchedules.filter(s => memberLoanIds.has(s.loan)));
   };
-  const getMemberOlBalance = (member) => calculateOutstandingLoanBalance(getMemberLoans(member), allRepayments);
+  const getMemberOlBalance = (member) => calculateOutstandingLoanBalance(getMemberLoans(member), allRepayments, allBalanceOffs);
   const getGroupLevelArrears = () => {
     const activeGroupLoanIds = new Set(
       groupLoans
@@ -931,13 +953,13 @@ export const renderGroupProfile = async (params) => {
     const inactiveCount = filteredMembers.filter(m => !m.isActive).length;
     const savingsTotal = calculateSavingsTotal(filteredSavings);
     const savingsMovement = calculateSavingsMovement(filteredSavings);
-    const outstandingLoan = calculateOutstandingLoanBalance(filteredLoans, allRepayments);
+    const outstandingLoan = calculateOutstandingLoanBalance(filteredLoans, allRepayments, allBalanceOffs);
     const filteredActiveLoanPortfolio = calculateActiveLoanPortfolio(filteredLoans);
     const parRate = filteredActiveLoanPortfolio > 0 ? (arrearsAmount / filteredActiveLoanPortfolio) * 100 : 0;
     const parHealth = getParHealth(parRate);
     const repaymentsTotal = calculateRepaymentsTotal(filteredRepayments);
     const feesTotal = calculateFeesTotal(feeKpiMembers, groupLoans);
-    const thisMonthExpected = calculateThisMonthCollectionsExpected(scopedLoansForCurrentMonthCollections, allSchedules, allRepayments);
+    const thisMonthExpected = calculateThisMonthCollectionsExpected(scopedLoansForCurrentMonthCollections, allSchedules, allRepayments, allBalanceOffs);
 
     container.querySelector('#group-total-savings-kpi').textContent = `KES ${formatMoney(savingsTotal)}`;
     const savingsMovementKpi = container.querySelector('#group-savings-movement-kpi');
@@ -1054,7 +1076,7 @@ export const renderGroupProfile = async (params) => {
       <tr>
         <td><strong>${l.loan_no}</strong></td>
         <td><div class="font-semibold">${getOwnerName(l)}</div><div class="text-xs text-muted">${l.member ? 'Member' : 'Group account'}</div></td>
-        <td class="font-semibold text-danger">${formatMoney(calculateLoanBalance(l, allRepayments))}</td>
+        <td class="font-semibold text-danger">${formatMoney(calculateLoanBalance(l, allRepayments, allBalanceOffs))}</td>
         <td><span class="badge ${l.status === 'disbursed' ? 'badge-success' : (l.status === 'approved' || l.status === 'partial_approved') ? 'badge-primary' : l.status === 'pending' ? 'badge-warning' : 'badge-danger'}">${l.status.toUpperCase()}</span></td>
         <td>${formatDate(l.application_date)}</td>
         <td class="text-xs text-muted">${getLoanRemarks(l) || '-'}</td>
@@ -1153,12 +1175,19 @@ export const renderGroupProfile = async (params) => {
             sort: 'installment_no'
           })
         : [];
+      allBalanceOffs = activeLoanIds.length > 0
+        ? await loanService.getBalanceOffsFullList({
+            filter: `loan.group="${id}" || loan.member.group="${id}"`,
+            expand: ''
+          })
+        : [];
       await Promise.all([
         dataCache.set(`groups:profile:${id}:loans:v3`, groupLoans),
         dataCache.set(`groups:profile:${id}:repayments:v2`, allRepayments),
-        dataCache.set(`groups:profile:${id}:schedule:v2`, allSchedules)
+        dataCache.set(`groups:profile:${id}:schedule:v2`, allSchedules),
+        dataCache.set(`groups:profile:${id}:balanceoffs:v1`, allBalanceOffs)
       ]);
-      totalOutstandingLoan = calculateOutstandingLoanBalance(groupLoans, allRepayments);
+      totalOutstandingLoan = calculateOutstandingLoanBalance(groupLoans, allRepayments, allBalanceOffs);
       allFinancialLoansSorted.length = 0;
       allFinancialLoansSorted.push(...groupLoans.sort((a, b) => new Date(b.application_date) - new Date(a.application_date)));
       refreshFilteredViews();

@@ -37,6 +37,17 @@ export const getRepaymentContractAmount = (repayment) => {
   return amount - fine;
 };
 
+export const getSettlementContractAmount = (settlement) => {
+  if (!settlement || settlement.status === 'reversed') return 0;
+  return asAmount(settlement.amount);
+};
+
+export const getContractFulfillmentAmount = (record) => (
+  record?.settlement_kind === 'balance_off'
+    ? getSettlementContractAmount(record)
+    : getRepaymentContractAmount(record)
+);
+
 export const allocateRepayment = ({ loan, repaymentAmount, fineAmount = 0, priorContractPaid = 0 }) => {
   const principal = getLoanPrincipalAmount(loan);
   const interest = getLoanInterestAmount(loan);

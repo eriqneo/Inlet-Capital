@@ -1,6 +1,7 @@
 import { loanService } from '../../services/loanService.js';
 import { authService } from '../../services/authService.js';
 import { settingsService } from '../../services/settingsService.js';
+import { savingsService } from '../../services/savingsService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate, formatMoney, formatPercent } from '../../core/utils.js';
 import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
@@ -8,7 +9,7 @@ import { getScheduleRemaining, isScheduleInArrears } from '../../core/loanSchedu
 import { calculateLoanPenaltyState, getRepaymentPrincipalAmount } from '../../core/loanPenalty.js';
 import { getReturnTo } from '../../core/navigation.js';
 import { memberCommentService } from '../../services/memberCommentService.js';
-import { allocateRepayment, getRepaymentContractAmount } from '../../core/repaymentAllocation.js';
+import { allocateRepayment, getRepaymentContractAmount, getSettlementContractAmount } from '../../core/repaymentAllocation.js';
 
 export const renderLoanDetails = async (params) => {
   const { id: loanNo } = params;
@@ -52,13 +53,18 @@ export const renderLoanDetails = async (params) => {
   }
 
   // Keep optional features from blanking financial records when one request fails.
-  let schedule = [], repayments = [], memberComments = [];
+  let schedule = [], repayments = [], balanceOffs = [], memberComments = [];
+  let availableSavings = 0;
   let scheduleLoadError = null;
   let repaymentLoadError = null;
+  let balanceOffLoadError = null;
   let commentsLoadError = null;
-  const [scheduleResult, repaymentResult, commentsResult] = await Promise.allSettled([
+  let savingsLoadError = null;
+  const [scheduleResult, repaymentResult, balanceOffResult, savingsResult, commentsResult] = await Promise.allSettled([
     loanService.getScheduleForLoan(loan.id),
     loanService.getRepaymentsForLoan(loan.id),
+    loanService.getBalanceOffsForLoan(loan.id),
+    loan.member ? savingsService.getMemberBalance(loan.member) : Promise.resolve(0),
     loan.member ? memberCommentService.getByMember(loan.member) : Promise.resolve([])
   ]);
 
@@ -66,11 +72,17 @@ export const renderLoanDetails = async (params) => {
   else scheduleLoadError = scheduleResult.reason;
   if (repaymentResult.status === 'fulfilled') repayments = repaymentResult.value;
   else repaymentLoadError = repaymentResult.reason;
+  if (balanceOffResult.status === 'fulfilled') balanceOffs = balanceOffResult.value;
+  else balanceOffLoadError = balanceOffResult.reason;
+  if (savingsResult.status === 'fulfilled') availableSavings = Number(savingsResult.value) || 0;
+  else savingsLoadError = savingsResult.reason;
   if (commentsResult.status === 'fulfilled') memberComments = commentsResult.value;
   else commentsLoadError = commentsResult.reason;
 
   if (scheduleLoadError) console.warn('[LoanDetails] Could not load repayment schedule:', scheduleLoadError.message);
   if (repaymentLoadError) console.warn('[LoanDetails] Could not load repayments:', repaymentLoadError.message);
+  if (balanceOffLoadError) console.warn('[LoanDetails] Could not load balance-offs:', balanceOffLoadError.message);
+  if (savingsLoadError) console.warn('[LoanDetails] Could not load member savings balance:', savingsLoadError.message);
   if (commentsLoadError) console.warn('[LoanDetails] Could not load member comments:', commentsLoadError.message);
 
   // PocketBase Settings
@@ -108,10 +120,13 @@ export const renderLoanDetails = async (params) => {
   const penaltyState = calculateLoanPenaltyState({
     schedules: schedule,
     repayments,
+    settlements: balanceOffs,
     penaltyAmount: settings.penalty_amount
   });
   const totalPaid = repayments.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
-  const principalPaid = repayments.reduce((sum, r) => sum + getRepaymentPrincipalAmount(r), 0);
+  const totalBalancedOff = balanceOffs.reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
+  const principalPaid = repayments.reduce((sum, r) => sum + getRepaymentPrincipalAmount(r), 0)
+    + balanceOffs.reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
   const outstandingPrincipal = Math.max(0, totalLiability - principalPaid);
   const outstandingBalance = Math.max(0, outstandingPrincipal + penaltyState.outstandingFine);
   const percentRepaid = totalLiability > 0
@@ -119,12 +134,14 @@ export const renderLoanDetails = async (params) => {
     : (['completed', 'closed'].includes(loan.status) ? 100 : 0);
 
   let historyPage = 1;
+  let balanceOffPage = 1;
   let schedulePage = 1;
   let commentsPage = 1;
   let editingCommentId = null;
   const pageSize = 10;
   const canEditRepayments = authService.hasRole('super_admin', 'admin');
   const canDeleteRepayments = authService.hasRole('super_admin');
+  const canBalanceOff = authService.hasRole('super_admin', 'admin') && loan.member && loan.status === 'disbursed';
   const canEditComments = authService.hasRole('super_admin', 'admin');
   const canDeleteComments = authService.hasRole('super_admin');
   const canRepairSchedule = authService.hasRole('super_admin', 'admin')
@@ -231,6 +248,7 @@ export const renderLoanDetails = async (params) => {
         <button class="tab-btn active" data-tab="overview">📊 Overview</button>
         <button class="tab-btn" data-tab="history">📋 Repayment History</button>
         <button class="tab-btn" data-tab="record">💳 Record Payment</button>
+        ${loan.member ? '<button class="tab-btn" data-tab="balanceoff">↔ Balance-Off</button>' : ''}
         <button class="tab-btn" data-tab="schedule">🗓 Schedule</button>
         <button class="tab-btn" data-tab="comments">💬 Comments</button>
       </div>
@@ -305,6 +323,10 @@ export const renderLoanDetails = async (params) => {
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Total Repaid</div>
                 <div class="font-semibold text-success">KES ${formatMoney(totalPaid)}</div>
+              </div>
+              <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
+                <div class="text-xs text-muted">Balanced Off</div>
+                <div class="font-semibold" style="color: var(--secondary);">KES ${formatMoney(totalBalancedOff)}</div>
               </div>
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Period</div>
@@ -431,6 +453,80 @@ export const renderLoanDetails = async (params) => {
             </button>
           </form>
         </div>
+
+        ${loan.member ? `
+        <div id="balanceoff-tab" style="display: none;">
+          <div style="display: grid; grid-template-columns: minmax(280px, 420px) 1fr; gap: 24px; align-items: start;">
+            <form id="balance-off-form" class="card" style="box-shadow: none; border: 1px solid var(--border-color);">
+              <div style="display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 18px;">
+                <div>
+                  <h3 style="margin: 0;">Balance Off from Savings</h3>
+                  <p class="text-sm text-muted" style="margin-top: 6px;">Use member savings to settle this loan partially or fully.</p>
+                </div>
+                <span class="badge badge-outline">NON-CASH</span>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px;">
+                <div style="padding: 14px; background: var(--bg-light); border-radius: 8px;">
+                  <div class="text-xs text-muted">Available Savings</div>
+                  <div class="font-semibold" style="color: var(--success);">KES ${formatMoney(availableSavings)}</div>
+                </div>
+                <div style="padding: 14px; background: var(--bg-light); border-radius: 8px;">
+                  <div class="text-xs text-muted">Current OLB</div>
+                  <div class="font-semibold" style="color: ${outstandingBalance > 0 ? 'var(--danger)' : 'var(--success)'};">KES ${formatMoney(outstandingBalance)}</div>
+                </div>
+              </div>
+              ${savingsLoadError ? '<div class="alert alert-warning" style="margin-bottom: 14px;">Savings balance could not be verified. Refresh before balancing off.</div>' : ''}
+              ${balanceOffLoadError ? '<div class="alert alert-warning" style="margin-bottom: 14px;">Previous balance-offs could not be loaded.</div>' : ''}
+              <div class="form-group">
+                <label class="form-label">Balance-Off Amount (KES)</label>
+                <input type="number" name="amount" class="form-control" min="1" step="1" max="${Math.max(0, Math.min(availableSavings, outstandingPrincipal))}" required placeholder="Amount to reduce from loan balance" />
+                <p class="text-xs text-muted" style="margin-top: 4px;">Maximum available now: KES ${formatMoney(Math.max(0, Math.min(availableSavings, outstandingPrincipal)))}</p>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Surcharge Fee (Optional)</label>
+                <input type="number" name="surcharge_amount" class="form-control" min="0" step="1" value="0" placeholder="e.g. 200" />
+                <p class="text-xs text-muted" style="margin-top: 4px;">This reduces savings too, but it does not reduce the loan principal or interest.</p>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Effective Date</label>
+                <input type="date" name="effective_date" class="form-control" value="${todayInputValue}" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Reason</label>
+                <textarea name="reason" class="form-control" rows="3" required placeholder="e.g. Client requested partial loan offset using savings balance"></textarea>
+              </div>
+              <button type="submit" class="btn btn-primary btn-lg" style="width: 100%;" ${!canBalanceOff || outstandingPrincipal <= 0 || availableSavings <= 0 ? 'disabled' : ''}>
+                Confirm Balance-Off
+              </button>
+              ${!canBalanceOff ? '<p class="text-xs text-muted" style="margin-top: 10px;">Only admins can balance off active member loans.</p>' : ''}
+            </form>
+
+            <div>
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px;">
+                <div>
+                  <h3 style="margin: 0;">Balance-Off History</h3>
+                  <div class="text-sm text-muted">${balanceOffs.length} settlement${balanceOffs.length === 1 ? '' : 's'} recorded</div>
+                </div>
+              </div>
+              <div class="table-responsive">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Reason</th>
+                      <th>Recorded By</th>
+                      <th class="text-right">Surcharge</th>
+                      <th class="text-right">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody id="balance-off-history-body"></tbody>
+                </table>
+              </div>
+              <div id="balance-off-pagination"></div>
+            </div>
+          </div>
+        </div>
+        ` : ''}
 
         <div id="schedule-tab" style="display: none;">
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px;">
@@ -682,6 +778,39 @@ export const renderLoanDetails = async (params) => {
     if (ctrl) pag.appendChild(ctrl);
   };
 
+  const updateBalanceOffUI = () => {
+    const tbody = container.querySelector('#balance-off-history-body');
+    if (!tbody) return;
+    const start = (balanceOffPage - 1) * pageSize;
+    const paginated = balanceOffs.slice(start, start + pageSize);
+
+    tbody.innerHTML = balanceOffLoadError
+      ? '<tr><td colspan="5" class="text-center text-danger">Balance-off history could not be loaded. Confirm that loan_balance_offs exists in PocketHost.</td></tr>'
+      : paginated.length === 0
+        ? '<tr><td colspan="5" class="text-center text-muted">No balance-offs recorded for this loan.</td></tr>'
+        : paginated.map(item => `
+          <tr>
+            <td>
+              <div class="font-semibold">${formatDate(item.effective_date || item.created)}</div>
+              <div class="text-xs text-muted">${item.status === 'reversed' ? 'Reversed' : 'Balanced off'}</div>
+            </td>
+            <td class="text-sm" style="line-height: 1.5;">${escapeHtml(item.reason || '-')}</td>
+            <td class="text-xs text-muted">${escapeHtml(item.expand?.recorded_by?.name || item.expand?.recorded_by?.email || 'Admin')}</td>
+            <td class="text-right">${formatMoney(item.surcharge_amount || 0)}</td>
+            <td class="text-right font-semibold" style="color: var(--secondary);">${formatMoney(item.amount)}</td>
+          </tr>
+        `).join('');
+
+    const pag = container.querySelector('#balance-off-pagination');
+    if (!pag) return;
+    pag.innerHTML = '';
+    const ctrl = renderPagination(balanceOffs.length, pageSize, balanceOffPage, (p) => {
+      balanceOffPage = p;
+      updateBalanceOffUI();
+    });
+    if (ctrl) pag.appendChild(ctrl);
+  };
+
   const updateScheduleUI = () => {
     const start = (schedulePage - 1) * pageSize;
     const paginated = schedule.slice(start, start + pageSize);
@@ -913,14 +1042,33 @@ export const renderLoanDetails = async (params) => {
     }
 
     const freshRepayments = await loanService.getRepaymentsForLoan(loan.id);
+    const freshBalanceOffs = await loanService.getBalanceOffsForLoan(loan.id);
+    const activeBalanceOffs = freshBalanceOffs.filter(item => item.status !== 'reversed');
     const orderedRepayments = [...freshRepayments].sort((a, b) => {
       const aDate = new Date(a.date || a.created || 0).getTime();
       const bDate = new Date(b.date || b.created || 0).getTime();
       return aDate - bDate;
     });
+    const orderedContractEvents = [
+      ...orderedRepayments.map(repayment => ({
+        kind: 'repayment',
+        record: repayment,
+        date: new Date(repayment.date || repayment.created || 0)
+      })),
+      ...activeBalanceOffs.map(settlement => ({
+        kind: 'settlement',
+        record: settlement,
+        date: new Date(settlement.effective_date || settlement.created || 0)
+      }))
+    ].sort((a, b) => a.date - b.date);
 
     let priorContractPaid = 0;
-    for (const repayment of orderedRepayments) {
+    for (const event of orderedContractEvents) {
+      if (event.kind === 'settlement') {
+        priorContractPaid += getSettlementContractAmount(event.record);
+        continue;
+      }
+      const repayment = event.record;
       const amount = Number(repayment.amount) || 0;
       const fineAmount = Math.min(amount, Number(repayment.fine_amount) || 0);
       const allocation = allocateRepayment({
@@ -949,7 +1097,7 @@ export const renderLoanDetails = async (params) => {
     let remainingContractPaid = orderedRepayments.reduce(
       (sum, repayment) => sum + getRepaymentContractAmount(repayment),
       0
-    );
+    ) + activeBalanceOffs.reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
 
     const orderedSchedule = [...schedule].sort((a, b) => Number(a.installment_no) - Number(b.installment_no));
     for (const installment of orderedSchedule) {
@@ -965,7 +1113,7 @@ export const renderLoanDetails = async (params) => {
     const contractPaid = orderedRepayments.reduce(
       (sum, repayment) => sum + getRepaymentContractAmount(repayment),
       0
-    );
+    ) + activeBalanceOffs.reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
     const loanFullyPaid = totalLiability > 0 && contractPaid >= totalLiability - 0.01;
     if (loanFullyPaid && !['completed', 'closed'].includes(loan.status)) {
       await loanService.update(loan.id, { status: 'completed' });
@@ -1025,6 +1173,7 @@ export const renderLoanDetails = async (params) => {
   };
 
   updateHistoryUI();
+  updateBalanceOffUI();
   updateScheduleUI();
   updateCommentsUI();
 
@@ -1034,6 +1183,7 @@ export const renderLoanDetails = async (params) => {
     overview: container.querySelector('#overview-tab'),
     history: container.querySelector('#history-tab'),
     record: container.querySelector('#record-tab'),
+    balanceoff: container.querySelector('#balanceoff-tab'),
     schedule: container.querySelector('#schedule-tab'),
     comments: container.querySelector('#comments-tab')
   };
@@ -1042,8 +1192,8 @@ export const renderLoanDetails = async (params) => {
     tab.onclick = () => {
       tabs.forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
-      Object.values(contents).forEach(c => c.style.display = 'none');
-      contents[tab.dataset.tab].style.display = 'block';
+      Object.values(contents).filter(Boolean).forEach(c => c.style.display = 'none');
+      if (contents[tab.dataset.tab]) contents[tab.dataset.tab].style.display = 'block';
     };
   });
   const initialTab = contents[params.tab] ? params.tab : 'overview';
@@ -1124,6 +1274,75 @@ export const renderLoanDetails = async (params) => {
     }
   }
 
+  const balanceOffForm = container.querySelector('#balance-off-form');
+  if (balanceOffForm) {
+    balanceOffForm.onsubmit = async (event) => {
+      event.preventDefault();
+      if (!balanceOffForm.reportValidity()) return;
+
+      const formData = new FormData(balanceOffForm);
+      const amount = Number(formData.get('amount')) || 0;
+      const surchargeAmount = Math.max(0, Number(formData.get('surcharge_amount')) || 0);
+      const reason = String(formData.get('reason') || '').trim();
+      const effectiveDateInput = String(formData.get('effective_date') || '').trim();
+      const totalDebit = amount + surchargeAmount;
+
+      if (!canBalanceOff) {
+        if (window.notify) window.notify.error('Only admins can balance off active member loans.');
+        return;
+      }
+      if (amount <= 0) {
+        if (window.notify) window.notify.error('Enter a valid balance-off amount.');
+        return;
+      }
+      if (!reason) {
+        if (window.notify) window.notify.error('A reason is required for loan balance-off.');
+        return;
+      }
+      if (amount > outstandingPrincipal + 0.01) {
+        if (window.notify) window.notify.error(`Amount cannot exceed contractual OLB of KES ${formatMoney(outstandingPrincipal)}.`);
+        return;
+      }
+      if (totalDebit > availableSavings + 0.01) {
+        if (window.notify) window.notify.error(`Savings are insufficient. Available savings: KES ${formatMoney(availableSavings)}.`);
+        return;
+      }
+
+      const confirmed = window.confirmDialog
+        ? await window.confirmDialog({
+            title: 'Confirm Balance-Off',
+            message: `Use KES ${formatMoney(totalDebit)} from this member's savings to reduce loan ${loan.loan_no} by KES ${formatMoney(amount)}? Remaining contractual OLB will be about KES ${formatMoney(Math.max(0, outstandingPrincipal - amount))}.`,
+            confirmText: 'Balance Off',
+            cancelText: 'Cancel',
+            type: 'warning'
+          })
+        : confirm(`Use KES ${formatMoney(totalDebit)} from savings to balance off this loan?`);
+      if (!confirmed) return;
+
+      const submitBtn = balanceOffForm.querySelector('button[type="submit"]');
+      const restoreButton = setButtonLoading(submitBtn, 'Balancing off...');
+      try {
+        await loanService.recordBalanceOff({
+          loan,
+          amount,
+          surchargeAmount,
+          reason,
+          availableSavings,
+          effectiveDate: new Date(`${effectiveDateInput || todayInputValue}T12:00:00`).toISOString()
+        });
+        await recalculateRepaymentState();
+        if (window.notify) window.notify.success('Loan balanced off from savings successfully.');
+        await refreshLoanDetails();
+      } catch (err) {
+        const schemaHint = err.status === 404 || err.status === 400
+          ? ' Confirm that the loan_balance_offs collection exists in PocketHost.'
+          : '';
+        if (window.notify) window.notify.error('Balance-off failed: ' + (err.message || 'Please try again.') + schemaHint);
+        restoreButton();
+      }
+    };
+  }
+
   if (repaymentEditForm) {
     container.querySelector('#repayment-edit-close').onclick = closeRepaymentEditModal;
     container.querySelector('#repayment-edit-cancel').onclick = closeRepaymentEditModal;
@@ -1152,11 +1371,16 @@ export const renderLoanDetails = async (params) => {
       }
 
       const currentRepayment = repayments.find(item => item.id === repaymentId);
+      const editPaymentDate = new Date(`${data.date}T12:00:00`);
       const priorContractPaid = [...repayments]
         .filter(item => item.id !== repaymentId)
         .sort((a, b) => new Date(a.date || a.created || 0) - new Date(b.date || b.created || 0))
-        .filter(item => new Date(item.date || item.created || 0) <= new Date(`${data.date}T12:00:00`))
-        .reduce((sum, item) => sum + getRepaymentContractAmount(item), 0);
+        .filter(item => new Date(item.date || item.created || 0) <= editPaymentDate)
+        .reduce((sum, item) => sum + getRepaymentContractAmount(item), 0)
+        + balanceOffs
+          .filter(item => item.status !== 'reversed')
+          .filter(item => new Date(item.effective_date || item.created || 0) <= editPaymentDate)
+          .reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
       const allocation = allocateRepayment({
         loan,
         repaymentAmount: amount,
@@ -1238,10 +1462,14 @@ export const renderLoanDetails = async (params) => {
     const autoFinePaid = Math.min(penaltyState.outstandingFine, Math.max(0, amount - manualFineAmount));
     const fineAmount = autoFinePaid + manualFineAmount;
     const principalPaymentAmount = Math.max(0, amount - fineAmount);
+    const paymentDate = new Date(data.date);
     const priorContractPaid = repayments.reduce(
       (sum, repaymentRecord) => sum + getRepaymentContractAmount(repaymentRecord),
       0
-    );
+    ) + balanceOffs
+      .filter(item => item.status !== 'reversed')
+      .filter(item => new Date(item.effective_date || item.created || 0) <= paymentDate)
+      .reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
     const repaymentAllocation = allocateRepayment({
       loan,
       repaymentAmount: amount,

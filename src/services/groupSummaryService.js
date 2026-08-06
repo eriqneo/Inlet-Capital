@@ -1,6 +1,7 @@
 import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
 import { getArrearsTotal, isScheduleInArrears } from '../core/loanScheduleMetrics.js';
+import { getSettlementContractAmount } from '../core/repaymentAllocation.js';
 
 const summaryCacheKey = (groupId) => `group_summary:${groupId}:v1`;
 const scopedGroupRecordFilter = (groupId) => `group="${groupId}" || member.group="${groupId}"`;
@@ -25,15 +26,18 @@ const getLoanLiability = (loan) => {
   return principal + interest;
 };
 
-const calculateLoanBalance = (loan, repayments = []) => {
+const calculateLoanBalance = (loan, repayments = [], settlements = []) => {
   if (!isDisbursedLoanForBalance(loan)) return 0;
   const paid = repayments
     .filter(repayment => repayment.loan === loan.id)
-    .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
+    .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0)
+    + settlements
+      .filter(settlement => settlement.loan === loan.id && settlement.status !== 'reversed')
+      .reduce((sum, settlement) => sum + getSettlementContractAmount(settlement), 0);
   return Math.max(0, getLoanLiability(loan) - paid);
 };
 
-const buildSummaryPayload = ({ groupId, members, loans, savings, repayments, schedules }) => {
+const buildSummaryPayload = ({ groupId, members, loans, savings, repayments, settlements, schedules }) => {
   const activeMemberCutoff = Date.now() - (90 * 24 * 60 * 60 * 1000);
   const activeGroupLoans = loans.filter(loan => !loan.member && isCollectibleLoan(loan));
   const activeGroupLoanIds = new Set(activeGroupLoans.map(loan => loan.id));
@@ -68,7 +72,7 @@ const buildSummaryPayload = ({ groupId, members, loans, savings, repayments, sch
     total_savings: calculateSavingsTotal(savings),
     outstanding_loan: loans
       .filter(isDisbursedLoanForBalance)
-      .reduce((sum, loan) => sum + calculateLoanBalance(loan, repayments), 0),
+      .reduce((sum, loan) => sum + calculateLoanBalance(loan, repayments, settlements), 0),
     total_arrears: totalArrears,
     members_in_arrears: membersInArrears,
     inactive_members: inactiveMembers,
@@ -109,14 +113,18 @@ export const groupSummaryService = {
     ]);
 
     const hasLoans = loans.some(loan => isCollectibleLoan(loan) || ['completed', 'closed'].includes(loan.status));
-    const [repayments, schedules] = hasLoans
+    const [repayments, schedules, settlements] = hasLoans
       ? await Promise.all([
           pb.collection('loan_repayments').getFullList({ filter: scopedLoanChildFilter(groupId), sort: '-date' }),
-          pb.collection('loan_schedule').getFullList({ filter: scopedLoanChildFilter(groupId), sort: 'installment_no' })
+          pb.collection('loan_schedule').getFullList({ filter: scopedLoanChildFilter(groupId), sort: 'installment_no' }),
+          pb.collection('loan_balance_offs').getFullList({ filter: scopedLoanChildFilter(groupId), sort: '-effective_date' }).catch(error => {
+            if (error?.status === 404) return [];
+            throw error;
+          })
         ])
-      : [[], []];
+      : [[], [], []];
 
-    const payload = buildSummaryPayload({ groupId, members, loans, savings, repayments, schedules });
+    const payload = buildSummaryPayload({ groupId, members, loans, savings, repayments, settlements, schedules });
     let record;
     try {
       const existing = await pb.collection('group_summary').getFirstListItem(`group="${groupId}"`);

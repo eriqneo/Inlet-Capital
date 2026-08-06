@@ -7,6 +7,7 @@ import {
   paginateScopedItems,
   shouldScopeToCurrentOfficer
 } from '../core/officerScope.js';
+import { allocateRepayment, getRepaymentContractAmount, getSettlementContractAmount } from '../core/repaymentAllocation.js';
 
 const requireAdminRecordManager = () => {
   const role = pb.authStore.model?.role;
@@ -69,6 +70,19 @@ const getLoanOwnerLabel = (loan) => {
 
 const buildRelationFilter = (field, ids) => ids.map(id => `${field}="${id}"`).join(' || ');
 
+const invalidateLoanFinancialCaches = async () => {
+  await dataCache.invalidate('loan_repayments');
+  await dataCache.invalidatePrefix('loan_repayments:');
+  await dataCache.invalidatePrefix('loan_repayments');
+  await dataCache.invalidatePrefix('loan_balance_offs:');
+  await dataCache.invalidatePrefix('loans:');
+  await dataCache.invalidatePrefix('loans:all:');
+  await dataCache.invalidatePrefix('loans:analytics:');
+  await dataCache.invalidatePrefix('savings:');
+  await dataCache.invalidatePrefix('group_summary:');
+  await dataCache.invalidatePrefix('groups:profile:');
+};
+
 export const loanService = {
   /**
    * Apply for a new loan
@@ -113,13 +127,21 @@ export const loanService = {
           filter: buildRelationFilter('loan', loanIds)
         }).catch(() => [])
       : [];
+    const settlements = loanIds.length > 0
+      ? await pb.collection('loan_balance_offs').getFullList({
+          filter: `(${buildRelationFilter('loan', loanIds)}) && status!="reversed"`
+        }).catch(() => [])
+      : [];
 
     const blockingLoan = candidateLoans.find(loan => {
       if (loan.status !== 'disbursed') return true;
       const liability = Number(loan.total_liability) || 0;
       const paid = repayments
         .filter(repayment => repayment.loan === loan.id)
-        .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
+        .reduce((sum, repayment) => sum + getRepaymentContractAmount(repayment), 0)
+        + settlements
+          .filter(settlement => settlement.loan === loan.id)
+          .reduce((sum, settlement) => sum + getSettlementContractAmount(settlement), 0);
       return liability <= 0 || paid < liability;
     });
 
@@ -162,13 +184,21 @@ export const loanService = {
           filter: buildRelationFilter('loan', loanIds)
         }).catch(() => [])
       : [];
+    const settlements = loanIds.length > 0
+      ? await pb.collection('loan_balance_offs').getFullList({
+          filter: `(${buildRelationFilter('loan', loanIds)}) && status!="reversed"`
+        }).catch(() => [])
+      : [];
 
     const blockingLoan = matchingLoans.find(loan => {
       if (loan.status !== 'disbursed') return true;
       const liability = Number(loan.total_liability) || 0;
       const paid = repayments
         .filter(repayment => repayment.loan === loan.id)
-        .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
+        .reduce((sum, repayment) => sum + getRepaymentContractAmount(repayment), 0)
+        + settlements
+          .filter(settlement => settlement.loan === loan.id)
+          .reduce((sum, settlement) => sum + getSettlementContractAmount(settlement), 0);
       return liability <= 0 || paid < liability;
     });
 
@@ -380,6 +410,115 @@ export const loanService = {
     });
   },
 
+  async getBalanceOffsForLoan(loanId) {
+    return await pb.collection('loan_balance_offs').getFullList({
+      filter: `loan="${loanId}"`,
+      sort: '-effective_date',
+      expand: 'recorded_by,savings_transaction'
+    }).catch(error => {
+      if (error?.status === 404) return [];
+      throw error;
+    });
+  },
+
+  async getBalanceOffsFullList({ filter = '', sort = '-effective_date', expand = 'loan,member,group,recorded_by' } = {}) {
+    const options = { sort };
+    if (filter) options.filter = filter;
+    if (expand) options.expand = expand;
+    return await pb.collection('loan_balance_offs').getFullList(options).catch(error => {
+      if (error?.status === 404) return [];
+      throw error;
+    });
+  },
+
+  async recordBalanceOff({ loan, amount, surchargeAmount = 0, reason, effectiveDate, availableSavings = null }) {
+    const role = pb.authStore.model?.role;
+    if (!['super_admin', 'admin'].includes(role)) {
+      throw new Error('Only admins can balance off loans with savings.');
+    }
+    if (!loan?.id || !loan.member) {
+      throw new Error('Savings balance-off is available for member loans only.');
+    }
+
+    const settlementAmount = Math.max(0, Number(amount) || 0);
+    const surcharge = Math.max(0, Number(surchargeAmount) || 0);
+    const totalSavingsDebit = settlementAmount + surcharge;
+    const settlementReason = String(reason || '').trim();
+    if (settlementAmount <= 0) throw new Error('Enter a valid balance-off amount.');
+    if (!settlementReason) throw new Error('A reason is required for a loan balance-off.');
+
+    let savingsBalance = availableSavings == null ? null : Number(availableSavings);
+    if (!Number.isFinite(savingsBalance)) {
+      const memberSavings = await pb.collection('savings').getFullList({
+        filter: `member="${loan.member}" && is_reversed=false`
+      });
+      savingsBalance = memberSavings.reduce((sum, record) => {
+        const value = Number(record.amount) || 0;
+        return record.type === 'withdrawal' ? sum - value : sum + value;
+      }, 0);
+    }
+    if (totalSavingsDebit > savingsBalance + 0.01) {
+      throw new Error(`Insufficient savings. Available balance is KES ${savingsBalance.toLocaleString()}.`);
+    }
+
+    const activeSettlements = await this.getBalanceOffsForLoan(loan.id);
+    const repayments = await this.getRepaymentsForLoan(loan.id);
+    const priorContractPaid = repayments.reduce((sum, repayment) => sum + getRepaymentContractAmount(repayment), 0)
+      + activeSettlements.reduce((sum, settlement) => sum + getSettlementContractAmount(settlement), 0);
+    const allocation = allocateRepayment({
+      loan,
+      repaymentAmount: settlementAmount,
+      fineAmount: 0,
+      priorContractPaid
+    });
+    if (allocation.contractAmount <= 0) {
+      throw new Error('This loan has no remaining contractual balance to settle.');
+    }
+    if (settlementAmount > allocation.contractAmount + 0.01) {
+      throw new Error(`Balance-off cannot exceed the remaining loan balance of KES ${allocation.contractAmount.toLocaleString()}.`);
+    }
+
+    const userId = pb.authStore.model?.id;
+    const effectiveIso = effectiveDate || new Date().toISOString();
+    const savingsPayload = {
+      member: loan.member,
+      ...(loan.expand?.member?.group ? { group: typeof loan.expand.member.group === 'string' ? loan.expand.member.group : loan.expand.member.group.id } : {}),
+      type: 'withdrawal',
+      amount: totalSavingsDebit,
+      date: effectiveIso,
+      payment_method: 'cash',
+      reference: `BAL-OFF-${loan.loan_no || loan.id}`,
+      remarks: `Loan balance-off${surcharge > 0 ? ` + surcharge KES ${surcharge}` : ''}. Reason: ${settlementReason}`,
+      is_reversed: false
+    };
+    if (userId) savingsPayload.recorded_by = userId;
+
+    const savingsTransaction = await pb.collection('savings').create(savingsPayload);
+    let settlement;
+    try {
+      settlement = await pb.collection('loan_balance_offs').create({
+        loan: loan.id,
+        member: loan.member,
+        ...(loan.group ? { group: loan.group } : {}),
+        amount: allocation.contractAmount,
+        surcharge_amount: surcharge,
+        reason: settlementReason,
+        effective_date: effectiveIso,
+        principal_amount: allocation.principalAmount,
+        interest_amount: allocation.interestAmount,
+        status: 'completed',
+        savings_transaction: savingsTransaction.id,
+        ...(userId ? { recorded_by: userId } : {})
+      });
+    } catch (error) {
+      await pb.collection('savings').update(savingsTransaction.id, { is_reversed: true }).catch(() => {});
+      throw error;
+    }
+
+    await invalidateLoanFinancialCaches();
+    return { settlement, savingsTransaction, allocation };
+  },
+
   async recordRepayment(data) {
     let record;
     try {
@@ -393,12 +532,7 @@ export const loanService = {
       record = await pb.collection('loan_repayments').create(compatibleData);
       console.warn('[loanService] Repayment allocation fields are not installed yet; saved using the legacy schema.');
     }
-    await dataCache.invalidate('loan_repayments');
-    await dataCache.invalidatePrefix('loan_repayments:');
-    await dataCache.invalidatePrefix('loan_repayments');
-    await dataCache.invalidatePrefix('loans:');
-    await dataCache.invalidatePrefix('group_summary:');
-    await dataCache.invalidatePrefix('groups:profile:');
+    await invalidateLoanFinancialCaches();
     return record;
   },
 
@@ -420,14 +554,7 @@ export const loanService = {
       record = await pb.collection('loan_repayments').update(id, compatibleData);
       console.warn('[loanService] Repayment allocation fields are not installed yet; updated using the legacy schema.');
     }
-    await dataCache.invalidate('loan_repayments');
-    await dataCache.invalidatePrefix('loan_repayments:');
-    await dataCache.invalidatePrefix('loan_repayments');
-    await dataCache.invalidatePrefix('loans:');
-    await dataCache.invalidatePrefix('loans:all:');
-    await dataCache.invalidatePrefix('loans:analytics:');
-    await dataCache.invalidatePrefix('group_summary:');
-    await dataCache.invalidatePrefix('groups:profile:');
+    await invalidateLoanFinancialCaches();
     return record;
   },
 
@@ -438,14 +565,7 @@ export const loanService = {
     }
 
     await pb.collection('loan_repayments').delete(id);
-    await dataCache.invalidate('loan_repayments');
-    await dataCache.invalidatePrefix('loan_repayments:');
-    await dataCache.invalidatePrefix('loan_repayments');
-    await dataCache.invalidatePrefix('loans:');
-    await dataCache.invalidatePrefix('loans:all:');
-    await dataCache.invalidatePrefix('loans:analytics:');
-    await dataCache.invalidatePrefix('group_summary:');
-    await dataCache.invalidatePrefix('groups:profile:');
+    await invalidateLoanFinancialCaches();
     return true;
   },
 
