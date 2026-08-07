@@ -5,6 +5,7 @@ import {
   getMemberOfficerScopeFilter,
   getOfficerScopeCacheKey,
   paginateScopedItems,
+  shouldScopeOfficerData,
   shouldScopeToCurrentOfficer
 } from '../core/officerScope.js';
 
@@ -48,7 +49,7 @@ const stripOptionalRegistrationFeeDetails = (data) => {
 
 export const memberService = {
   async list({ page = 1, perPage = 20, filter = '', sort = '-created' } = {}) {
-    if (shouldScopeToCurrentOfficer()) {
+    if (shouldScopeOfficerData()) {
       const items = await pb.collection('members').getFullList({
         filter: combineFilters(visibleMemberFilter, filter, getMemberOfficerScopeFilter()),
         sort,
@@ -73,7 +74,7 @@ export const memberService = {
   async getAll(onUpdate = null) {
     const key = `members:all:visible:${getOfficerScopeCacheKey()}`;
     return await dataCache.getLocalFirst(key, async () => filterMembersForCurrentOfficer(await pb.collection('members').getFullList({
-      filter: combineFilters(visibleMemberFilter, shouldScopeToCurrentOfficer() ? getMemberOfficerScopeFilter() : ''),
+      filter: combineFilters(visibleMemberFilter, shouldScopeOfficerData() ? getMemberOfficerScopeFilter() : ''),
       expand: 'group',
       sort: '-created'
     })), onUpdate);
@@ -82,7 +83,7 @@ export const memberService = {
   async getAllIncludingLifecycle(onUpdate = null) {
     const key = `members:all:including-lifecycle:${getOfficerScopeCacheKey()}`;
     return await dataCache.getLocalFirst(key, async () => filterMembersForCurrentOfficer(await pb.collection('members').getFullList({
-      filter: shouldScopeToCurrentOfficer() ? getMemberOfficerScopeFilter() : '',
+      filter: shouldScopeOfficerData() ? getMemberOfficerScopeFilter() : '',
       expand: 'group',
       sort: '-created'
     })), onUpdate);
@@ -92,29 +93,36 @@ export const memberService = {
     const member = await pb.collection('members').getOne(id, {
       expand: 'group',
     });
-    if (shouldScopeToCurrentOfficer() && filterMembersForCurrentOfficer([member]).length === 0) {
+    if (shouldScopeOfficerData() && filterMembersForCurrentOfficer([member]).length === 0) {
       throw new Error('You can only access members assigned to your portfolio.');
     }
     return member;
   },
 
   async getByRegNo(regNo) {
-    return await pb.collection('members').getFirstListItem(`reg_no = "${regNo}"`, {
+    const member = await pb.collection('members').getFirstListItem(`reg_no = "${regNo}"`, {
       expand: 'group'
     });
+    if (shouldScopeOfficerData() && filterMembersForCurrentOfficer([member]).length === 0) {
+      throw new Error('You can only access members assigned to your portfolio.');
+    }
+    return member;
   },
 
   async create(data) {
-    const duplicate = await this.findDuplicatePrincipalIdentifiers(data);
+    const payload = shouldScopeToCurrentOfficer()
+      ? { ...data, registered_by: pb.authStore.model.id, assigned_officer: pb.authStore.model.id }
+      : data;
+    const duplicate = await this.findDuplicatePrincipalIdentifiers(payload);
     if (duplicate) {
       throw new Error(`${duplicate.field} already belongs to ${duplicate.memberName}. A principal member cannot be registered twice.`);
     }
     let record;
     try {
-      record = await pb.collection('members').create(toMemberPayload(data));
+      record = await pb.collection('members').create(toMemberPayload(payload));
     } catch (err) {
       if (!String(err.message || '').toLowerCase().includes('registration_fee_details')) throw err;
-      record = await pb.collection('members').create(toMemberPayload(stripOptionalRegistrationFeeDetails(data)));
+      record = await pb.collection('members').create(toMemberPayload(stripOptionalRegistrationFeeDetails(payload)));
     }
     await dataCache.invalidatePrefix('members:');
     await dataCache.invalidatePrefix('group_summary:');
@@ -123,14 +131,19 @@ export const memberService = {
   },
 
   async update(id, data) {
-    const duplicate = await this.findDuplicatePrincipalIdentifiers(data, id);
+    const payload = { ...data };
+    if (shouldScopeToCurrentOfficer()) {
+      delete payload.registered_by;
+      delete payload.assigned_officer;
+    }
+    const duplicate = await this.findDuplicatePrincipalIdentifiers(payload, id);
     if (duplicate) {
       throw new Error(`${duplicate.field} already belongs to ${duplicate.memberName}. A principal member cannot be registered twice.`);
     }
-    if (Object.prototype.hasOwnProperty.call(data, 'group') && data.group) {
+    if (Object.prototype.hasOwnProperty.call(payload, 'group') && payload.group) {
       await this.validateSingleGroupPrincipalMembership(id);
     }
-    const record = await pb.collection('members').update(id, toMemberPayload(data));
+    const record = await pb.collection('members').update(id, toMemberPayload(payload));
     await dataCache.invalidatePrefix('members:');
     await dataCache.invalidatePrefix('group_summary:');
     await dataCache.invalidatePrefix('groups:profile:');

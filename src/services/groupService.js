@@ -5,6 +5,7 @@ import {
   getGroupOfficerScopeFilter,
   getOfficerScopeCacheKey,
   paginateScopedItems,
+  shouldScopeOfficerData,
   shouldScopeToCurrentOfficer
 } from '../core/officerScope.js';
 
@@ -20,7 +21,7 @@ const combineFilters = (...filters) => filters.filter(Boolean).map(filter => `($
 
 export const groupService = {
   async list({ page = 1, perPage = 50, filter = '', sort = '-created', includeSuspended = false } = {}) {
-    if (shouldScopeToCurrentOfficer()) {
+    if (shouldScopeOfficerData()) {
       const items = await pb.collection('groups').getFullList({
         filter: combineFilters(includeSuspended ? '' : visibleGroupFilter, filter, getGroupOfficerScopeFilter()),
         sort,
@@ -43,7 +44,7 @@ export const groupService = {
   async getAll(onUpdate = null) {
     const key = `groups:all:visible:${getOfficerScopeCacheKey()}`;
     return await dataCache.getLocalFirst(key, async () => filterGroupsForCurrentOfficer(await pb.collection('groups').getFullList({
-      filter: combineFilters(visibleGroupFilter, shouldScopeToCurrentOfficer() ? getGroupOfficerScopeFilter() : ''),
+      filter: combineFilters(visibleGroupFilter, shouldScopeOfficerData() ? getGroupOfficerScopeFilter() : ''),
       sort: 'name',
     })), onUpdate);
   },
@@ -51,7 +52,7 @@ export const groupService = {
   async getAllIncludingLifecycle(onUpdate = null) {
     const key = `groups:all:including-lifecycle:${getOfficerScopeCacheKey()}`;
     return await dataCache.getLocalFirst(key, async () => filterGroupsForCurrentOfficer(await pb.collection('groups').getFullList({
-      filter: shouldScopeToCurrentOfficer() ? getGroupOfficerScopeFilter() : '',
+      filter: shouldScopeOfficerData() ? getGroupOfficerScopeFilter() : '',
       sort: 'name',
     })), onUpdate);
   },
@@ -62,16 +63,19 @@ export const groupService = {
 
   async getById(id) {
     const group = await pb.collection('groups').getOne(id);
-    if (shouldScopeToCurrentOfficer() && filterGroupsForCurrentOfficer([group]).length === 0) {
+    if (shouldScopeOfficerData() && filterGroupsForCurrentOfficer([group]).length === 0) {
       throw new Error('You can only access groups assigned to your portfolio.');
     }
     return group;
   },
 
   async create(data) {
-    console.log('[groupService] Creating group with data:', JSON.stringify(data, null, 2));
+    const payload = shouldScopeToCurrentOfficer()
+      ? { ...data, created_by: pb.authStore.model.id, assigned_officer: pb.authStore.model.id }
+      : data;
+    console.log('[groupService] Creating group with data:', JSON.stringify(payload, null, 2));
     try {
-      const result = await pb.collection('groups').create(data);
+      const result = await pb.collection('groups').create(payload);
       console.log('[groupService] Created successfully:', result);
       await dataCache.invalidatePrefix('groups:');
       return result;
@@ -83,7 +87,12 @@ export const groupService = {
   },
 
   async update(id, data) {
-    const record = await pb.collection('groups').update(id, data);
+    const payload = { ...data };
+    if (shouldScopeToCurrentOfficer()) {
+      delete payload.created_by;
+      delete payload.assigned_officer;
+    }
+    const record = await pb.collection('groups').update(id, payload);
     await dataCache.invalidatePrefix('groups:');
     await dataCache.invalidatePrefix('group_summary:');
     await dataCache.invalidatePrefix('groups:profile:');

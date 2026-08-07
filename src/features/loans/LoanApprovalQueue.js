@@ -5,12 +5,15 @@ import { formatDate, formatMoney } from '../../core/utils.js';
 import { pb } from '../../services/api.js'; // We'll use pb to get all loans for the queue
 import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
 import { getReturnTo, withReturnTo } from '../../core/navigation.js';
+import { getPortfolioRecordOfficerScopeFilter, shouldScopeOfficerData } from '../../core/officerScope.js';
 
 const QUEUE_FILTER = 'status="pending" || ((status="approved" || status="partial_approved") && disbursement_date="") || status="expired"';
 
 export const renderLoanApprovalQueue = async (params = {}) => {
   const container = document.createElement('div');
   const returnTo = getReturnTo(params, '#/loans');
+  const portfolioFilter = shouldScopeOfficerData() ? getPortfolioRecordOfficerScopeFilter() : '';
+  const queueFilter = [QUEUE_FILTER, portfolioFilter].filter(Boolean).map(filter => `(${filter})`).join(' && ');
   const todayInputValue = new Date().toISOString().split('T')[0];
   const dateInputToDate = (value) => new Date(`${value || todayInputValue}T12:00:00`);
   const dateInputToIso = (value) => new Date(`${value || todayInputValue}T12:00:00`).toISOString();
@@ -47,7 +50,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
 
   let allLoans;
   try {
-    allLoans = await pb.collection('loans').getFullList({ filter: QUEUE_FILTER, expand: 'member,member.group,group' });
+    allLoans = await pb.collection('loans').getFullList({ filter: queueFilter, expand: 'member,member.group,group' });
   } catch (err) {
     console.error('[LoanApprovalQueue] Failed to fetch loans:', err);
     container.innerHTML = `
@@ -85,7 +88,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
   }
 
   // Fetch fresh loans if statuses changed
-  const freshLoans = updatedAny ? await pb.collection('loans').getFullList({ filter: QUEUE_FILTER, expand: 'member,member.group,group' }) : allLoans;
+  const freshLoans = updatedAny ? await pb.collection('loans').getFullList({ filter: queueFilter, expand: 'member,member.group,group' }) : allLoans;
 
   // Filter queues
   const pendingLoans = freshLoans.filter(l => l.status === 'pending');

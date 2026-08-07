@@ -7,7 +7,7 @@ import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
 import { formatMoney, formatPercent } from '../../core/utils.js';
 import { getDaysInArrears, getScheduleArrearsAmount, getScheduleRemaining, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
-import { createOfficerScope, getGroupOfficerId, getMemberOfficerId } from '../../core/officerScope.js';
+import { canUseOfficerFilter, createOfficerScope, getGlobalOfficerFilter, getGroupOfficerId, getMemberOfficerId } from '../../core/officerScope.js';
 import { settingsService } from '../../services/settingsService.js';
 import { createLoanPortfolioCalculator, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
 import { getLoanLiabilityAmount, getLoanPrincipalAmount } from '../../core/repaymentAllocation.js';
@@ -56,7 +56,7 @@ export const renderAnalyticsDashboard = async () => {
   };
 
   let dateRange = { from: '', to: '' };
-  let currentOfficerFilter = 'all';
+  let currentOfficerFilter = getGlobalOfficerFilter();
   let currentCollectionWindow = 'this_month';
   let chartInstances = [];
 
@@ -534,10 +534,12 @@ export const renderAnalyticsDashboard = async () => {
           <p class="text-muted">Real-time performance and portfolio metrics.</p>
         </div>
         <div style="display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end;">
-          <select id="loan-user-filter" class="form-control" style="width: auto; min-width: 220px;">
-            <option value="all" ${currentOfficerFilter === 'all' ? 'selected' : ''}>All Loan Users</option>
-            ${officerOptions.map(o => `<option value="${escapeHtml(o.id)}" ${currentOfficerFilter === o.id ? 'selected' : ''}>${escapeHtml(o.name)}</option>`).join('')}
-          </select>
+          ${canUseOfficerFilter() ? `
+            <select id="loan-user-filter" class="form-control" style="width: auto; min-width: 220px;">
+              <option value="all" ${currentOfficerFilter === 'all' ? 'selected' : ''}>All Loan Users</option>
+              ${officerOptions.map(o => `<option value="${escapeHtml(o.id)}" ${currentOfficerFilter === o.id ? 'selected' : ''}>${escapeHtml(o.name)}</option>`).join('')}
+            </select>
+          ` : ''}
           <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
             <label class="text-xs text-muted" for="analytics-date-from">From</label>
             <input type="date" id="analytics-date-from" class="form-control" value="${dateRange.from}" style="width: 145px;" />
@@ -824,10 +826,13 @@ export const renderAnalyticsDashboard = async () => {
     `;
 
     // Reattach Event Listeners
-    container.querySelector('#loan-user-filter').onchange = (e) => {
-      currentOfficerFilter = e.target.value;
-      renderData();
-    };
+    const loanUserFilter = container.querySelector('#loan-user-filter');
+    if (loanUserFilter) {
+      loanUserFilter.onchange = (e) => {
+        currentOfficerFilter = e.target.value;
+        renderData();
+      };
+    }
 
     const applyAnalyticsDateRange = () => {
       dateRange = {

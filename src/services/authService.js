@@ -1,4 +1,5 @@
 import { pb } from './api.js';
+import { dataCache } from './dataCache.js';
 
 const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000;
 const LAST_ACTIVITY_KEY = 'inlet_last_activity_at';
@@ -46,6 +47,8 @@ export const authService = {
   },
 
   logout({ reason = '' } = {}) {
+    void dataCache.invalidateAll();
+    sessionStorage.removeItem('inlet_global_officer_filter');
     pb.authStore.clear();
     localStorage.removeItem(LAST_ACTIVITY_KEY);
     if (window.notify && reason === 'inactivity') {

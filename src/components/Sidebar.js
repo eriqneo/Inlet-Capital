@@ -3,10 +3,12 @@ import { navigate } from '../core/router.js';
 import { pb } from '../services/api.js';
 import { settingsService } from '../services/settingsService.js';
 import { canAccessModule } from '../core/permissions.js';
+import { getOfficerDataScopeId, getOfficerScopeCacheKey } from '../core/officerScope.js';
 
 const PENDING_LOANS_CACHE_KEY = 'inlet_pending_loans_count';
 const PENDING_LOANS_TTL = 2 * 60 * 1000;
 let pendingLoanCountPromise = null;
+const getPendingLoansCacheKey = () => `${PENDING_LOANS_CACHE_KEY}:${getOfficerScopeCacheKey()}`;
 
 const roleLinks = {
   '#/':           ['*'],
@@ -53,7 +55,7 @@ export const updateSidebarActiveRoute = (currentHash = window.location.hash || '
 
 const getCachedPendingLoanCount = () => {
   try {
-    const cached = JSON.parse(localStorage.getItem(PENDING_LOANS_CACHE_KEY) || 'null');
+    const cached = JSON.parse(localStorage.getItem(getPendingLoansCacheKey()) || 'null');
     if (cached && Date.now() - cached.ts < PENDING_LOANS_TTL) return cached.count;
   } catch (e) {}
   return 0;
@@ -61,14 +63,19 @@ const getCachedPendingLoanCount = () => {
 
 const setCachedPendingLoanCount = (count) => {
   try {
-    localStorage.setItem(PENDING_LOANS_CACHE_KEY, JSON.stringify({ count, ts: Date.now() }));
+    localStorage.setItem(getPendingLoansCacheKey(), JSON.stringify({ count, ts: Date.now() }));
   } catch (e) {}
 };
 
 const fetchPendingLoanCount = async () => {
   if (!pendingLoanCountPromise) {
+    const officerId = getOfficerDataScopeId();
+    const ownerFilter = officerId
+      ? `(member.assigned_officer="${officerId}" || (member.assigned_officer="" && member.registered_by="${officerId}") || group.assigned_officer="${officerId}" || (group.assigned_officer="" && group.created_by="${officerId}"))`
+      : '';
+    const filter = ['status="pending"', ownerFilter].filter(Boolean).map(value => `(${value})`).join(' && ');
     pendingLoanCountPromise = pb.collection('loans')
-      .getList(1, 1, { filter: 'status="pending"' })
+      .getList(1, 1, { filter })
       .then(res => {
         setCachedPendingLoanCount(res.totalItems);
         return res.totalItems;

@@ -2,8 +2,13 @@ import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
 import {
   filterSavingsForCurrentOfficer,
+  getCurrentOfficerId,
+  getGroupOfficerId,
+  getMemberOfficerId,
   getOfficerScopeCacheKey,
+  getPortfolioRecordOfficerScopeFilter,
   paginateScopedItems,
+  shouldScopeOfficerData,
   shouldScopeToCurrentOfficer
 } from '../core/officerScope.js';
 
@@ -13,6 +18,7 @@ const requireAdminRecordManager = () => {
     throw new Error('Only admins can edit or delete records.');
   }
 };
+const combineFilters = (...filters) => filters.filter(Boolean).map(filter => `(${filter})`).join(' && ');
 
 export const savingsService = {
   /**
@@ -20,9 +26,27 @@ export const savingsService = {
    * @param {Object} data 
    */
   async recordTransaction(data) {
-    console.log('[savingsService] Recording transaction:', data);
+    const payload = { ...data };
+    if (shouldScopeToCurrentOfficer()) {
+      const officerId = getCurrentOfficerId();
+      if (payload.member) {
+        const member = await pb.collection('members').getOne(payload.member);
+        if (getMemberOfficerId(member) !== officerId) {
+          throw new Error('You can only record savings for members assigned to your portfolio.');
+        }
+      } else if (payload.group) {
+        const group = await pb.collection('groups').getOne(payload.group);
+        if (getGroupOfficerId(group) !== officerId) {
+          throw new Error('You can only record savings for groups assigned to your portfolio.');
+        }
+      } else {
+        throw new Error('Select a member or group assigned to your portfolio.');
+      }
+      payload.recorded_by = officerId;
+    }
+    console.log('[savingsService] Recording transaction:', payload);
     try {
-      const result = await pb.collection('savings').create(data);
+      const result = await pb.collection('savings').create(payload);
       await dataCache.invalidatePrefix('savings:');
       await dataCache.invalidatePrefix('group_summary:');
       await dataCache.invalidatePrefix('groups:profile:');
@@ -37,9 +61,9 @@ export const savingsService = {
    * Get all transactions with expanded member and group details
    */
   async getAll({ page = 1, perPage = 50, filter = '', sort = '-date' } = {}) {
-    if (shouldScopeToCurrentOfficer()) {
+    if (shouldScopeOfficerData()) {
       const items = filterSavingsForCurrentOfficer(await pb.collection('savings').getFullList({
-        filter,
+        filter: combineFilters(filter, getPortfolioRecordOfficerScopeFilter()),
         sort,
         expand: 'member,member.group,group,recorded_by'
       }));
@@ -60,9 +84,9 @@ export const savingsService = {
   },
 
   async getAllBasic({ page = 1, perPage = 50, filter = '', sort = '-date' } = {}) {
-    if (shouldScopeToCurrentOfficer()) {
+    if (shouldScopeOfficerData()) {
       const items = filterSavingsForCurrentOfficer(await pb.collection('savings').getFullList({
-        filter,
+        filter: combineFilters(filter, getPortfolioRecordOfficerScopeFilter()),
         sort,
         expand: 'member,member.group,group,recorded_by'
       }));
@@ -82,10 +106,11 @@ export const savingsService = {
   },
 
   async getFullListCached({ filter = '', sort = '-date', expand = 'member,member.group,group,recorded_by', cacheKey = 'savings:all:expanded:v2' } = {}, onUpdate = null) {
-    const effectiveExpand = shouldScopeToCurrentOfficer() && !expand ? 'member,member.group,group,recorded_by' : expand;
+    const effectiveExpand = shouldScopeOfficerData() && !expand ? 'member,member.group,group,recorded_by' : expand;
     const key = `${cacheKey}:${getOfficerScopeCacheKey()}:${sort}:${filter}:${effectiveExpand}`;
     return await dataCache.getLocalFirst(key, async () => {
       const options = { filter, sort };
+      if (shouldScopeOfficerData()) options.filter = combineFilters(filter, getPortfolioRecordOfficerScopeFilter());
       if (effectiveExpand) options.expand = effectiveExpand;
       return filterSavingsForCurrentOfficer(await pb.collection('savings').getFullList(options));
     }, onUpdate);

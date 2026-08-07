@@ -53,17 +53,19 @@ export const renderLoanDetails = async (params) => {
   }
 
   // Keep optional features from blanking financial records when one request fails.
-  let schedule = [], repayments = [], balanceOffs = [], memberComments = [];
+  let schedule = [], repayments = [], balanceOffs = [], writeOffs = [], memberComments = [];
   let availableSavings = 0;
   let scheduleLoadError = null;
   let repaymentLoadError = null;
   let balanceOffLoadError = null;
   let commentsLoadError = null;
+  let writeOffLoadError = null;
   let savingsLoadError = null;
-  const [scheduleResult, repaymentResult, balanceOffResult, savingsResult, commentsResult] = await Promise.allSettled([
+  const [scheduleResult, repaymentResult, balanceOffResult, writeOffResult, savingsResult, commentsResult] = await Promise.allSettled([
     loanService.getScheduleForLoan(loan.id),
     loanService.getRepaymentsForLoan(loan.id),
     loanService.getBalanceOffsForLoan(loan.id),
+    loanService.getWriteOffsForLoan(loan.id),
     loan.member ? savingsService.getMemberBalance(loan.member) : Promise.resolve(0),
     loan.member ? memberCommentService.getByMember(loan.member) : Promise.resolve([])
   ]);
@@ -74,6 +76,8 @@ export const renderLoanDetails = async (params) => {
   else repaymentLoadError = repaymentResult.reason;
   if (balanceOffResult.status === 'fulfilled') balanceOffs = balanceOffResult.value;
   else balanceOffLoadError = balanceOffResult.reason;
+  if (writeOffResult.status === 'fulfilled') writeOffs = writeOffResult.value;
+  else writeOffLoadError = writeOffResult.reason;
   if (savingsResult.status === 'fulfilled') availableSavings = Number(savingsResult.value) || 0;
   else savingsLoadError = savingsResult.reason;
   if (commentsResult.status === 'fulfilled') memberComments = commentsResult.value;
@@ -82,6 +86,7 @@ export const renderLoanDetails = async (params) => {
   if (scheduleLoadError) console.warn('[LoanDetails] Could not load repayment schedule:', scheduleLoadError.message);
   if (repaymentLoadError) console.warn('[LoanDetails] Could not load repayments:', repaymentLoadError.message);
   if (balanceOffLoadError) console.warn('[LoanDetails] Could not load balance-offs:', balanceOffLoadError.message);
+  if (writeOffLoadError) console.warn('[LoanDetails] Could not load write-offs:', writeOffLoadError.message);
   if (savingsLoadError) console.warn('[LoanDetails] Could not load member savings balance:', savingsLoadError.message);
   if (commentsLoadError) console.warn('[LoanDetails] Could not load member comments:', commentsLoadError.message);
 
@@ -117,6 +122,7 @@ export const renderLoanDetails = async (params) => {
     return principal + interest;
   };
   const totalLiability = getLoanLiability(loan);
+  const isWrittenOff = loan.status === 'written_off';
   const penaltyState = calculateLoanPenaltyState({
     schedules: schedule,
     repayments,
@@ -125,13 +131,20 @@ export const renderLoanDetails = async (params) => {
   });
   const totalPaid = repayments.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
   const totalBalancedOff = balanceOffs.reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
+  const activeWriteOffs = writeOffs.filter(item => item.status !== 'reversed');
+  const totalWrittenOff = activeWriteOffs.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
   const principalPaid = repayments.reduce((sum, r) => sum + getRepaymentPrincipalAmount(r), 0)
     + balanceOffs.reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
-  const outstandingPrincipal = Math.max(0, totalLiability - principalPaid);
-  const outstandingBalance = Math.max(0, outstandingPrincipal + penaltyState.outstandingFine);
+  const contractualBalanceBeforeWriteOff = Math.max(0, totalLiability - principalPaid);
+  const balanceBeforeWriteOff = Math.max(0, contractualBalanceBeforeWriteOff + penaltyState.outstandingFine);
+  const writeOffInterestRatio = totalLiability > 0 ? (Number(loan.interest_amount) || 0) / totalLiability : 0;
+  const writeOffInterestAmount = Math.min(Number(loan.interest_amount) || 0, contractualBalanceBeforeWriteOff * writeOffInterestRatio);
+  const writeOffPrincipalAmount = Math.max(0, contractualBalanceBeforeWriteOff - writeOffInterestAmount);
+  const outstandingPrincipal = isWrittenOff ? 0 : contractualBalanceBeforeWriteOff;
+  const outstandingBalance = isWrittenOff ? 0 : balanceBeforeWriteOff;
   const percentRepaid = totalLiability > 0
     ? Math.min(100, (principalPaid / totalLiability) * 100)
-    : (['completed', 'closed'].includes(loan.status) ? 100 : 0);
+    : (['completed', 'written_off', 'closed'].includes(loan.status) ? 100 : 0);
 
   let historyPage = 1;
   let balanceOffPage = 1;
@@ -142,6 +155,7 @@ export const renderLoanDetails = async (params) => {
   const canEditRepayments = authService.hasRole('super_admin', 'admin');
   const canDeleteRepayments = authService.hasRole('super_admin');
   const canBalanceOff = authService.hasRole('super_admin', 'admin') && loan.member && loan.status === 'disbursed';
+  const canWriteOff = authService.hasRole('super_admin') && loan.status === 'disbursed' && balanceBeforeWriteOff > 0;
   const canEditComments = authService.hasRole('super_admin', 'admin');
   const canDeleteComments = authService.hasRole('super_admin');
   const canRepairSchedule = authService.hasRole('super_admin', 'admin')
@@ -162,6 +176,7 @@ export const renderLoanDetails = async (params) => {
         <span class="badge ${
           loan.status === 'disbursed' ? 'badge-success' :
           loan.status === 'completed' ? 'badge-success' :
+          loan.status === 'written_off' ? 'badge-danger' :
           loan.status === 'rejected' ? 'badge-danger' :
           loan.status === 'expired' ? 'badge-danger' :
           (loan.status === 'approved' || loan.status === 'partial_approved') ? 'badge-primary' :
@@ -172,6 +187,7 @@ export const renderLoanDetails = async (params) => {
           ${loan.status === 'disbursed' ? 'DISBURSED' :
             loan.status === 'approved' ? 'APPROVED' :
             loan.status === 'partial_approved' ? 'PARTIAL APPROVED' :
+            loan.status === 'written_off' ? 'WRITTEN OFF' :
             loan.status.toUpperCase()}
         </span>
       </div>
@@ -298,6 +314,25 @@ export const renderLoanDetails = async (params) => {
           </div>
           ` : ''}
 
+          ${isWrittenOff ? `
+          <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.28); border-radius: 12px; padding: 22px; margin-bottom: 24px;">
+            <div style="display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; flex-wrap: wrap;">
+              <div>
+                <h3 style="margin: 0; color: var(--danger); font-size: 1.1rem;">Written Off</h3>
+                <p class="text-sm text-muted" style="margin: 8px 0 0 0; line-height: 1.5;">
+                  This loan is no longer active in the operational portfolio. Its repayment history remains preserved for audit and reporting.
+                </p>
+                ${loan.write_off_reason ? `<div class="text-sm" style="margin-top: 10px;"><strong>Reason:</strong> ${escapeHtml(loan.write_off_reason)}</div>` : ''}
+              </div>
+              <div style="min-width: 180px; text-align: right;">
+                <div class="text-xs text-muted">Written Off</div>
+                <div class="font-semibold" style="color: var(--danger);">KES ${formatMoney(totalWrittenOff || balanceBeforeWriteOff)}</div>
+                <div class="text-xs text-muted" style="margin-top: 4px;">${formatDate(loan.written_off_at || activeWriteOffs[0]?.effective_date || loan.updated)}</div>
+              </div>
+            </div>
+          </div>
+          ` : ''}
+
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px;">
             <div>
               <div class="text-sm text-muted" style="margin-bottom: 8px;">Outstanding Balance</div>
@@ -313,6 +348,11 @@ export const renderLoanDetails = async (params) => {
                   <div style="width: ${Math.max(0, Math.min(100, percentRepaid))}%; height: 100%; background: var(--success); transition: width 0.3s ease;"></div>
                 </div>
               </div>
+              ${canWriteOff ? `
+                <button type="button" class="btn btn-outline" id="write-off-loan-btn" style="margin-top: 18px; border-color: var(--danger); color: var(--danger);">
+                  Write Off Loan
+                </button>
+              ` : ''}
             </div>
             
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
@@ -327,6 +367,10 @@ export const renderLoanDetails = async (params) => {
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Balanced Off</div>
                 <div class="font-semibold" style="color: var(--secondary);">KES ${formatMoney(totalBalancedOff)}</div>
+              </div>
+              <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
+                <div class="text-xs text-muted">Written Off</div>
+                <div class="font-semibold" style="color: ${totalWrittenOff > 0 ? 'var(--danger)' : 'var(--text-muted)'};">KES ${formatMoney(totalWrittenOff)}</div>
               </div>
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Period</div>
@@ -408,6 +452,11 @@ export const renderLoanDetails = async (params) => {
         </div>
 
         <div id="record-tab" style="display: none;">
+          ${isWrittenOff ? `
+            <div class="alert alert-warning" style="margin-bottom: 16px;">
+              This loan has been written off. New repayments should not be posted against it unless the write-off policy is reversed by management.
+            </div>
+          ` : ''}
           <form id="payment-form" style="max-width: 500px;">
             <div class="form-group">
               <label class="form-label">Payment Amount (KES)</label>
@@ -448,7 +497,7 @@ export const renderLoanDetails = async (params) => {
               <label class="form-label">Notes (Optional)</label>
               <textarea name="note" class="form-control" rows="2"></textarea>
             </div>
-            <button type="submit" class="btn btn-primary btn-lg" style="width: 100%; margin-top: 16px;" ${outstandingBalance === 0 ? 'disabled' : ''}>
+            <button type="submit" class="btn btn-primary btn-lg" style="width: 100%; margin-top: 16px;" ${outstandingBalance === 0 || isWrittenOff ? 'disabled' : ''}>
               Confirm Repayment
             </button>
           </form>
@@ -640,6 +689,64 @@ export const renderLoanDetails = async (params) => {
           <div style="display: flex; justify-content: flex-end; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border-color);">
             <button type="button" class="btn btn-outline" id="repayment-edit-cancel">Cancel</button>
             <button type="submit" class="btn btn-primary">Update Repayment</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="write-off-modal" class="modal" style="display: none; position: fixed; z-index: 1000; inset: 0; background: rgba(15,37,69,0.56); backdrop-filter: blur(6px); align-items: center; justify-content: center; padding: 20px;">
+      <div class="card" style="width: min(680px, 100%); padding: 0; overflow: hidden;">
+        <div style="padding: 20px 24px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; gap: 16px; align-items: center;">
+          <div>
+            <h2 class="text-lg" style="color: var(--danger);">Write Off Loan</h2>
+            <p class="text-xs text-muted" style="margin-top: 4px;">This clears the operational OLB without recording a repayment.</p>
+          </div>
+          <button type="button" id="write-off-close" aria-label="Close" style="background: transparent; border: none; font-size: 24px; cursor: pointer; color: var(--text-muted);">&times;</button>
+        </div>
+        <form id="write-off-form" style="padding: 24px;">
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 18px;">
+            <div style="padding: 14px; background: var(--bg-light); border-radius: 8px;">
+              <div class="text-xs text-muted">Loan</div>
+              <div class="font-semibold">${escapeHtml(loan.loan_no)}</div>
+            </div>
+            <div style="padding: 14px; background: rgba(239,68,68,0.08); border-radius: 8px;">
+              <div class="text-xs text-muted">OLB To Clear</div>
+              <div class="font-semibold" style="color: var(--danger);">KES ${formatMoney(balanceBeforeWriteOff)}</div>
+            </div>
+            <div style="padding: 14px; background: var(--bg-light); border-radius: 8px;">
+              <div class="text-xs text-muted">Client</div>
+              <div class="font-semibold">${escapeHtml(clientName)}</div>
+            </div>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px;">
+            <div class="form-group">
+              <label class="form-label">Write-Off Date</label>
+              <input type="date" name="effective_date" class="form-control" value="${todayInputValue}" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Reason Category</label>
+              <select name="reason_category" class="form-control" required>
+                <option value="">Select reason</option>
+                <option value="death">Death</option>
+                <option value="medical_hardship">Medical hardship</option>
+                <option value="permanent_default">Permanent default</option>
+                <option value="business_failure">Business failure</option>
+                <option value="management_decision">Management decision</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Detailed Reason</label>
+            <textarea name="reason" class="form-control" rows="4" required minlength="10" placeholder="Capture the management reason, supporting context, and approval reference."></textarea>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Type Loan Number To Confirm</label>
+            <input type="text" name="confirmation" class="form-control" required placeholder="${escapeHtml(loan.loan_no)}" />
+          </div>
+          <div style="display: flex; justify-content: flex-end; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border-color);">
+            <button type="button" class="btn btn-outline" id="write-off-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary" style="background: var(--danger); border-color: var(--danger);">Write Off Loan</button>
           </div>
         </form>
       </div>
@@ -1115,7 +1222,7 @@ export const renderLoanDetails = async (params) => {
       0
     ) + activeBalanceOffs.reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
     const loanFullyPaid = totalLiability > 0 && contractPaid >= totalLiability - 0.01;
-    if (loanFullyPaid && !['completed', 'closed'].includes(loan.status)) {
+    if (loanFullyPaid && !['completed', 'written_off', 'closed'].includes(loan.status)) {
       await loanService.update(loan.id, { status: 'completed' });
     } else if (!loanFullyPaid && loan.status === 'completed') {
       await loanService.update(loan.id, { status: 'disbursed' });
@@ -1129,6 +1236,9 @@ export const renderLoanDetails = async (params) => {
   const editRepaymentRefGroup = container.querySelector('#edit-repayment-ref-group');
   const editRepaymentRefLabel = container.querySelector('#edit-repayment-ref-label');
   const editRepaymentRefInput = container.querySelector('#edit-repayment-ref-input');
+  const writeOffModal = container.querySelector('#write-off-modal');
+  const writeOffForm = container.querySelector('#write-off-form');
+  const writeOffBtn = container.querySelector('#write-off-loan-btn');
 
   const updateEditRepaymentReferenceState = () => {
     if (!editRepaymentMethod) return;
@@ -1155,6 +1265,13 @@ export const renderLoanDetails = async (params) => {
     repaymentEditForm.reset();
   };
 
+  const closeWriteOffModal = () => {
+    if (!writeOffModal || !writeOffForm) return;
+    writeOffModal.style.display = 'none';
+    writeOffForm.reset();
+    writeOffForm.elements.effective_date.value = todayInputValue;
+  };
+
   const openRepaymentEditModal = (repayment) => {
     if (!canEditRepayments) {
       if (window.notify) window.notify.error('Only admins can edit repayment records.');
@@ -1176,6 +1293,69 @@ export const renderLoanDetails = async (params) => {
   updateBalanceOffUI();
   updateScheduleUI();
   updateCommentsUI();
+
+  if (writeOffBtn && writeOffModal && writeOffForm) {
+    writeOffBtn.onclick = () => {
+      if (!canWriteOff) {
+        if (window.notify) window.notify.error('Only super admins can write off running loans.');
+        return;
+      }
+      writeOffModal.style.display = 'flex';
+      writeOffForm.elements.reason_category.focus();
+    };
+    container.querySelector('#write-off-close').onclick = closeWriteOffModal;
+    container.querySelector('#write-off-cancel').onclick = closeWriteOffModal;
+    writeOffModal.onclick = (event) => {
+      if (event.target === writeOffModal) closeWriteOffModal();
+    };
+    writeOffForm.onsubmit = async (event) => {
+      event.preventDefault();
+      if (!writeOffForm.reportValidity()) return;
+      const formData = new FormData(writeOffForm);
+      const reasonCategory = String(formData.get('reason_category') || '').trim();
+      const reason = String(formData.get('reason') || '').trim();
+      const confirmation = String(formData.get('confirmation') || '').trim();
+      const effectiveDateInput = String(formData.get('effective_date') || '').trim();
+      if (confirmation !== loan.loan_no) {
+        if (window.notify) window.notify.error('Type the exact loan number to confirm this write-off.');
+        return;
+      }
+
+      const confirmed = window.confirmDialog
+        ? await window.confirmDialog({
+            title: 'Confirm Loan Write-Off',
+            message: `Write off ${loan.loan_no} and clear operational OLB of KES ${formatMoney(balanceBeforeWriteOff)}? This will not be recorded as repayment.`,
+            confirmText: 'Write Off',
+            cancelText: 'Cancel',
+            type: 'danger'
+          })
+        : confirm(`Write off loan ${loan.loan_no}?`);
+      if (!confirmed) return;
+
+      const submitBtn = writeOffForm.querySelector('button[type="submit"]');
+      const restoreButton = setButtonLoading(submitBtn, 'Writing off...');
+      try {
+        await loanService.recordWriteOff({
+          loan,
+          amount: balanceBeforeWriteOff,
+          principalAmount: writeOffPrincipalAmount,
+          interestAmount: writeOffInterestAmount,
+          fineAmount: penaltyState.outstandingFine,
+          reasonCategory,
+          reason,
+          effectiveDate: new Date(`${effectiveDateInput || todayInputValue}T12:00:00`).toISOString()
+        });
+        if (window.notify) window.notify.success('Loan written off. Operational OLB is now zero.');
+        await refreshLoanDetails();
+      } catch (err) {
+        const schemaHint = err.status === 404 || err.status === 400
+          ? ' Confirm that loan_write_offs exists and loans has written_off_at/write_off_reason fields in PocketHost.'
+          : '';
+        if (window.notify) window.notify.error('Write-off failed: ' + (err.message || 'Please try again.') + schemaHint);
+        restoreButton();
+      }
+    };
+  }
 
   // Tab switching logic
   const tabs = container.querySelectorAll('.tab-btn');

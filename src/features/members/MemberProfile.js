@@ -407,7 +407,7 @@ export const renderMemberProfile = async (params) => {
           <div class="form-group">
             <label class="form-label">Status</label>
             <select name="status" class="form-control" required>
-              ${['pending','approved','partial_approved','disbursed','completed','closed','rejected','expired'].map(status => `<option value="${status}" ${loan.status === status ? 'selected' : ''}>${status.replace('_', ' ').toUpperCase()}</option>`).join('')}
+              ${['pending','approved','partial_approved','disbursed','completed','written_off','closed','rejected','expired'].map(status => `<option value="${status}" ${loan.status === status ? 'selected' : ''}>${status.replace('_', ' ').toUpperCase()}</option>`).join('')}
             </select>
           </div>
         </div>
@@ -428,7 +428,7 @@ export const renderMemberProfile = async (params) => {
       e.preventDefault();
       const formData = new FormData(editLoanForm);
       const data = Object.fromEntries(formData.entries());
-      const disbursedStatuses = ['disbursed', 'completed', 'closed'];
+      const disbursedStatuses = ['disbursed', 'completed', 'written_off', 'closed'];
       const payload = {
         application_date: new Date(data.application_date).toISOString(),
         status: data.status,
@@ -436,7 +436,7 @@ export const renderMemberProfile = async (params) => {
       };
       if (disbursedStatuses.includes(data.status)) {
         if (!data.disbursement_date) {
-          if (window.notify) window.notify.error('Disbursement date is required once a loan is disbursed, completed, or closed.');
+          if (window.notify) window.notify.error('Disbursement date is required once a loan is disbursed, completed, written off, or closed.');
           return;
         }
         payload.disbursement_date = new Date(`${data.disbursement_date}T12:00:00`).toISOString();

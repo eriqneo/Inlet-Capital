@@ -9,11 +9,20 @@ const ADMIN_EMAIL = 'aturaerick@gmail.com';
 const ADMIN_PASS = 'dGY@SrzA86PQc5n';
 
 const ADMIN_DATA_RULE = '@request.auth.role = "super_admin" || @request.auth.role = "admin"';
-const MEMBER_SCOPE_RULE = `${ADMIN_DATA_RULE} || assigned_officer = @request.auth.id || registered_by = @request.auth.id`;
-const GROUP_SCOPE_RULE = `${ADMIN_DATA_RULE} || assigned_officer = @request.auth.id || created_by = @request.auth.id`;
-const LOAN_SCOPE_RULE = `${ADMIN_DATA_RULE} || processed_by = @request.auth.id || member.assigned_officer = @request.auth.id || member.registered_by = @request.auth.id || group.assigned_officer = @request.auth.id || group.created_by = @request.auth.id`;
-const SAVINGS_SCOPE_RULE = `${ADMIN_DATA_RULE} || recorded_by = @request.auth.id || member.assigned_officer = @request.auth.id || member.registered_by = @request.auth.id || group.assigned_officer = @request.auth.id || group.created_by = @request.auth.id`;
-const LOAN_CHILD_SCOPE_RULE = `${ADMIN_DATA_RULE} || loan.processed_by = @request.auth.id || loan.member.assigned_officer = @request.auth.id || loan.member.registered_by = @request.auth.id || loan.group.assigned_officer = @request.auth.id || loan.group.created_by = @request.auth.id`;
+const MEMBER_OWNER_RULE = 'assigned_officer = @request.auth.id || (assigned_officer = "" && registered_by = @request.auth.id)';
+const GROUP_OWNER_RULE = 'assigned_officer = @request.auth.id || (assigned_officer = "" && created_by = @request.auth.id)';
+const LOAN_OWNER_RULE = 'member.assigned_officer = @request.auth.id || (member.assigned_officer = "" && member.registered_by = @request.auth.id) || group.assigned_officer = @request.auth.id || (group.assigned_officer = "" && group.created_by = @request.auth.id)';
+const LOAN_CHILD_OWNER_RULE = 'loan.member.assigned_officer = @request.auth.id || (loan.member.assigned_officer = "" && loan.member.registered_by = @request.auth.id) || loan.group.assigned_officer = @request.auth.id || (loan.group.assigned_officer = "" && loan.group.created_by = @request.auth.id)';
+const MEMBER_SCOPE_RULE = `${ADMIN_DATA_RULE} || ${MEMBER_OWNER_RULE}`;
+const GROUP_SCOPE_RULE = `${ADMIN_DATA_RULE} || ${GROUP_OWNER_RULE}`;
+const LOAN_SCOPE_RULE = `${ADMIN_DATA_RULE} || ${LOAN_OWNER_RULE}`;
+const SAVINGS_SCOPE_RULE = `${ADMIN_DATA_RULE} || ${LOAN_OWNER_RULE}`;
+const LOAN_CHILD_SCOPE_RULE = `${ADMIN_DATA_RULE} || ${LOAN_CHILD_OWNER_RULE}`;
+const GROUP_SUMMARY_SCOPE_RULE = `${ADMIN_DATA_RULE} || group.assigned_officer = @request.auth.id || (group.assigned_officer = "" && group.created_by = @request.auth.id)`;
+const MEMBER_COMMENT_SCOPE_RULE = `${ADMIN_DATA_RULE} || member.assigned_officer = @request.auth.id || (member.assigned_officer = "" && member.registered_by = @request.auth.id)`;
+const LOAN_CREATE_RULE = `${ADMIN_DATA_RULE} || (processed_by = @request.auth.id && (${LOAN_OWNER_RULE}))`;
+const SAVINGS_CREATE_RULE = `${ADMIN_DATA_RULE} || (recorded_by = @request.auth.id && (${LOAN_OWNER_RULE}))`;
+const LOAN_CHILD_CREATE_RULE = `${ADMIN_DATA_RULE} || ${LOAN_CHILD_OWNER_RULE}`;
 
 async function fetchPb(path, method = 'GET', body = null, token = null) {
   const headers = { 'Content-Type': 'application/json' };
@@ -175,8 +184,8 @@ async function run() {
       ],
       listRule: GROUP_SCOPE_RULE,
       viewRule: GROUP_SCOPE_RULE,
-      createRule: '@request.auth.role != "auditor"',
-      updateRule: '@request.auth.role != "auditor"',
+      createRule: `${ADMIN_DATA_RULE} || (@request.auth.role != "auditor" && created_by = @request.auth.id && assigned_officer = @request.auth.id)`,
+      updateRule: `${ADMIN_DATA_RULE} || (${GROUP_OWNER_RULE} && @request.body.created_by:isset = false && @request.body.assigned_officer:isset = false)`,
       deleteRule: '@request.auth.role = "super_admin"'
     };
     try {
@@ -197,6 +206,14 @@ async function run() {
              groupsColl.viewRule = GROUP_SCOPE_RULE;
              changed = true;
              console.log('Groups view rule scoped by assigned officer.');
+           }
+           if (groupsColl.createRule !== groupsDef.createRule) {
+             groupsColl.createRule = groupsDef.createRule;
+             changed = true;
+           }
+           if (groupsColl.updateRule !== groupsDef.updateRule) {
+             groupsColl.updateRule = groupsDef.updateRule;
+             changed = true;
            }
            const statusField = groupsColl.fields.find(f => f.name === 'status');
            if (statusField && (!statusField.values.includes('suspended') || !statusField.values.includes('closed'))) {
@@ -266,8 +283,8 @@ async function run() {
       ],
       listRule: MEMBER_SCOPE_RULE,
       viewRule: MEMBER_SCOPE_RULE,
-      createRule: '@request.auth.role != "auditor"',
-      updateRule: '@request.auth.role != "auditor"',
+      createRule: `${ADMIN_DATA_RULE} || (@request.auth.role != "auditor" && registered_by = @request.auth.id && assigned_officer = @request.auth.id)`,
+      updateRule: `${ADMIN_DATA_RULE} || (${MEMBER_OWNER_RULE} && @request.body.registered_by:isset = false && @request.body.assigned_officer:isset = false)`,
       deleteRule: '@request.auth.role = "super_admin"'
     };
     try {
@@ -288,6 +305,14 @@ async function run() {
              membersColl.viewRule = MEMBER_SCOPE_RULE;
              changed = true;
              console.log('Members view rule scoped by assigned officer.');
+           }
+           if (membersColl.createRule !== membersDef.createRule) {
+             membersColl.createRule = membersDef.createRule;
+             changed = true;
+           }
+           if (membersColl.updateRule !== membersDef.updateRule) {
+             membersColl.updateRule = membersDef.updateRule;
+             changed = true;
            }
            const statusField = membersColl.fields.find(f => f.name === 'status');
            if (statusField && (!statusField.values.includes('suspended') || !statusField.values.includes('closed'))) {
@@ -341,10 +366,10 @@ async function run() {
           { name: 'inactive_members', type: 'number' },
           { name: 'last_calculated_at', type: 'date' }
         ],
-        listRule: '@request.auth.id != ""',
-        viewRule: '@request.auth.id != ""',
-        createRule: '@request.auth.role != "auditor"',
-        updateRule: '@request.auth.role != "auditor"',
+        listRule: GROUP_SUMMARY_SCOPE_RULE,
+        viewRule: GROUP_SUMMARY_SCOPE_RULE,
+        createRule: `${ADMIN_DATA_RULE} || ${GROUP_SUMMARY_SCOPE_RULE}`,
+        updateRule: `${ADMIN_DATA_RULE} || ${GROUP_SUMMARY_SCOPE_RULE}`,
         deleteRule: '@request.auth.role = "super_admin" || @request.auth.role = "admin"'
       };
 
@@ -489,9 +514,9 @@ async function run() {
         name: 'member_comments',
         type: 'base',
         fields: commentFields,
-        listRule: '@request.auth.id != ""',
-        viewRule: '@request.auth.id != ""',
-        createRule: '@request.auth.id != ""',
+        listRule: MEMBER_COMMENT_SCOPE_RULE,
+        viewRule: MEMBER_COMMENT_SCOPE_RULE,
+        createRule: `(${MEMBER_COMMENT_SCOPE_RULE}) && (${ADMIN_DATA_RULE} || created_by = @request.auth.id)`,
         updateRule: '@request.auth.role = "super_admin" || @request.auth.role = "admin"',
         deleteRule: '@request.auth.role = "super_admin"'
       };
@@ -559,10 +584,26 @@ async function run() {
         changed = true;
         console.log('Loans view rule scoped by portfolio owner.');
       }
+      if (loansColl.createRule !== LOAN_CREATE_RULE) {
+        loansColl.createRule = LOAN_CREATE_RULE;
+        changed = true;
+        console.log('Loan creation restricted to the current officer portfolio.');
+      }
+      if (loansColl.updateRule !== LOAN_SCOPE_RULE) {
+        loansColl.updateRule = LOAN_SCOPE_RULE;
+        changed = true;
+        console.log('Loan updates restricted to the current officer portfolio.');
+      }
       if (loansColl.deleteRule !== '@request.auth.role = "super_admin"') {
         loansColl.deleteRule = '@request.auth.role = "super_admin"';
         changed = true;
         console.log('Loans collection delete rule restricted to super admins.');
+      }
+      const loanStatusField = loansColl.fields.find(field => field.name === 'status');
+      if (loanStatusField && !loanStatusField.values?.includes('written_off')) {
+        loanStatusField.values = Array.from(new Set([...(loanStatusField.values || []), 'written_off']));
+        changed = true;
+        console.log('Loans collection updated with written_off status.');
       }
       if (!loansColl.fields.some(field => field.name === 'approval_comment')) {
         loansColl.fields.push({
@@ -586,6 +627,28 @@ async function run() {
       } else {
         console.log('Loans collection already has processing_fee_rate field.');
       }
+      if (!loansColl.fields.some(field => field.name === 'written_off_at')) {
+        loansColl.fields.push({
+          name: 'written_off_at',
+          type: 'date',
+          required: false
+        });
+        changed = true;
+        console.log('Loans collection updated with written_off_at field.');
+      } else {
+        console.log('Loans collection already has written_off_at field.');
+      }
+      if (!loansColl.fields.some(field => field.name === 'write_off_reason')) {
+        loansColl.fields.push({
+          name: 'write_off_reason',
+          type: 'text',
+          required: false
+        });
+        changed = true;
+        console.log('Loans collection updated with write_off_reason field.');
+      } else {
+        console.log('Loans collection already has write_off_reason field.');
+      }
       if (changed) await fetchPb('collections/loans', 'PATCH', loansColl, token);
     } catch (e) {
       console.log('Error updating loans extra fields:', e.message);
@@ -605,6 +668,16 @@ async function run() {
         changed = true;
         console.log('Savings view rule scoped by portfolio owner.');
       }
+      if (savingsColl.createRule !== SAVINGS_CREATE_RULE) {
+        savingsColl.createRule = SAVINGS_CREATE_RULE;
+        changed = true;
+        console.log('Savings creation restricted to the current officer portfolio.');
+      }
+      const savingsUpdateRule = '@request.auth.role = "super_admin" || @request.auth.role = "admin"';
+      if (savingsColl.updateRule !== savingsUpdateRule) {
+        savingsColl.updateRule = savingsUpdateRule;
+        changed = true;
+      }
       if (changed) await fetchPb('collections/savings', 'PATCH', savingsColl, token);
     } catch (e) {
       console.log('Error updating savings access rules:', e.message);
@@ -623,6 +696,11 @@ async function run() {
         repaymentsColl.viewRule = LOAN_CHILD_SCOPE_RULE;
         changed = true;
         console.log('Loan repayments view rule scoped by portfolio owner.');
+      }
+      if (repaymentsColl.createRule !== LOAN_CHILD_CREATE_RULE) {
+        repaymentsColl.createRule = LOAN_CHILD_CREATE_RULE;
+        changed = true;
+        console.log('Loan repayment creation restricted to the current officer portfolio.');
       }
       const expectedUpdateRule = '@request.auth.role = "super_admin" || @request.auth.role = "admin"';
       const expectedDeleteRule = '@request.auth.role = "super_admin"';
@@ -698,6 +776,14 @@ async function run() {
         scheduleColl.viewRule = LOAN_CHILD_SCOPE_RULE;
         changed = true;
         console.log('Loan schedule view rule scoped by portfolio owner.');
+      }
+      if (scheduleColl.createRule !== LOAN_CHILD_CREATE_RULE) {
+        scheduleColl.createRule = LOAN_CHILD_CREATE_RULE;
+        changed = true;
+      }
+      if (scheduleColl.updateRule !== LOAN_CHILD_SCOPE_RULE) {
+        scheduleColl.updateRule = LOAN_CHILD_SCOPE_RULE;
+        changed = true;
       }
       if (!scheduleColl.fields.some(field => field.name === 'penalty_waiver_reason')) {
         scheduleColl.fields.push({
@@ -785,6 +871,84 @@ async function run() {
       console.log('Error ensuring loan balance-off collection:', e.message);
     }
 
+    console.log('Ensuring loan write-off collection...');
+    try {
+      const loansColl = await fetchPb('collections/loans', 'GET', null, token);
+      const membersColl = await fetchPb('collections/members', 'GET', null, token);
+      const groupsColl = await fetchPb('collections/groups', 'GET', null, token);
+      const usersColl = await fetchPb('collections/users', 'GET', null, token);
+      const writeOffDef = {
+        name: 'loan_write_offs',
+        type: 'base',
+        fields: [
+          { name: 'loan', type: 'relation', required: true, collectionId: loansColl.id, cascadeDelete: true, maxSelect: 1 },
+          { name: 'member', type: 'relation', collectionId: membersColl.id, cascadeDelete: false, maxSelect: 1 },
+          { name: 'group', type: 'relation', collectionId: groupsColl.id, cascadeDelete: false, maxSelect: 1 },
+          { name: 'amount', type: 'number', required: true },
+          { name: 'principal_amount', type: 'number' },
+          { name: 'interest_amount', type: 'number' },
+          { name: 'fine_amount', type: 'number' },
+          { name: 'reason_category', type: 'select', required: true, maxSelect: 1, values: ['death', 'medical_hardship', 'permanent_default', 'business_failure', 'management_decision', 'other'] },
+          { name: 'reason', type: 'text', required: true },
+          { name: 'effective_date', type: 'date', required: true },
+          { name: 'status', type: 'select', required: true, maxSelect: 1, values: ['completed', 'reversed'] },
+          { name: 'recorded_by', type: 'relation', collectionId: usersColl.id, cascadeDelete: false, maxSelect: 1 },
+          { name: 'reversal_reason', type: 'text' },
+          { name: 'reversed_by', type: 'relation', collectionId: usersColl.id, cascadeDelete: false, maxSelect: 1 },
+          { name: 'reversed_at', type: 'date' }
+        ],
+        listRule: LOAN_CHILD_SCOPE_RULE,
+        viewRule: LOAN_CHILD_SCOPE_RULE,
+        createRule: '@request.auth.role = "super_admin"',
+        updateRule: '@request.auth.role = "super_admin"',
+        deleteRule: '@request.auth.role = "super_admin"'
+      };
+
+      try {
+        await fetchPb('collections', 'POST', writeOffDef, token);
+        console.log('Loan write-off collection created.');
+      } catch (createErr) {
+        if (!createErr.message.includes('validation_collection_name_exists')) throw createErr;
+        const writeOffColl = await fetchPb('collections/loan_write_offs', 'GET', null, token);
+        let changed = false;
+        const existingFieldNames = new Set(writeOffColl.fields.map(field => field.name));
+        writeOffDef.fields.forEach(field => {
+          if (!existingFieldNames.has(field.name)) {
+            writeOffColl.fields.push(field);
+            changed = true;
+          }
+        });
+        ['listRule', 'viewRule', 'createRule', 'updateRule', 'deleteRule'].forEach(ruleName => {
+          if (writeOffColl[ruleName] !== writeOffDef[ruleName]) {
+            writeOffColl[ruleName] = writeOffDef[ruleName];
+            changed = true;
+          }
+        });
+        const statusField = writeOffColl.fields.find(field => field.name === 'status');
+        if (statusField && (!statusField.values.includes('completed') || !statusField.values.includes('reversed'))) {
+          statusField.values = Array.from(new Set([...(statusField.values || []), 'completed', 'reversed']));
+          changed = true;
+        }
+        const reasonField = writeOffColl.fields.find(field => field.name === 'reason_category');
+        if (reasonField) {
+          const reasonValues = ['death', 'medical_hardship', 'permanent_default', 'business_failure', 'management_decision', 'other'];
+          const missingReasons = reasonValues.filter(value => !reasonField.values.includes(value));
+          if (missingReasons.length > 0) {
+            reasonField.values = Array.from(new Set([...(reasonField.values || []), ...missingReasons]));
+            changed = true;
+          }
+        }
+        if (changed) {
+          await fetchPb('collections/loan_write_offs', 'PATCH', writeOffColl, token);
+          console.log('Loan write-off collection updated.');
+        } else {
+          console.log('Loan write-off collection already configured.');
+        }
+      }
+    } catch (e) {
+      console.log('Error ensuring loan write-off collection:', e.message);
+    }
+
     console.log('Ensuring user login activity collection...');
     try {
       const usersColl = await fetchPb('collections/users', 'GET', null, token);
@@ -834,7 +998,7 @@ async function run() {
     } catch (e) {
       console.log('Error ensuring user login activity collection:', e.message);
     }
-    
+
     console.log('Done!');
   } catch (err) {
     console.error('Fatal:', err.message);

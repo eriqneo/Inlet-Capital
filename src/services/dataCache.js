@@ -1,11 +1,16 @@
+import { pb } from './api.js';
+
 const DB_NAME = 'InletCacheDB';
 const DB_VERSION = 1;
 const STORE_NAME = 'collections';
 const TTL = 5 * 60 * 1000; // 5 minutes (data older than this triggers background refresh on access)
 const DEFAULT_LOCAL_FIRST_REFRESH_INTERVAL = 10 * 1000;
 const CACHE_EPOCH_KEY = 'inlet_data_cache_epoch';
-export const DATA_CACHE_EPOCH = 'live-reset-2026-06-08-v1';
+export const DATA_CACHE_EPOCH = 'officer-isolation-2026-08-06-v1';
 const inFlightRefreshes = new Map();
+
+const getCacheOwner = () => pb.authStore.model?.id || 'anonymous';
+const getScopedKey = (key) => `${getCacheOwner()}::${String(key)}`;
 
 // Wrap IndexedDB in a Promise API
 const openDB = () => {
@@ -119,8 +124,9 @@ export const dataCache = {
    * and triggers a background refresh.
    */
   async get(key, fetchFn, onUpdate = null) {
+    const scopedKey = getScopedKey(key);
     try {
-      const cached = await getFromDB(key);
+      const cached = await getFromDB(scopedKey);
       const now = Date.now();
       
       if (cached) {
@@ -153,9 +159,10 @@ export const dataCache = {
    */
   async getLocalFirst(key, fetchFn, onUpdate = null, options = {}) {
     const minRefreshInterval = options.minRefreshInterval ?? DEFAULT_LOCAL_FIRST_REFRESH_INTERVAL;
+    const scopedKey = getScopedKey(key);
 
     try {
-      const cached = await getFromDB(key);
+      const cached = await getFromDB(scopedKey);
       const now = Date.now();
 
       if (cached) {
@@ -178,11 +185,12 @@ export const dataCache = {
   },
 
   async refreshDedupe(key, fetchFn) {
-    if (inFlightRefreshes.has(key)) return await inFlightRefreshes.get(key);
+    const scopedKey = getScopedKey(key);
+    if (inFlightRefreshes.has(scopedKey)) return await inFlightRefreshes.get(scopedKey);
 
     const refreshPromise = this.refresh(key, fetchFn)
-      .finally(() => inFlightRefreshes.delete(key));
-    inFlightRefreshes.set(key, refreshPromise);
+      .finally(() => inFlightRefreshes.delete(scopedKey));
+    inFlightRefreshes.set(scopedKey, refreshPromise);
     return await refreshPromise;
   },
   
@@ -190,11 +198,14 @@ export const dataCache = {
    * Forcibly fetch new data and update the cache
    */
   async refresh(key, fetchFn) {
+    const cacheOwner = getCacheOwner();
+    const scopedKey = getScopedKey(key);
     try {
       // Ensure UI knows we are syncing
       updateSyncStatus('syncing');
       const freshData = await fetchFn();
-      await putToDB(key, freshData);
+      if (getCacheOwner() !== cacheOwner) return freshData;
+      await putToDB(scopedKey, freshData);
       updateSyncStatus('synced');
       return freshData;
     } catch (err) {
@@ -206,7 +217,7 @@ export const dataCache = {
 
   async invalidate(key) {
     try {
-      await deleteFromDB(key);
+      await deleteFromDB(getScopedKey(key));
     } catch (e) {
       console.error(`[dataCache] Invalidate failed for ${key}`, e);
     }
@@ -215,8 +226,9 @@ export const dataCache = {
   async invalidatePrefix(prefix) {
     try {
       const keys = await getAllKeys();
+      const scopedPrefix = getScopedKey(prefix);
       await Promise.all(keys
-        .filter(key => String(key).startsWith(prefix))
+        .filter(key => String(key).startsWith(scopedPrefix))
         .map(key => deleteFromDB(key)));
     } catch (e) {
       console.error(`[dataCache] Prefix invalidate failed for ${prefix}`, e);
@@ -225,7 +237,7 @@ export const dataCache = {
 
   async set(key, data) {
     try {
-      await putToDB(key, data);
+      await putToDB(getScopedKey(key), data);
     } catch (e) {
       console.error(`[dataCache] Set failed for ${key}`, e);
     }

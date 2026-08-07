@@ -3,8 +3,13 @@ import { dataCache } from './dataCache.js';
 import { addMonthsPreservingDay, getRepaymentScheduleAnchorDate } from '../core/repaymentSchedule.js';
 import {
   filterLoansForCurrentOfficer,
+  getCurrentOfficerId,
+  getGroupOfficerId,
+  getMemberOfficerId,
   getOfficerScopeCacheKey,
+  getPortfolioRecordOfficerScopeFilter,
   paginateScopedItems,
+  shouldScopeOfficerData,
   shouldScopeToCurrentOfficer
 } from '../core/officerScope.js';
 import { allocateRepayment, getRepaymentContractAmount, getSettlementContractAmount } from '../core/repaymentAllocation.js';
@@ -36,9 +41,9 @@ const normalizeLoanStatusPayload = async (id, data) => {
     return payload;
   }
 
-  if (['completed', 'closed'].includes(payload.status)) {
+  if (['completed', 'closed', 'written_off'].includes(payload.status)) {
     if (!hasDisbursementDate) {
-      throw new Error('A loan must be disbursed before it can be completed or closed.');
+      throw new Error('A loan must be disbursed before it can be completed, closed, or written off.');
     }
     return payload;
   }
@@ -69,12 +74,14 @@ const getLoanOwnerLabel = (loan) => {
 };
 
 const buildRelationFilter = (field, ids) => ids.map(id => `${field}="${id}"`).join(' || ');
+const combineFilters = (...filters) => filters.filter(Boolean).map(filter => `(${filter})`).join(' && ');
 
 const invalidateLoanFinancialCaches = async () => {
   await dataCache.invalidate('loan_repayments');
   await dataCache.invalidatePrefix('loan_repayments:');
   await dataCache.invalidatePrefix('loan_repayments');
   await dataCache.invalidatePrefix('loan_balance_offs:');
+  await dataCache.invalidatePrefix('loan_write_offs:');
   await dataCache.invalidatePrefix('loans:');
   await dataCache.invalidatePrefix('loans:all:');
   await dataCache.invalidatePrefix('loans:analytics:');
@@ -88,15 +95,34 @@ export const loanService = {
    * Apply for a new loan
    */
   async apply(data) {
-    console.log('[loanService] Applying for loan:', data);
-    await this.validateMemberBorrowingEligibility(data.member, data.type, {
-      currentLoanNo: data.loan_no
+    const payload = { ...data };
+    if (shouldScopeToCurrentOfficer()) {
+      const officerId = getCurrentOfficerId();
+      let applicant;
+      if (payload.member) {
+        applicant = await pb.collection('members').getOne(payload.member);
+        if (getMemberOfficerId(applicant) !== officerId) {
+          throw new Error('You can only request loans for members assigned to your portfolio.');
+        }
+      } else if (payload.group) {
+        applicant = await pb.collection('groups').getOne(payload.group);
+        if (getGroupOfficerId(applicant) !== officerId) {
+          throw new Error('You can only request loans for groups assigned to your portfolio.');
+        }
+      } else {
+        throw new Error('Select a member or group assigned to your portfolio.');
+      }
+      payload.processed_by = officerId;
+    }
+    console.log('[loanService] Applying for loan:', payload);
+    await this.validateMemberBorrowingEligibility(payload.member, payload.type, {
+      currentLoanNo: payload.loan_no
     });
-    await this.validateGuarantorAvailability(data.guarantor?.id_number, {
-      applicantId: data.member || data.group || '',
-      currentLoanNo: data.loan_no
+    await this.validateGuarantorAvailability(payload.guarantor?.id_number, {
+      applicantId: payload.member || payload.group || '',
+      currentLoanNo: payload.loan_no
     });
-    const record = await pb.collection('loans').create(data);
+    const record = await pb.collection('loans').create(payload);
     await dataCache.invalidatePrefix('loans:');
     await dataCache.invalidatePrefix('group_summary:');
     await dataCache.invalidatePrefix('groups:profile:');
@@ -213,9 +239,9 @@ export const loanService = {
    * Get paginated list of loans
    */
   async getAll({ page = 1, perPage = 50, filter = '', sort = '-application_date' } = {}) {
-    if (shouldScopeToCurrentOfficer()) {
+    if (shouldScopeOfficerData()) {
       const items = filterLoansForCurrentOfficer(await pb.collection('loans').getFullList({
-        filter,
+        filter: combineFilters(filter, getPortfolioRecordOfficerScopeFilter()),
         sort,
         expand: 'member,member.group,group,processed_by'
       }));
@@ -236,10 +262,11 @@ export const loanService = {
   },
 
   async getFullListCached({ filter = '', sort = '-application_date', expand = 'member,member.group,group,processed_by', cacheKey = 'loans:all:expanded:v1' } = {}, onUpdate = null) {
-    const effectiveExpand = shouldScopeToCurrentOfficer() && !expand ? 'member,member.group,group,processed_by' : expand;
+    const effectiveExpand = shouldScopeOfficerData() && !expand ? 'member,member.group,group,processed_by' : expand;
     const key = `${cacheKey}:${getOfficerScopeCacheKey()}:${sort}:${filter}:${effectiveExpand}`;
     return await dataCache.getLocalFirst(key, async () => {
       const options = { filter, sort };
+      if (shouldScopeOfficerData()) options.filter = combineFilters(filter, getPortfolioRecordOfficerScopeFilter());
       if (effectiveExpand) options.expand = effectiveExpand;
       const loans = await pb.collection('loans').getFullList(options);
       return filterLoansForCurrentOfficer(loans);
@@ -247,9 +274,12 @@ export const loanService = {
   },
 
   async getFullListFresh({ filter = '', sort = '-application_date', expand = 'member,member.group,group,processed_by', cacheKey = 'loans:all:expanded:v1' } = {}) {
-    const effectiveExpand = shouldScopeToCurrentOfficer() && !expand ? 'member,member.group,group,processed_by' : expand;
+    const effectiveExpand = shouldScopeOfficerData() && !expand ? 'member,member.group,group,processed_by' : expand;
     const key = `${cacheKey}:${getOfficerScopeCacheKey()}:${sort}:${filter}:${effectiveExpand}`;
-    const options = { filter, sort };
+    const options = {
+      filter: shouldScopeOfficerData() ? combineFilters(filter, getPortfolioRecordOfficerScopeFilter()) : filter,
+      sort
+    };
     if (effectiveExpand) options.expand = effectiveExpand;
     return await dataCache.refresh(key, async () => filterLoansForCurrentOfficer(await pb.collection('loans').getFullList(options)));
   },
@@ -261,7 +291,7 @@ export const loanService = {
     const loan = await pb.collection('loans').getOne(id, {
       expand: 'member,member.group,group,processed_by'
     });
-    if (shouldScopeToCurrentOfficer() && filterLoansForCurrentOfficer([loan]).length === 0) {
+    if (shouldScopeOfficerData() && filterLoansForCurrentOfficer([loan]).length === 0) {
       throw new Error('You can only access loans assigned to your portfolio.');
     }
     return loan;
@@ -274,7 +304,7 @@ export const loanService = {
     const result = await pb.collection('loans').getFirstListItem(`loan_no="${loanNo}"`, {
       expand: 'member,member.group,group,processed_by'
     });
-    if (shouldScopeToCurrentOfficer() && filterLoansForCurrentOfficer([result]).length === 0) {
+    if (shouldScopeOfficerData() && filterLoansForCurrentOfficer([result]).length === 0) {
       throw new Error('You can only access loans assigned to your portfolio.');
     }
     return result;
@@ -429,6 +459,69 @@ export const loanService = {
       if (error?.status === 404) return [];
       throw error;
     });
+  },
+
+  async getWriteOffsForLoan(loanId) {
+    return await pb.collection('loan_write_offs').getFullList({
+      filter: `loan="${loanId}"`,
+      sort: '-effective_date',
+      expand: 'recorded_by'
+    }).catch(error => {
+      if (error?.status === 404) return [];
+      throw error;
+    });
+  },
+
+  async getWriteOffsFullList({ filter = '', sort = '-effective_date', expand = 'loan,member,group,recorded_by' } = {}) {
+    const options = { sort };
+    if (filter) options.filter = filter;
+    if (expand) options.expand = expand;
+    return await pb.collection('loan_write_offs').getFullList(options).catch(error => {
+      if (error?.status === 404) return [];
+      throw error;
+    });
+  },
+
+  async recordWriteOff({ loan, amount, principalAmount = 0, interestAmount = 0, fineAmount = 0, reasonCategory, reason, effectiveDate }) {
+    const role = pb.authStore.model?.role;
+    if (role !== 'super_admin') {
+      throw new Error('Only super admins can write off loans.');
+    }
+    if (!loan?.id || loan.status !== 'disbursed') {
+      throw new Error('Only running disbursed loans can be written off.');
+    }
+
+    const writeOffAmount = Math.max(0, Number(amount) || 0);
+    const category = String(reasonCategory || '').trim();
+    const note = String(reason || '').trim();
+    if (writeOffAmount <= 0) throw new Error('Write-off amount must be greater than zero.');
+    if (!category) throw new Error('Select a write-off reason category.');
+    if (note.length < 10) throw new Error('A detailed write-off reason is required.');
+
+    const userId = pb.authStore.model?.id;
+    const effectiveIso = effectiveDate || new Date().toISOString();
+    const writeOffRecord = await pb.collection('loan_write_offs').create({
+      loan: loan.id,
+      ...(loan.member ? { member: loan.member } : {}),
+      ...(loan.group ? { group: loan.group } : {}),
+      amount: writeOffAmount,
+      principal_amount: Math.max(0, Number(principalAmount) || 0),
+      interest_amount: Math.max(0, Number(interestAmount) || 0),
+      fine_amount: Math.max(0, Number(fineAmount) || 0),
+      reason_category: category,
+      reason: note,
+      effective_date: effectiveIso,
+      status: 'completed',
+      ...(userId ? { recorded_by: userId } : {})
+    });
+
+    await this.update(loan.id, {
+      status: 'written_off',
+      written_off_at: effectiveIso,
+      write_off_reason: `${category}: ${note}`
+    });
+    await invalidateLoanFinancialCaches();
+    return writeOffRecord;
   },
 
   async recordBalanceOff({ loan, amount, surchargeAmount = 0, reason, effectiveDate, availableSavings = null }) {

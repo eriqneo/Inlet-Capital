@@ -50,6 +50,7 @@ export const renderLoanList = async () => {
           <option value="awaiting">Awaiting Disbursement</option>
           <option value="declined">Declined</option>
           <option value="completed">Completed</option>
+          <option value="written_off">Written Off</option>
           <option value="all">All Loans</option>
         </select>
         <select id="loan-alpha-sort" class="form-control" style="max-width: 160px;">
@@ -145,7 +146,7 @@ export const renderLoanList = async () => {
             <div class="form-group">
               <label class="form-label">Status</label>
               <select name="status" class="form-control" required>
-                ${['pending','approved','partial_approved','disbursed','completed','closed','rejected','expired'].map(status => `<option value="${status}">${status.replace('_', ' ').toUpperCase()}</option>`).join('')}
+                ${['pending','approved','partial_approved','disbursed','completed','written_off','closed','rejected','expired'].map(status => `<option value="${status}">${status.replace('_', ' ').toUpperCase()}</option>`).join('')}
               </select>
             </div>
           </div>
@@ -186,7 +187,7 @@ export const renderLoanList = async () => {
     return date.toISOString().split('T')[0];
   };
   const toPocketDate = (dateValue) => dateValue ? new Date(`${dateValue}T12:00:00`).toISOString() : '';
-  const disbursedStatuses = ['disbursed', 'completed', 'closed'];
+  const disbursedStatuses = ['disbursed', 'completed', 'written_off', 'closed'];
   const getLoanRemarks = (loan) => loan.purpose || loan.remarks || loan.note || '';
   const getLoanClientName = (loan) => {
     const member = loan.expand?.member;
@@ -247,6 +248,8 @@ export const renderLoanList = async () => {
         filters.push('status="rejected"');
       } else if (statusFilter === 'completed') {
         filters.push('status="completed"');
+      } else if (statusFilter === 'written_off') {
+        filters.push('status="written_off"');
       }
       const pbFilter = filters.join(' && ');
 
@@ -281,6 +284,7 @@ export const renderLoanList = async () => {
             l.status === 'approved' ? 'AWAITING DISBURSEMENT' :
             l.status === 'partial_approved' ? 'PARTIAL AWAITING DISBURSEMENT' :
             l.status === 'rejected' ? 'DECLINED' :
+            l.status === 'written_off' ? 'WRITTEN OFF' :
             l.status.toUpperCase();
           
           return `
@@ -321,6 +325,7 @@ export const renderLoanList = async () => {
                 l.status === 'approved' ? 'badge-primary' :
                 l.status === 'partial_approved' ? 'badge-primary' :
                 l.status === 'pending' ? 'badge-warning' :
+                l.status === 'written_off' ? 'badge-danger' :
                 'badge-danger'
               }" style="${
                 l.status === 'approved' || l.status === 'partial_approved' ? 'background: #0d9488; color: white;' : ''

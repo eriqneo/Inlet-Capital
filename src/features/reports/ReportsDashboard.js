@@ -19,14 +19,14 @@ import {
   getLoanLiabilityAmount as getContractLiabilityAmount,
   getLoanPrincipalAmount as getContractPrincipalAmount
 } from '../../core/repaymentAllocation.js';
-import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
+import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, loadOfficerOptions, matchesOfficer, populateOfficerSelect, shouldScopeOfficerData } from '../../core/officerScope.js';
 import { createLoanPortfolioCalculator, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
 
 export const renderReportsDashboard = async () => {
   const container = document.createElement('div');
-  let members = [], groups = [], loans = [], expenses = [], schedules = [], savings = [], repayments = [];
+  let members = [], groups = [], loans = [], expenses = [], schedules = [], savings = [], repayments = [], settlements = [];
   let lifecycleGroups = [], lifecycleMembers = [];
-  let sourceMembers = [], sourceGroups = [], sourceLoans = [], sourceSchedules = [], sourceSavings = [], sourceRepayments = [];
+  let sourceMembers = [], sourceGroups = [], sourceLoans = [], sourceSchedules = [], sourceSavings = [], sourceRepayments = [], sourceSettlements = [];
   let sourceLifecycleGroups = [], sourceLifecycleMembers = [];
   let officerFilter = 'all';
   let repaymentsLoaded = false;
@@ -671,13 +671,16 @@ export const renderReportsDashboard = async () => {
     .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
   let portfolioCalculatorCache = null;
   let portfolioRepaymentsRef = null;
+  let portfolioSettlementsRef = null;
   let portfolioSchedulesRef = null;
   const getPortfolioCalculator = () => {
-    if (!portfolioCalculatorCache || portfolioRepaymentsRef !== repayments || portfolioSchedulesRef !== schedules) {
+    if (!portfolioCalculatorCache || portfolioRepaymentsRef !== repayments || portfolioSettlementsRef !== settlements || portfolioSchedulesRef !== schedules) {
       portfolioRepaymentsRef = repayments;
+      portfolioSettlementsRef = settlements;
       portfolioSchedulesRef = schedules;
       portfolioCalculatorCache = createLoanPortfolioCalculator({
         repayments,
+        settlements,
         schedules,
         penaltyAmount: automaticPenaltyAmount
       });
@@ -1935,6 +1938,7 @@ export const renderReportsDashboard = async () => {
     const loanIds = new Set(loans.map(loan => loan.id));
     schedules = sourceSchedules.filter(schedule => loanIds.has(getScheduleLoanId(schedule)));
     repayments = sourceRepayments.filter(repayment => loanIds.has(getRepaymentLoanId(repayment)));
+    settlements = sourceSettlements.filter(settlement => loanIds.has(getRelationId(settlement?.loan)));
   };
   const renderFullActiveReport = () => {
     isFullReportRender = true;
@@ -2228,7 +2232,9 @@ export const renderReportsDashboard = async () => {
         groupService.getAllIncludingLifecycle(),
         memberService.getAllIncludingLifecycle(),
         loanService.getFullListFresh({ expand: 'member,member.group,group,processed_by', cacheKey: 'loans:financial:expanded:v1' }),
-        dataCache.get('expenses', () => expenseService.getFullList())
+        shouldScopeOfficerData()
+          ? Promise.resolve([])
+          : dataCache.get('expenses', () => expenseService.getFullList())
       ]);
 
       applyOfficerScope();
@@ -2241,10 +2247,11 @@ export const renderReportsDashboard = async () => {
       updateDisbursements();
       updateRegistrations();
 
-      const [scheduleResult, savingsResult, repaymentResult] = await Promise.allSettled([
+      const [scheduleResult, savingsResult, repaymentResult, settlementResult] = await Promise.allSettled([
         pb.collection('loan_schedule').getFullList(),
         savingsService.getFullListCached({ expand: 'member,member.group,group', cacheKey: 'savings:reports:expanded:v2' }),
-        pb.collection('loan_repayments').getFullList({ expand: 'loan,loan.member,loan.group' })
+        pb.collection('loan_repayments').getFullList({ expand: 'loan,loan.member,loan.group' }),
+        loanService.getBalanceOffsFullList({ expand: '' })
       ]);
 
       if (scheduleResult.status === 'fulfilled') sourceSchedules = scheduleResult.value;
@@ -2259,6 +2266,8 @@ export const renderReportsDashboard = async () => {
         repaymentLoadError = repaymentResult.reason || new Error('Repayments could not be loaded');
         console.warn('[Reports] Loan repayments unavailable:', repaymentLoadError.message);
       }
+      if (settlementResult.status === 'fulfilled') sourceSettlements = settlementResult.value.filter(item => item.status !== 'reversed');
+      else console.warn('[Reports] Loan balance-offs unavailable:', settlementResult.reason?.message);
 
       applyOfficerScope();
 

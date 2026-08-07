@@ -1,5 +1,11 @@
 import { authService } from '../services/authService.js';
 import { settingsService } from '../services/settingsService.js';
+import {
+  canSeeAllOfficerData,
+  getGlobalOfficerFilter,
+  loadOfficerOptions,
+  setGlobalOfficerFilter
+} from '../core/officerScope.js';
 
 let cachedOrgSettings = null;
 let orgSettingsPromise = null;
@@ -49,6 +55,8 @@ export const renderHeader = async () => {
 
   const name = user ? user.name || user.email : 'User';
   const role = (user && user.role) ? user.role.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'No Role';
+  const showPortfolioFilter = canSeeAllOfficerData();
+  const selectedPortfolioOfficer = getGlobalOfficerFilter();
 
   header.innerHTML = `
     <div style="display: flex; align-items: center; gap: 12px;">
@@ -66,13 +74,55 @@ export const renderHeader = async () => {
         </div>
       </div>
     </div>
-    <div style="display: flex; align-items: center; gap: 16px;">
+    <div class="header-actions">
+      ${showPortfolioFilter ? `
+        <label class="global-portfolio-filter ${selectedPortfolioOfficer !== 'all' ? 'is-filtered' : ''}" for="global-officer-filter">
+          <span class="global-portfolio-label">Portfolio View</span>
+          <select id="global-officer-filter" class="global-portfolio-select" aria-label="Filter all client modules by loan officer">
+            <option value="all">All Loan Officers</option>
+          </select>
+        </label>
+      ` : ''}
       <div id="sync-status" class="badge" style="background: rgba(16, 185, 129, 0.1); color: var(--success); font-weight: 600; padding: 6px 12px; display: flex; align-items: center; gap: 6px;">
         <div style="width: 8px; height: 8px; border-radius: 50%; background: var(--success);"></div>
         Synced
       </div>
     </div>
   `;
+
+  const globalOfficerSelect = header.querySelector('#global-officer-filter');
+  if (globalOfficerSelect) {
+    loadOfficerOptions().then(options => {
+      const portfolioOfficers = options.filter(option => ['loan_officer', 'group_officer', 'manager'].includes(option.role));
+      globalOfficerSelect.innerHTML = '<option value="all">All Loan Officers</option>' + portfolioOfficers.map(option => {
+        const safeId = String(option.id).replace(/"/g, '&quot;');
+        const safeName = String(option.name).replace(/[&<>"']/g, char => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+        }[char]));
+        return `<option value="${safeId}">${safeName}</option>`;
+      }).join('');
+      const selectionExists = selectedPortfolioOfficer === 'all'
+        || portfolioOfficers.some(option => option.id === selectedPortfolioOfficer);
+      globalOfficerSelect.value = selectionExists ? selectedPortfolioOfficer : 'all';
+      if (!selectionExists) setGlobalOfficerFilter('all');
+    }).catch(err => {
+      console.warn('[Header] Portfolio officers unavailable:', err.message);
+      globalOfficerSelect.disabled = true;
+    });
+
+    globalOfficerSelect.onchange = () => {
+      const selectedOfficerId = setGlobalOfficerFilter(globalOfficerSelect.value);
+      const selectedName = globalOfficerSelect.selectedOptions[0]?.textContent || 'All Loan Officers';
+      globalOfficerSelect.closest('.global-portfolio-filter')?.classList.toggle('is-filtered', selectedOfficerId !== 'all');
+      document.querySelector('.sidebar [data-nav-path="#/loans"] .badge-counter')?.remove();
+      if (window.notify) {
+        window.notify.info(selectedOfficerId === 'all'
+          ? 'Portfolio view reset to all loan officers.'
+          : `Portfolio view changed to ${selectedName}.`);
+      }
+      window.dispatchEvent(new Event('hashchange'));
+    };
+  }
 
   // Sync status will be updated dynamically by syncManager later
   if (!navigator.onLine) {
