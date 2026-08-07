@@ -12,7 +12,9 @@ export const calculateLoanOutstandingBalance = ({
   settlements = [],
   schedules = [],
   penaltyAmount = 0,
-  includeOutstandingFines = true
+  includeOutstandingFines = true,
+  referenceDate = new Date(),
+  useRecordedSchedulePaid = true
 } = {}) => {
   if (!loan || !isDisbursedLoanRecord(loan)) return 0;
   if (isWrittenOffLoanRecord(loan)) return 0;
@@ -24,7 +26,14 @@ export const calculateLoanOutstandingBalance = ({
   const contractBalance = Math.max(0, liability - contractPaid);
   if (!includeOutstandingFines) return contractBalance;
 
-  const penaltyState = calculateLoanPenaltyState({ schedules, repayments, settlements, penaltyAmount });
+  const penaltyState = calculateLoanPenaltyState({
+    schedules,
+    repayments,
+    settlements,
+    penaltyAmount,
+    referenceDate,
+    useRecordedSchedulePaid
+  });
   return Math.max(0, contractBalance + penaltyState.outstandingFine);
 };
 
@@ -33,7 +42,9 @@ export const createLoanPortfolioCalculator = ({
   settlements = [],
   schedules = [],
   penaltyAmount = 0,
-  includeOutstandingFines = true
+  includeOutstandingFines = true,
+  referenceDate = new Date(),
+  useRecordedSchedulePaid = true
 } = {}) => {
   const repaymentsByLoan = new Map();
   repayments.forEach(repayment => {
@@ -67,7 +78,9 @@ export const createLoanPortfolioCalculator = ({
       settlements: settlementsByLoan.get(loan?.id) || [],
       schedules: schedulesByLoan.get(loan?.id) || [],
       penaltyAmount,
-      includeOutstandingFines
+      includeOutstandingFines,
+      referenceDate,
+      useRecordedSchedulePaid
     })
   };
 };

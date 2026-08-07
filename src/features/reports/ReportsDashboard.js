@@ -1301,11 +1301,11 @@ export const renderReportsDashboard = async () => {
           type: 'Loan Repayment',
           ...owner,
           ref: loan?.loan_no || r.loan || 'LOAN',
-          amount: Number(r.amount) || 0,
+          amount: getRepaymentPrincipalAmount(r),
           direction: 'in',
           method: r.method || r.payment_method || 'M-Pesa'
         };
-      }),
+      }).filter(entry => entry.amount > 0),
       ...repayments
         .filter(r => Number(r.fine_amount) > 0)
         .map(r => {

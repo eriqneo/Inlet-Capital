@@ -39,7 +39,8 @@ export const calculateLoanPenaltyState = ({
   repayments = [],
   settlements = [],
   penaltyAmount = 0,
-  referenceDate = new Date()
+  referenceDate = new Date(),
+  useRecordedSchedulePaid = true
 } = {}) => {
   const orderedSchedules = sortSchedules(schedules).map(schedule => ({
     schedule,
@@ -72,10 +73,12 @@ export const calculateLoanPenaltyState = ({
     }
   });
 
-  orderedSchedules.forEach(item => {
-    const recordedPaid = Number(item.schedule.paid) || 0;
-    if (recordedPaid > item.paid) item.paid = Math.min(item.amount, recordedPaid);
-  });
+  if (useRecordedSchedulePaid) {
+    orderedSchedules.forEach(item => {
+      const recordedPaid = Number(item.schedule.paid) || 0;
+      if (recordedPaid > item.paid) item.paid = Math.min(item.amount, recordedPaid);
+    });
+  }
 
   const today = startOfLocalDay(referenceDate);
   const scheduleStates = orderedSchedules.map(item => {

@@ -6,11 +6,16 @@ import { groupService } from '../../services/groupService.js';
 import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
 import { formatMoney, formatPercent } from '../../core/utils.js';
-import { getDaysInArrears, getScheduleArrearsAmount, getScheduleRemaining, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
+import { getDaysInArrears, getScheduleArrearsAmount, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
 import { canUseOfficerFilter, createOfficerScope, getGlobalOfficerFilter, getGroupOfficerId, getMemberOfficerId } from '../../core/officerScope.js';
 import { settingsService } from '../../services/settingsService.js';
 import { createLoanPortfolioCalculator, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
-import { getLoanLiabilityAmount, getLoanPrincipalAmount } from '../../core/repaymentAllocation.js';
+import {
+  getLoanLiabilityAmount,
+  getLoanPrincipalAmount,
+  getRepaymentContractAmount,
+  getSettlementContractAmount
+} from '../../core/repaymentAllocation.js';
 
 export const renderAnalyticsDashboard = async () => {
   const container = document.createElement('div');
@@ -76,6 +81,8 @@ export const renderAnalyticsDashboard = async () => {
     };
     const fromDate = dateRange.from ? new Date(`${dateRange.from}T00:00:00`) : null;
     const toDate = dateRange.to ? new Date(`${dateRange.to}T23:59:59.999`) : null;
+    const hasAnalyticsDateRange = Boolean(fromDate || toDate);
+    const snapshotDate = toDate || new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
     const isWithinDateRange = (value) => {
       if (!dateRange.from && !dateRange.to) return true;
       const date = toValidDate(value);
@@ -95,7 +102,8 @@ export const renderAnalyticsDashboard = async () => {
 
     // Filter datasets
     const fMembers = members.filter(m => isWithinDateRange(m.registration_date || m.created));
-    const fLoans = loans.filter(l => isWithinDateRange(l.application_date || l.disbursement_date || l.created));
+    const fLoans = loans.filter(l => isWithinDateRange(l.application_date || l.created));
+    const fDisbursedLoans = loans.filter(l => l.disbursement_date && isWithinDateRange(l.disbursement_date));
     const fRepayments = repayments.filter(r => isWithinDateRange(r.date || r.created));
     const fSavings = savings.filter(s => isWithinDateRange(s.date || s.created));
 
@@ -109,7 +117,6 @@ export const renderAnalyticsDashboard = async () => {
       '"': '&quot;',
       "'": '&#039;'
     }[char]));
-    const isActiveDisbursedLoan = (loan) => loan.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan.status) && loan.disbursement_date);
     const isGivenLoan = isDisbursedLoanRecord;
     const getOfficerName = (loan) => {
       const officer = loan.expand?.processed_by;
@@ -176,6 +183,9 @@ export const renderAnalyticsDashboard = async () => {
     };
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
     const getCollectionWindow = () => {
+      if (hasAnalyticsDateRange) {
+        return { label: 'Selected Period', start: fromDate, end: toDate, includeOverdue: false };
+      }
       const allowedWindows = ['overdue', 'all_upcoming', 'next_7_days', 'last_month', 'this_month', 'next_month'];
       if (!allowedWindows.includes(currentCollectionWindow)) {
         currentCollectionWindow = 'this_month';
@@ -210,8 +220,8 @@ export const renderAnalyticsDashboard = async () => {
     const collectionWindowRange = collectionWindow.start && collectionWindow.end
       ? `${formatShortDate(collectionWindow.start)} - ${formatShortDate(collectionWindow.end)}`
       : collectionWindow.end
-        ? `Before ${formatShortDate(todayStart)}`
-        : `From ${formatShortDate(todayStart)}`;
+        ? `Until ${formatShortDate(collectionWindow.end)}`
+        : `From ${formatShortDate(collectionWindow.start || todayStart)}`;
     const scheduleMatchesCollectionWindow = (schedule) => {
       const dueDate = new Date(schedule.due_date);
       if (Number.isNaN(dueDate.getTime())) return false;
@@ -230,7 +240,6 @@ export const renderAnalyticsDashboard = async () => {
     const scopedMembers = fMembers.filter(filterMemberByOfficer);
     const scopedSavings = fSavings.filter(filterSavingsByOfficer);
     const totalMembers = scopedMembers.length;
-    const activeLoans = fLoans.filter(l => isActiveDisbursedLoan(l) && filterByOfficer(l));
     const scopedLoans = fLoans.filter(filterByOfficer);
     const scopedRepayments = currentOfficerFilter === 'all'
       ? fRepayments
@@ -238,7 +247,22 @@ export const renderAnalyticsDashboard = async () => {
     const scopedSchedules = currentOfficerFilter === 'all'
       ? schedules
       : schedules.filter(s => loans.some(l => l.id === s.loan && filterByOfficer(l)));
-    const buildEffectiveSchedulePaidMap = () => {
+    const recordIsOnOrBeforeSnapshot = (record, fields = ['date', 'effective_date', 'created']) => {
+      const value = fields.map(field => record?.[field]).find(Boolean);
+      const recordDate = toValidDate(value);
+      return Boolean(recordDate && recordDate <= snapshotDate);
+    };
+    const snapshotRepayments = hasAnalyticsDateRange
+      ? repayments.filter(record => recordIsOnOrBeforeSnapshot(record))
+      : repayments;
+    const snapshotSettlements = hasAnalyticsDateRange
+      ? settlements.filter(record => recordIsOnOrBeforeSnapshot(record, ['effective_date', 'created']))
+      : settlements;
+    const buildEffectiveSchedulePaidMap = ({
+      repaymentRecords = repayments,
+      settlementRecords = settlements,
+      useRecordedPaid = true
+    } = {}) => {
       const schedulesByLoan = new Map();
       schedules.forEach(schedule => {
         if (!schedule.loan) return;
@@ -255,8 +279,8 @@ export const renderAnalyticsDashboard = async () => {
 
       const repaymentsByLoan = new Map();
       [
-        ...repayments,
-        ...settlements.map(settlement => ({
+        ...repaymentRecords,
+        ...settlementRecords.map(settlement => ({
           ...settlement,
           amount: Number(settlement.amount) || 0,
           date: settlement.effective_date || settlement.created
@@ -287,33 +311,47 @@ export const renderAnalyticsDashboard = async () => {
           }
         });
         loanSchedules.forEach(schedule => {
-          const recordedPaid = Number(schedule.paid) || 0;
+          const recordedPaid = useRecordedPaid ? (Number(schedule.paid) || 0) : 0;
           const allocatedPaid = allocated.get(schedule.id) || 0;
           paidMap.set(schedule.id, Math.min(Number(schedule.amount) || 0, Math.max(recordedPaid, allocatedPaid)));
         });
       });
       return paidMap;
     };
-    const effectiveSchedulePaidMap = buildEffectiveSchedulePaidMap();
+    const effectiveSchedulePaidMap = buildEffectiveSchedulePaidMap({
+      repaymentRecords: hasAnalyticsDateRange ? snapshotRepayments : repayments,
+      settlementRecords: hasAnalyticsDateRange ? snapshotSettlements : settlements,
+      useRecordedPaid: !hasAnalyticsDateRange
+    });
     const getEffectiveSchedulePaid = (schedule) => effectiveSchedulePaidMap.get(schedule.id) ?? Math.min(Number(schedule.amount) || 0, Math.max(0, Number(schedule.paid) || 0));
     const getEffectiveScheduleRemaining = (schedule) => Math.max(0, (Number(schedule.amount) || 0) - getEffectiveSchedulePaid(schedule));
     const portfolioCalculator = createLoanPortfolioCalculator({
-      repayments,
-      settlements,
+      repayments: snapshotRepayments,
+      settlements: snapshotSettlements,
       schedules,
-      penaltyAmount: automaticPenaltyAmount
+      penaltyAmount: automaticPenaltyAmount,
+      referenceDate: snapshotDate,
+      useRecordedSchedulePaid: !hasAnalyticsDateRange
     });
     const getLoanOutstandingBalance = portfolioCalculator.getOutstanding;
-    const outstandingPortfolioLoans = loans.filter(loan => (
-      isGivenLoan(loan)
-      && filterByOfficer(loan)
-      && getLoanOutstandingBalance(loan) > 0
-    ));
+    const snapshotLoans = loans
+      .filter(loan => {
+        const disbursedAt = toValidDate(loan.disbursement_date);
+        if (!disbursedAt || disbursedAt > snapshotDate || !filterByOfficer(loan)) return false;
+        if (loan.status !== 'written_off') return isGivenLoan(loan);
+        const writtenOffAt = toValidDate(loan.written_off_at);
+        return Boolean(writtenOffAt && writtenOffAt > snapshotDate);
+      })
+      .map(loan => loan.status === 'written_off' ? { ...loan, status: 'disbursed' } : loan);
+    const outstandingPortfolioLoans = snapshotLoans.filter(loan => getLoanOutstandingBalance(loan) > 0);
+    const activeLoans = outstandingPortfolioLoans;
     const loanPortfolio = outstandingPortfolioLoans.reduce(
       (sum, loan) => sum + getLoanOutstandingBalance(loan),
       0
     );
-    const totalDisbursedLoans = activeLoans.reduce((sum, l) => sum + getLoanPrincipal(l), 0);
+    const totalDisbursedLoans = fDisbursedLoans
+      .filter(filterByOfficer)
+      .reduce((sum, loan) => sum + getLoanPrincipal(loan), 0);
     const forecastSchedules = scopedSchedules
       .filter(schedule => {
         const loan = loansById.get(schedule.loan);
@@ -329,7 +367,6 @@ export const renderAnalyticsDashboard = async () => {
       ? Math.min(100, (scheduledPaidCollection / scheduledGrossCollection) * 100)
       : 0;
     const windowRepaymentRate = formatPercent(windowRepaymentRateNumber);
-    const expectedCollectionLoans = new Set(outstandingForecastSchedules.map(schedule => schedule.loan)).size;
     const expectedCollectionClients = new Set(outstandingForecastSchedules.map(schedule => {
       const loan = loansById.get(schedule.loan);
       return loan?.member || loan?.group || schedule.loan;
@@ -344,10 +381,13 @@ export const renderAnalyticsDashboard = async () => {
     const collectedInWindowByOfficer = collectionRepaymentsInWindow.reduce((map, repayment) => {
       const loan = loansById.get(repayment.loan);
       const officerKey = getLoanResponsibleOfficer(loan) || 'unassigned';
-      map.set(officerKey, (map.get(officerKey) || 0) + (Number(repayment.amount) || 0));
+      map.set(officerKey, (map.get(officerKey) || 0) + getRepaymentContractAmount(repayment));
       return map;
     }, new Map());
-    const collectedInWindowTotal = collectionRepaymentsInWindow.reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
+    const collectedInWindowTotal = collectionRepaymentsInWindow.reduce(
+      (sum, repayment) => sum + getRepaymentContractAmount(repayment),
+      0
+    );
     const collectionOfficerMap = {};
     forecastSchedules.forEach(schedule => {
       const loan = loansById.get(schedule.loan);
@@ -435,8 +475,21 @@ export const renderAnalyticsDashboard = async () => {
     const getGrowthHealth = (rate) => rate >= 0
       ? { color: 'var(--success)', label: `+${formatPercent(rate)}`, note: 'Growing' }
       : { color: 'var(--danger)', label: formatPercent(rate), note: 'Declining' };
-    const currentMonthBounds = getMonthBounds(0);
-    const previousMonthBounds = getMonthBounds(-1);
+    let currentMonthBounds = getMonthBounds(0);
+    let previousMonthBounds = getMonthBounds(-1);
+    let growthCurrentLabel = 'This month';
+    let growthPreviousLabel = 'last month';
+    if (hasAnalyticsDateRange) {
+      const selectedStart = fromDate || new Date(snapshotDate.getFullYear(), snapshotDate.getMonth(), 1);
+      const selectedEnd = toDate || snapshotDate;
+      const periodDuration = Math.max(1, selectedEnd.getTime() - selectedStart.getTime());
+      const comparisonEnd = new Date(selectedStart.getTime() - 1);
+      const comparisonStart = new Date(comparisonEnd.getTime() - periodDuration);
+      currentMonthBounds = { start: selectedStart, end: selectedEnd };
+      previousMonthBounds = { start: comparisonStart, end: comparisonEnd };
+      growthCurrentLabel = 'Selected period';
+      growthPreviousLabel = 'previous comparable period';
+    }
     const officerScopedSavingsAllTime = savings.filter(filterSavingsByOfficer);
     const officerScopedLoansAllTime = loans.filter(filterByOfficer);
     const getSavingsMovementForMonth = (bounds) => officerScopedSavingsAllTime
@@ -456,10 +509,21 @@ export const renderAnalyticsDashboard = async () => {
     const loanGrowthRate = calculateGrowthRate(currentMonthLoans, previousMonthLoans);
     const loanGrowthHealth = getGrowthHealth(loanGrowthRate);
     
-    const activeLoanIds = new Set(activeLoans.map(loan => loan.id));
-    const activeLoanRepayments = fRepayments.filter(repayment => activeLoanIds.has(repayment.loan));
-    const totalRepaid = activeLoanRepayments.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
-    const totalLiabilityOverall = activeLoans.reduce((sum, l) => sum + getLoanLiability(l), 0);
+    const snapshotLoanIds = new Set(snapshotLoans.map(loan => loan.id));
+    const paidByLoan = new Map();
+    snapshotRepayments.forEach(repayment => {
+      if (!snapshotLoanIds.has(repayment.loan)) return;
+      paidByLoan.set(repayment.loan, (paidByLoan.get(repayment.loan) || 0) + getRepaymentContractAmount(repayment));
+    });
+    snapshotSettlements.forEach(settlement => {
+      if (!snapshotLoanIds.has(settlement.loan)) return;
+      paidByLoan.set(settlement.loan, (paidByLoan.get(settlement.loan) || 0) + getSettlementContractAmount(settlement));
+    });
+    const totalLiabilityOverall = snapshotLoans.reduce((sum, loan) => sum + getLoanLiability(loan), 0);
+    const totalRepaid = snapshotLoans.reduce(
+      (sum, loan) => sum + Math.min(getLoanLiability(loan), paidByLoan.get(loan.id) || 0),
+      0
+    );
     const repaymentRateNumber = totalLiabilityOverall > 0 ? (totalRepaid / totalLiabilityOverall) * 100 : 0;
     const repaymentRate = formatPercent(repaymentRateNumber);
     const repaymentHealth = repaymentRateNumber <= 50
@@ -477,16 +541,16 @@ export const renderAnalyticsDashboard = async () => {
 
     // Real Trend logic (Members registered in current month vs total)
     const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-    const memberTrend = members.filter(m => filterMemberByOfficer(m) && m.registration_date && m.registration_date.startsWith(currentMonthKey)).length;
+    const memberTrend = hasAnalyticsDateRange
+      ? scopedMembers.length
+      : members.filter(m => filterMemberByOfficer(m) && m.registration_date && m.registration_date.startsWith(currentMonthKey)).length;
 
     // Compute Top Borrowers (Fixed Top 5) using filtered active loans and all repayments for those loans
     const borrowerMap = {};
     activeLoans.forEach(l => {
        const id = l.member || l.group;
        if (!borrowerMap[id]) borrowerMap[id] = 0;
-       borrowerMap[id] += getLoanLiability(l);
-       const reps = repayments.filter(r => r.loan === l.id).reduce((sum, r) => sum + r.amount, 0);
-       borrowerMap[id] -= reps;
+       borrowerMap[id] += getLoanOutstandingBalance(l);
     });
     
     const topBorrowers = Object.keys(borrowerMap)
@@ -504,10 +568,17 @@ export const renderAnalyticsDashboard = async () => {
     const arrearsMap = {};
     let totalArrearsGlobal = 0;
     
-    scopedSchedules.filter(s => isScheduleInArrears(s, today)).forEach(s => {
-       const loan = loans.find(l => l.id === s.loan);
-       if (loan && isActiveDisbursedLoan(loan)) {
-          const arrearsAmount = getScheduleArrearsAmount(s, today);
+    const snapshotLoansById = new Map(snapshotLoans.map(loan => [loan.id, loan]));
+    scopedSchedules.forEach(s => {
+       const effectivePaid = getEffectiveSchedulePaid(s);
+       const historicalSchedule = {
+         ...s,
+         paid: effectivePaid,
+         status: effectivePaid >= (Number(s.amount) || 0) ? 'paid' : 'pending'
+       };
+       const loan = snapshotLoansById.get(s.loan);
+       if (loan && isScheduleInArrears(historicalSchedule, snapshotDate)) {
+          const arrearsAmount = getScheduleArrearsAmount(historicalSchedule, snapshotDate);
           totalArrearsGlobal += arrearsAmount;
           const id = loan.member || loan.group;
           if (!arrearsMap[id]) arrearsMap[id] = { name: '', id: '', amount: 0, daysOverdue: 0 };
@@ -516,7 +587,7 @@ export const renderAnalyticsDashboard = async () => {
           arrearsMap[id].name = member ? member.full_name : (group ? group.name : 'Unknown');
           arrearsMap[id].id = member?.reg_no || group?.group_id || id;
           arrearsMap[id].amount += arrearsAmount;
-          const daysOverdue = getDaysInArrears(s, today);
+          const daysOverdue = getDaysInArrears(historicalSchedule, snapshotDate);
           if (daysOverdue > arrearsMap[id].daysOverdue) {
              arrearsMap[id].daysOverdue = daysOverdue;
           }
@@ -542,19 +613,25 @@ export const renderAnalyticsDashboard = async () => {
           ` : ''}
           <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
             <label class="text-xs text-muted" for="analytics-date-from">From</label>
-            <input type="date" id="analytics-date-from" class="form-control" value="${dateRange.from}" style="width: 145px;" />
+            <input type="date" id="analytics-date-from" class="form-control" value="${dateRange.from}" ${dateRange.to ? `max="${dateRange.to}"` : ''} style="width: 145px;" />
             <label class="text-xs text-muted" for="analytics-date-to">To</label>
-            <input type="date" id="analytics-date-to" class="form-control" value="${dateRange.to}" style="width: 145px;" />
+            <input type="date" id="analytics-date-to" class="form-control" value="${dateRange.to}" ${dateRange.from ? `min="${dateRange.from}"` : ''} style="width: 145px;" />
             <button type="button" class="btn btn-outline btn-sm" id="analytics-date-clear" style="font-size: 0.75rem;">Clear</button>
           </div>
-          <select id="collection-window-filter" class="form-control" style="width: auto; min-width: 170px;">
-            <option value="overdue" ${currentCollectionWindow === 'overdue' ? 'selected' : ''}>Collections: Overdue</option>
-            <option value="all_upcoming" ${currentCollectionWindow === 'all_upcoming' ? 'selected' : ''}>Collections: All Upcoming</option>
-            <option value="next_7_days" ${currentCollectionWindow === 'next_7_days' ? 'selected' : ''}>Collections: Next 7 Days</option>
-            <option value="last_month" ${currentCollectionWindow === 'last_month' ? 'selected' : ''}>Collections: Last Month</option>
-            <option value="this_month" ${currentCollectionWindow === 'this_month' ? 'selected' : ''}>Collections: This Month</option>
-            <option value="next_month" ${currentCollectionWindow === 'next_month' ? 'selected' : ''}>Collections: Next Month</option>
-          </select>
+          ${hasAnalyticsDateRange ? `
+            <select id="collection-window-filter" class="form-control" style="width: auto; min-width: 190px;" disabled title="Clear the custom date range to use collection presets">
+              <option>Collections: Selected Period</option>
+            </select>
+          ` : `
+            <select id="collection-window-filter" class="form-control" style="width: auto; min-width: 170px;">
+              <option value="overdue" ${currentCollectionWindow === 'overdue' ? 'selected' : ''}>Collections: Overdue</option>
+              <option value="all_upcoming" ${currentCollectionWindow === 'all_upcoming' ? 'selected' : ''}>Collections: All Upcoming</option>
+              <option value="next_7_days" ${currentCollectionWindow === 'next_7_days' ? 'selected' : ''}>Collections: Next 7 Days</option>
+              <option value="last_month" ${currentCollectionWindow === 'last_month' ? 'selected' : ''}>Collections: Last Month</option>
+              <option value="this_month" ${currentCollectionWindow === 'this_month' ? 'selected' : ''}>Collections: This Month</option>
+              <option value="next_month" ${currentCollectionWindow === 'next_month' ? 'selected' : ''}>Collections: Next Month</option>
+            </select>
+          `}
         </div>
       </div>
 
@@ -568,25 +645,25 @@ export const renderAnalyticsDashboard = async () => {
           <div class="kpi-icon" style="background: rgba(27, 61, 114, 0.1); color: var(--primary);">👥</div>
           <div class="kpi-label">Total Members</div>
           <div class="kpi-value">${totalMembers}</div>
-          <div class="kpi-trend trend-up">↑ +${memberTrend} this month</div>
+          <div class="kpi-trend trend-up">+${memberTrend} ${hasAnalyticsDateRange ? 'registered in period' : 'this month'}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(232, 105, 42, 0.1); color: var(--secondary);">💰</div>
           <div class="kpi-label">Active Loan Portfolio</div>
           <div class="kpi-value">KES ${formatMoney(loanPortfolio)}</div>
-          <div class="kpi-trend trend-up">Outstanding balance after repayments</div>
+          <div class="kpi-trend trend-up">Outstanding as at ${formatShortDate(snapshotDate)}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(42, 90, 158, 0.1); color: var(--primary-light);">💵</div>
           <div class="kpi-label">Total Disbursed Loans</div>
           <div class="kpi-value">KES ${formatMoney(totalDisbursedLoans)}</div>
-          <div class="kpi-trend trend-up">Principal disbursed only</div>
+          <div class="kpi-trend trend-up">Principal disbursed ${hasAnalyticsDateRange ? 'in selected period' : 'all time'}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(232, 105, 42, 0.1); color: var(--secondary);">📈</div>
           <div class="kpi-label">Loan Growth</div>
           <div class="kpi-value" style="color: ${loanGrowthHealth.color};">${loanGrowthHealth.label}</div>
-          <div class="kpi-trend" style="color: ${loanGrowthHealth.color};">${loanGrowthHealth.note} · This month KES ${formatMoney(currentMonthLoans)} vs last month KES ${formatMoney(previousMonthLoans)}</div>
+          <div class="kpi-trend" style="color: ${loanGrowthHealth.color};">${loanGrowthHealth.note} · ${growthCurrentLabel} KES ${formatMoney(currentMonthLoans)} vs ${growthPreviousLabel} KES ${formatMoney(previousMonthLoans)}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(13, 148, 136, 0.1); color: #0d9488;">🧾</div>
@@ -608,27 +685,27 @@ export const renderAnalyticsDashboard = async () => {
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(16, 185, 129, 0.1); color: var(--success);">🏦</div>
-          <div class="kpi-label">Total Savings Base</div>
+          <div class="kpi-label">${hasAnalyticsDateRange ? 'Net Savings Movement' : 'Total Savings Base'}</div>
           <div class="kpi-value">KES ${formatMoney(totalSavings)}</div>
-          <div class="kpi-trend trend-up">${currentOfficerFilter === 'all' ? 'System Liquidity' : 'Savings from assigned clients'}</div>
+          <div class="kpi-trend trend-up">${hasAnalyticsDateRange ? 'Deposits less withdrawals in selected period' : (currentOfficerFilter === 'all' ? 'System Liquidity' : 'Savings from assigned clients')}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(16, 185, 129, 0.1); color: var(--success);">📊</div>
           <div class="kpi-label">Savings Growth</div>
           <div class="kpi-value" style="color: ${savingsGrowthHealth.color};">${savingsGrowthHealth.label}</div>
-          <div class="kpi-trend" style="color: ${savingsGrowthHealth.color};">${savingsGrowthHealth.note} · This month KES ${formatMoney(currentMonthSavings)} vs last month KES ${formatMoney(previousMonthSavings)}</div>
+          <div class="kpi-trend" style="color: ${savingsGrowthHealth.color};">${savingsGrowthHealth.note} · ${growthCurrentLabel} KES ${formatMoney(currentMonthSavings)} vs ${growthPreviousLabel} KES ${formatMoney(previousMonthSavings)}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(201, 168, 76, 0.1); color: var(--accent);">✅</div>
           <div class="kpi-label">Global Repayment Rate</div>
           <div class="kpi-value">${repaymentRate}</div>
-          <div class="kpi-trend" style="color: ${repaymentHealth.color};">${repaymentHealth.label}</div>
+          <div class="kpi-trend" style="color: ${repaymentHealth.color};">${repaymentHealth.label} · Portfolio position as at ${formatShortDate(snapshotDate)}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(239, 68, 68, 0.1); color: var(--danger);">⚠️</div>
           <div class="kpi-label">Total Arrears</div>
           <div class="kpi-value">KES ${formatMoney(totalArrearsGlobal)}</div>
-          <div class="kpi-trend trend-down">Amount Overdue</div>
+          <div class="kpi-trend trend-down">Amount overdue as at ${formatShortDate(snapshotDate)}</div>
         </div>
       </div>
 
@@ -952,7 +1029,7 @@ export const renderAnalyticsDashboard = async () => {
     const repaymentData = monthKeys.map(mk => {
       return fRepayments
         .filter(r => r.date && r.date.startsWith(mk))
-        .reduce((sum, r) => sum + r.amount, 0);
+        .reduce((sum, repayment) => sum + getRepaymentContractAmount(repayment), 0);
     });
 
     const canvas2 = document.getElementById('repaymentBarChart');
