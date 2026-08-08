@@ -10,6 +10,7 @@ import { getArrearsTotal, getScheduleRemaining, isScheduleInArrears, isScheduleP
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
 import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
 import { createLoanPortfolioCalculator } from '../../core/loanPortfolio.js';
+import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
 
 export const renderDashboard = async () => {
   const container = document.createElement('div');
@@ -171,6 +172,10 @@ export const renderDashboard = async () => {
       safe('loan repayments', () => dataCache.getLocalFirst('loan_repayments:dashboard:all', () => pb.collection('loan_repayments').getFullList()), []),
       safe('loan balance-offs', () => loanService.getBalanceOffsFullList({ expand: '' }), [])
     ]);
+
+    const portfolioMemberIds = getPortfolioMemberIds(members);
+    loans = filterPortfolioFinancialRecords(loans, portfolioMemberIds);
+    savings = filterPortfolioFinancialRecords(savings, portfolioMemberIds);
 
     if (canUseOfficerFilter()) {
       officerOptions = await loadOfficerOptions({ members, groups, loans });

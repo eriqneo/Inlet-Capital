@@ -44,6 +44,7 @@ export const renderGroupProfile = async (params) => {
 
   const groupProfileRoute = `#/groups/${id}`;
   const canManageRecords = authService.hasRole('super_admin', 'admin');
+  const canManageLifecycle = authService.hasRole('super_admin');
   if (String(group.status || '').toLowerCase() === 'suspended') {
     container.innerHTML = `
       <div class="card text-center" style="max-width: 560px; margin: 40px auto; border-top: 4px solid var(--warning);">
@@ -287,7 +288,7 @@ export const renderGroupProfile = async (params) => {
     allGroupMembers = await dataCache.getLocalFirst(
       `groups:profile:${officerScopeKey}:${id}:members:v3`,
       async () => sortMembersByGroupJoinedAsc(await pb.collection('members').getFullList({
-        filter: `group="${id}"`,
+        filter: `group="${id}" && status!="closed"`,
         sort: 'group_joined_at,created',
         expand: 'group'
       })),
@@ -321,7 +322,14 @@ export const renderGroupProfile = async (params) => {
     ]);
   } catch (e) { console.warn('[GroupProfile] Batch loans/savings fetch:', e.message); }
 
-  const activeLoansForProfile = groupLoans.filter(l => isCollectibleLoan(l) || ['completed', 'closed'].includes(l.status));
+  const isSuspendedMember = (member) => String(member?.status || '').toLowerCase() === 'suspended';
+  const activeGroupMembers = allGroupMembers.filter(member => !isSuspendedMember(member));
+  const activeGroupMemberIds = new Set(activeGroupMembers.map(member => member.id));
+  const isActiveMemberFinancialRecord = (record) => !record.member || activeGroupMemberIds.has(record.member);
+  const financialGroupLoans = groupLoans.filter(isActiveMemberFinancialRecord);
+  const financialGroupSavings = groupSavings.filter(isActiveMemberFinancialRecord);
+
+  const activeLoansForProfile = financialGroupLoans.filter(l => isCollectibleLoan(l) || ['completed', 'closed'].includes(l.status));
   const activeLoanIds = new Set(activeLoansForProfile.map(l => l.id));
 
   if (activeLoanIds.size > 0) {
@@ -412,13 +420,14 @@ export const renderGroupProfile = async (params) => {
   });
 
   // Aggregate group savings
-  const totalMemberSavings = enrichedMembers.reduce((sum, m) => sum + m.totalSavings, 0);
-  const groupAccountSavings = calculateSavingsTotal(groupSavings.filter(s => !s.member));
+  const activeEnrichedMembers = enrichedMembers.filter(member => !isSuspendedMember(member));
+  const totalMemberSavings = activeEnrichedMembers.reduce((sum, m) => sum + m.totalSavings, 0);
+  const groupAccountSavings = calculateSavingsTotal(financialGroupSavings.filter(s => !s.member));
   let totalGroupSavings = totalMemberSavings + groupAccountSavings;
-  const initialSavingsMovement = calculateSavingsMovement(groupSavings);
+  const initialSavingsMovement = calculateSavingsMovement(financialGroupSavings);
 
   // Group-level loan arrears
-  const activeGroupLoans = groupLoans.filter(l => !l.member && isCollectibleLoan(l));
+  const activeGroupLoans = financialGroupLoans.filter(l => !l.member && isCollectibleLoan(l));
   const activeGroupLoanIds = new Set(activeGroupLoans.map(gl => gl.id));
   const groupLevelArrears = allSchedules
     .filter(s => activeGroupLoanIds.has(s.loan) && isScheduleInArrears(s))
@@ -426,21 +435,21 @@ export const renderGroupProfile = async (params) => {
   totalGroupArrears += groupLevelArrears;
 
   // Calculate totals from enrichedMembers
-  for (const m of enrichedMembers) {
+  for (const m of activeEnrichedMembers) {
     totalGroupArrears += m.totalArrears;
     if (m.totalArrears > 0) membersInArrearsCount++;
     if (!m.isActive) inactiveMembersCount++;
   }
-  let totalOutstandingLoan = calculateOutstandingLoanBalance(groupLoans, allRepayments, allBalanceOffs);
-  const thisMonthCollectionsExpected = calculateThisMonthCollectionsExpected(groupLoans, allSchedules, allRepayments, allBalanceOffs);
-  const activeLoanPortfolio = calculateActiveLoanPortfolio(groupLoans);
+  let totalOutstandingLoan = calculateOutstandingLoanBalance(financialGroupLoans, allRepayments, allBalanceOffs);
+  const thisMonthCollectionsExpected = calculateThisMonthCollectionsExpected(financialGroupLoans, allSchedules, allRepayments, allBalanceOffs);
+  const activeLoanPortfolio = calculateActiveLoanPortfolio(financialGroupLoans);
   const groupParRateNumber = activeLoanPortfolio > 0 ? (totalGroupArrears / activeLoanPortfolio) * 100 : 0;
   const groupParHealth = getParHealth(groupParRateNumber);
-  const savedThisCycleCount = enrichedMembers.filter(member => member.savedThisCycle).length;
-  const savingsParticipationRate = enrichedMembers.length > 0
-    ? (savedThisCycleCount / enrichedMembers.length) * 100
+  const savedThisCycleCount = activeEnrichedMembers.filter(member => member.savedThisCycle).length;
+  const savingsParticipationRate = activeEnrichedMembers.length > 0
+    ? (savedThisCycleCount / activeEnrichedMembers.length) * 100
     : 0;
-  const autoPerformanceRating = enrichedMembers.length === 0 ? 0
+  const autoPerformanceRating = activeEnrichedMembers.length === 0 ? 0
     : savingsParticipationRate === 100 ? 5
       : savingsParticipationRate >= 80 ? 4
         : savingsParticipationRate >= 60 ? 3
@@ -462,7 +471,7 @@ export const renderGroupProfile = async (params) => {
         ? 'var(--danger)'
         : 'var(--text-muted)';
   const computedSummarySnapshot = {
-    member_count: allGroupMembers.length,
+    member_count: activeGroupMembers.length,
     total_savings: totalGroupSavings,
     outstanding_loan: totalOutstandingLoan,
     total_arrears: totalGroupArrears,
@@ -666,6 +675,8 @@ export const renderGroupProfile = async (params) => {
       .member-picker-option:last-child { border-bottom: none; }
       .member-picker-option:hover, .member-picker-option.selected { background: rgba(27, 61, 114, 0.06); }
       .member-picker-empty { padding: 18px; text-align: center; color: var(--text-muted); font-size: 0.875rem; }
+      .group-member-suspended { background: rgba(245, 158, 11, 0.055); }
+      .group-member-suspended-identity { text-decoration: line-through; text-decoration-thickness: 1px; text-decoration-color: var(--warning); opacity: 0.75; }
       @media (max-width: 900px) {
         .group-filter-card > div { grid-template-columns: 1fr !important; }
       }
@@ -873,6 +884,7 @@ export const renderGroupProfile = async (params) => {
     const scope = accountScopeSelect?.value || 'all';
     if (scope === 'groups') return [];
     return enrichedMembers.filter(m => {
+      if (isSuspendedMember(m)) return false;
       if (currentMemberStatusFilter === 'arrears' && getMemberArrears(m) <= 0) return false;
       if (currentMemberStatusFilter === 'inactive' && m.isActive) return false;
       if (!query) return true;
@@ -922,6 +934,7 @@ export const renderGroupProfile = async (params) => {
     const scope = accountScopeSelect?.value || 'all';
     if (scope === 'groups') return !record.member;
     if (!record.member) return scopeIncludesGroupAccount();
+    if (!activeGroupMemberIds.has(record.member)) return false;
     const allowedMemberIds = new Set(getFilteredMembers().map(m => m.id));
     return allowedMemberIds.has(record.member);
   };
@@ -941,7 +954,7 @@ export const renderGroupProfile = async (params) => {
   };
 
   const updateFilteredKpis = () => {
-    const filteredMembers = getFilteredMembers();
+    const filteredMembers = getFilteredMembers().filter(member => !isSuspendedMember(member));
     const filteredLoans = getFilteredLoans();
     const filteredSavings = getFilteredSavings();
     const filteredRepayments = getFilteredRepayments();
@@ -1020,19 +1033,42 @@ export const renderGroupProfile = async (params) => {
       const totalArrears = getMemberArrears(m);
       const olBalance = getMemberOlBalance(m);
       return `
-      <tr>
-        <td><div class="font-semibold">${m.full_name}</div><div class="text-xs text-muted">${m.reg_no}</div></td>
+      <tr class="${isSuspendedMember(m) ? 'group-member-suspended' : ''}">
+        <td><div class="font-semibold ${isSuspendedMember(m) ? 'group-member-suspended-identity' : ''}">${m.full_name}</div><div class="text-xs text-muted ${isSuspendedMember(m) ? 'group-member-suspended-identity' : ''}">${m.reg_no}</div></td>
         <td>${m.phone_number || m.phone || '-'}</td>
         <td class="font-semibold text-success">${formatMoney(m.totalSavings)}</td>
         <td class="font-semibold text-primary">${formatMoney(olBalance)}</td>
         <td class="font-semibold text-danger">${formatMoney(totalArrears)}</td>
         <td><span class="badge ${totalArrears > 0 ? 'badge-warning' : 'badge-outline'}" style="font-size: 0.65rem;">${totalArrears > 0 ? 'YES' : 'NO'}</span></td>
-        <td><span class="badge ${m.isActive ? 'badge-success' : 'badge-danger'}">${m.isActive ? 'ACTIVE' : 'INACTIVE'}</span></td>
+        <td><span class="badge ${isSuspendedMember(m) ? 'badge-warning' : (m.isActive ? 'badge-success' : 'badge-danger')}">${isSuspendedMember(m) ? 'SUSPENDED' : (m.isActive ? 'ACTIVE' : 'INACTIVE')}</span>${isSuspendedMember(m) ? '<div class="text-xs text-muted" style="margin-top:4px;">Excluded from portfolio</div>' : ''}</td>
         <td><span class="text-sm ${m.isActive ? 'text-muted' : 'text-danger font-semibold'}">${m.lastSavingsDate ? formatDate(m.lastSavingsDate) : 'Never'}</span></td>
-        <td><button class="btn btn-outline btn-sm" onclick="window.location.hash = '${withReturnTo(`#/members/${m.reg_no}`, groupProfileRoute)}'">View</button></td>
+        <td><div style="display:flex; gap:6px; flex-wrap:wrap;"><button class="btn btn-outline btn-sm" onclick="window.location.hash = '${withReturnTo(`#/members/${m.reg_no}`, groupProfileRoute)}'">View</button>${isSuspendedMember(m) && canManageLifecycle ? `<button type="button" class="btn btn-primary btn-sm group-member-reinstate-btn" data-id="${m.id}" data-name="${escapeHtml(m.full_name || 'Member')}">Reinstate</button>` : ''}</div></td>
       </tr>
     `;
     }).join('');
+
+    tbody.querySelectorAll('.group-member-reinstate-btn').forEach(btn => {
+      btn.onclick = async () => {
+        if (!canManageLifecycle) return;
+        const confirmed = window.confirmDialog ? await window.confirmDialog({
+          title: 'Reinstate Member',
+          message: `Reinstate ${btn.dataset.name}? Their financial records will return to this group's active portfolio calculations.`,
+          confirmText: 'Reinstate Member',
+          cancelText: 'Cancel',
+          type: 'info'
+        }) : confirm(`Reinstate ${btn.dataset.name}?`);
+        if (!confirmed) return;
+        const restoreButton = setButtonLoading(btn, 'Reinstating...');
+        try {
+          await memberService.revive(btn.dataset.id);
+          if (window.notify) window.notify.success('Member reinstated and returned to the group portfolio.');
+          navigate(`#/groups/${id}?refresh=${Date.now()}`);
+        } catch (err) {
+          restoreButton();
+          if (window.notify) window.notify.error('Failed to reinstate member: ' + (err.message || 'Please try again.'));
+        }
+      };
+    });
   };
 
   const filterBtns = { all: container.querySelector('#filter-all-btn'), arrears: container.querySelector('#filter-arrears-btn'), inactive: container.querySelector('#filter-inactive-btn') };
@@ -1137,7 +1173,7 @@ export const renderGroupProfile = async (params) => {
   const fetchAndRenderMembers = async () => {
     try {
       const freshMembers = sortMembersByGroupJoinedAsc(await pb.collection('members').getFullList({
-        filter: `group="${id}"`,
+        filter: `group="${id}" && status!="closed"`,
         sort: 'group_joined_at,created',
         expand: 'group'
       }));
@@ -1161,6 +1197,7 @@ export const renderGroupProfile = async (params) => {
         expand: 'member,member.group,group,processed_by'
       });
       const activeLoanIds = groupLoans
+        .filter(isActiveMemberFinancialRecord)
         .filter(l => isCollectibleLoan(l) || ['completed', 'closed'].includes(l.status))
         .map(l => l.id);
       allRepayments = activeLoanIds.length > 0
@@ -1187,7 +1224,7 @@ export const renderGroupProfile = async (params) => {
         dataCache.set(`groups:profile:${id}:schedule:v2`, allSchedules),
         dataCache.set(`groups:profile:${id}:balanceoffs:v1`, allBalanceOffs)
       ]);
-      totalOutstandingLoan = calculateOutstandingLoanBalance(groupLoans, allRepayments, allBalanceOffs);
+      totalOutstandingLoan = calculateOutstandingLoanBalance(groupLoans.filter(isActiveMemberFinancialRecord), allRepayments, allBalanceOffs);
       allFinancialLoansSorted.length = 0;
       allFinancialLoansSorted.push(...groupLoans.sort((a, b) => new Date(b.application_date) - new Date(a.application_date)));
       refreshFilteredViews();
@@ -1204,7 +1241,7 @@ export const renderGroupProfile = async (params) => {
       await dataCache.set(`groups:profile:${id}:savings:v3`, groupSavings);
       allFinancialSavingsSorted.length = 0;
       allFinancialSavingsSorted.push(...groupSavings.sort((a, b) => new Date(b.date) - new Date(a.date)));
-      totalGroupSavings = calculateSavingsTotal(groupSavings);
+      totalGroupSavings = calculateSavingsTotal(groupSavings.filter(isActiveMemberFinancialRecord));
       refreshFilteredViews();
     } catch(e) {}
   };

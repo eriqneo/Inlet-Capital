@@ -21,6 +21,7 @@ import {
 } from '../../core/repaymentAllocation.js';
 import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, loadOfficerOptions, matchesOfficer, populateOfficerSelect, shouldScopeOfficerData } from '../../core/officerScope.js';
 import { createLoanPortfolioCalculator, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
+import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
 
 export const renderReportsDashboard = async () => {
   const container = document.createElement('div');
@@ -1744,7 +1745,9 @@ export const renderReportsDashboard = async () => {
           } else {
             await memberService.revive(recordId);
             lifecycleMembers = lifecycleMembers.map(member => member.id === recordId ? { ...member, status: 'active' } : member);
-            members = members.map(member => member.id === recordId ? { ...member, status: 'active' } : member);
+            const revivedMember = lifecycleMembers.find(member => member.id === recordId);
+            if (revivedMember && !sourceMembers.some(member => member.id === recordId)) sourceMembers = [...sourceMembers, revivedMember];
+            applyOfficerScope();
           }
           if (window.notify) window.notify.success(`${recordType === 'group' ? 'Group' : 'Member'} revived.`);
           updateLifecycle();
@@ -1929,12 +1932,15 @@ export const renderReportsDashboard = async () => {
   };
   const applyOfficerScope = () => {
     const scope = createOfficerScope({ members: sourceMembers, groups: sourceGroups });
+    const portfolioMemberIds = getPortfolioMemberIds(sourceMembers);
+    const portfolioLoans = filterPortfolioFinancialRecords(sourceLoans, portfolioMemberIds);
+    const portfolioSavings = filterPortfolioFinancialRecords(sourceSavings, portfolioMemberIds);
     members = sourceMembers.filter(member => matchesOfficer(getMemberOfficerId(member), officerFilter));
     groups = sourceGroups.filter(group => matchesOfficer(getGroupOfficerId(group), officerFilter));
     lifecycleMembers = sourceLifecycleMembers.filter(member => matchesOfficer(getMemberOfficerId(member), officerFilter));
     lifecycleGroups = sourceLifecycleGroups.filter(group => matchesOfficer(getGroupOfficerId(group), officerFilter));
-    loans = sourceLoans.filter(loan => matchesOfficer(scope.getLoanOfficerId(loan), officerFilter));
-    savings = sourceSavings.filter(saving => matchesOfficer(scope.getSavingOfficerId(saving), officerFilter));
+    loans = portfolioLoans.filter(loan => matchesOfficer(scope.getLoanOfficerId(loan), officerFilter));
+    savings = portfolioSavings.filter(saving => matchesOfficer(scope.getSavingOfficerId(saving), officerFilter));
     const loanIds = new Set(loans.map(loan => loan.id));
     schedules = sourceSchedules.filter(schedule => loanIds.has(getScheduleLoanId(schedule)));
     repayments = sourceRepayments.filter(repayment => loanIds.has(getRepaymentLoanId(repayment)));

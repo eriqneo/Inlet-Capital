@@ -10,6 +10,7 @@ import { calculateLoanPenaltyState, getRepaymentPrincipalAmount } from '../../co
 import { getReturnTo } from '../../core/navigation.js';
 import { memberCommentService } from '../../services/memberCommentService.js';
 import { allocateRepayment, getRepaymentContractAmount, getSettlementContractAmount } from '../../core/repaymentAllocation.js';
+import { openCamera } from '../../components/Camera.js';
 
 export const renderLoanDetails = async (params) => {
   const { id: loanNo } = params;
@@ -109,9 +110,60 @@ export const renderLoanDetails = async (params) => {
   const guarantorPhone = guarantor.phone || guarantor.phone_number || guarantor.guarantorPhone || '-';
   const guarantorId = guarantor.id_number || guarantor.idNo || guarantor.id_no || guarantor.national_id || '-';
   const guarantorRelationship = guarantor.relationship || guarantor.relation || '-';
-  const guarantorPhoto = String(guarantor.photo || '').startsWith('data:image/')
-    ? guarantor.photo
-    : '';
+  const resolveImageSource = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (/^(data:image\/|https?:\/\/|blob:)/i.test(raw)) return raw;
+    if (/^\/9j\//.test(raw)) return `data:image/jpeg;base64,${raw}`;
+    if (/^iVBOR/.test(raw)) return `data:image/png;base64,${raw}`;
+    if (/^UklGR/.test(raw)) return `data:image/webp;base64,${raw}`;
+    return '';
+  };
+  const guarantorPhoto = resolveImageSource(guarantor.photo);
+  const collaterals = Array.isArray(loan.collaterals) ? loan.collaterals : [];
+  const totalCollateralValue = collaterals.reduce((sum, item) => sum + (Number(item?.value) || 0), 0);
+  const renderSecurityPhoto = (photo, itemName) => {
+    const src = resolveImageSource(photo);
+    return src
+      ? `<img src="${src}" alt="${escapeHtml(itemName)}" style="width: 100%; height: 100%; object-fit: cover;" />`
+      : '<span style="font-size: 1.8rem; color: var(--text-muted);">▣</span>';
+  };
+  const renderSecuritiesOverview = () => {
+    if (collaterals.length === 0) {
+      return `
+        <div style="padding: 22px; text-align: center; color: var(--text-muted);">
+          No securities recorded for this loan.
+        </div>
+      `;
+    }
+
+    return `
+      <div style="padding: 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px;">
+        ${collaterals.map((item, index) => {
+          const itemName = item?.item || item?.name || item?.description || `Security ${index + 1}`;
+          const value = Number(item?.value) || 0;
+          return `
+            <div data-security-card="${index}" style="border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; background: white;">
+              <div data-security-preview="${index}" style="height: 128px; background: var(--bg-light); display: flex; align-items: center; justify-content: center; overflow: hidden; border-bottom: 1px solid var(--border-color);">
+                ${renderSecurityPhoto(item?.photo, itemName)}
+              </div>
+              <div style="padding: 14px;">
+                <div class="font-semibold" style="margin-bottom: 6px;">${escapeHtml(itemName)}</div>
+                <div class="text-xs text-muted">Estimated Value</div>
+                <div class="font-semibold" style="color: var(--primary);">KES ${formatMoney(value)}</div>
+                <div data-security-meta="${index}" class="text-xs text-muted" style="margin-top: 6px;">${item?.photo_size_kb ? `Photo: ${formatMoney(item.photo_size_kb)} KB` : 'No photo attached'}</div>
+                ${canEditSecurities ? `
+                  <button type="button" class="btn btn-outline btn-xs security-photo-btn" data-index="${index}" style="margin-top: 10px; width: 100%;">
+                    ${resolveImageSource(item?.photo) ? 'Update Picture' : 'Add Picture'}
+                  </button>
+                ` : ''}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  };
 
   // Calculate Financials
   const getLoanLiability = (loanRecord) => {
@@ -158,6 +210,7 @@ export const renderLoanDetails = async (params) => {
   const canWriteOff = authService.hasRole('super_admin') && loan.status === 'disbursed' && balanceBeforeWriteOff > 0;
   const canEditComments = authService.hasRole('super_admin', 'admin');
   const canDeleteComments = authService.hasRole('super_admin');
+  const canEditSecurities = authService.hasRole('super_admin', 'admin');
   const canRepairSchedule = authService.hasRole('super_admin', 'admin')
     && loan.status === 'disbursed'
     && !scheduleLoadError
@@ -428,6 +481,20 @@ export const renderLoanDetails = async (params) => {
                 </div>
               </div>
             </div>
+          </div>
+
+          <div style="margin-top: 24px; border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden;">
+            <div style="padding: 14px 18px; background: var(--bg-light); border-bottom: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+              <div>
+                <div class="text-xs text-muted" style="font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;">Securities / Loan Collateral</div>
+                <div class="text-sm text-muted">Items pledged against this loan file</div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <span class="badge badge-outline" style="font-size: 0.65rem;">${collaterals.length} ITEM${collaterals.length === 1 ? '' : 'S'}</span>
+                <span class="badge badge-primary" style="font-size: 0.65rem;">KES ${formatMoney(totalCollateralValue)}</span>
+              </div>
+            </div>
+            ${renderSecuritiesOverview()}
           </div>
         </div>
 
@@ -810,6 +877,48 @@ export const renderLoanDetails = async (params) => {
       }
     </style>
   `;
+
+  if (canEditSecurities) {
+    container.querySelectorAll('.security-photo-btn').forEach(btn => {
+      btn.onclick = () => {
+        const index = Number(btn.dataset.index);
+        const collateral = collaterals[index];
+        if (!collateral) return;
+        const itemName = collateral.item || collateral.name || collateral.description || `Security ${index + 1}`;
+
+        openCamera(async (dataUrl, file, meta) => {
+          const restoreButton = setButtonLoading(btn, 'Saving...');
+          let saved = false;
+          const updatedCollaterals = collaterals.map((item, itemIndex) => {
+            if (itemIndex !== index) return item;
+            return {
+              ...item,
+              photo: dataUrl,
+              photo_size_kb: meta?.sizeKb || null,
+              photo_mime_type: file?.type || 'image/webp',
+              photo_updated_at: new Date().toISOString()
+            };
+          });
+
+          try {
+            await loanService.update(loan.id, { collaterals: updatedCollaterals });
+            collaterals[index] = updatedCollaterals[index];
+            const preview = container.querySelector(`[data-security-preview="${index}"]`);
+            const metaEl = container.querySelector(`[data-security-meta="${index}"]`);
+            if (preview) preview.innerHTML = renderSecurityPhoto(dataUrl, itemName);
+            if (metaEl) metaEl.textContent = meta?.sizeKb ? `Photo: ${formatMoney(meta.sizeKb)} KB` : 'Photo updated';
+            saved = true;
+            if (window.notify) window.notify.success('Security picture saved to loan file.');
+          } catch (error) {
+            if (window.notify) window.notify.error('Failed to save security picture: ' + (error.message || 'Please try again.'));
+          } finally {
+            restoreButton();
+            if (saved) btn.textContent = 'Update Picture';
+          }
+        });
+      };
+    });
+  }
 
   const updateHistoryUI = () => {
     const start = (historyPage - 1) * pageSize;

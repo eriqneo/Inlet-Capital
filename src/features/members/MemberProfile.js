@@ -32,7 +32,8 @@ export const renderMemberProfile = async (params) => {
   }
 
   const legacyRegNo = member.reg_no || member.regNo;
-  const canRecordSavings = authService.hasRole('super_admin', 'admin', 'cashier');
+  const isLifecycleManaged = ['suspended', 'closed', 'exited'].includes(String(member.status || '').toLowerCase());
+  const canRecordSavings = authService.hasRole('super_admin', 'admin', 'cashier') && !isLifecycleManaged;
   const canManageRecords = authService.hasRole('super_admin', 'admin');
   const memberDob = member.dob || member.date_of_birth || member.dateOfBirth || member.birth_date || '';
   const memberChildrenCount = member.childrenCount ?? member.children_count ?? member.children ?? member.no_of_children ?? 0;
@@ -97,7 +98,7 @@ export const renderMemberProfile = async (params) => {
       <div style="display: flex; gap: 12px;">
         ${canManageRecords ? `<button class="btn btn-outline btn-sm" id="edit-profile-btn">Edit Profile</button>` : ''}
         ${canAssignGroup ? `<button class="btn btn-outline btn-sm" id="assign-group-btn">${currentGroupName ? 'Change Group' : '+ Add to Group'}</button>` : ''}
-        ${primaryRepaymentLoan ? `<button class="btn btn-outline btn-sm" onclick="window.location.hash = '${getRepaymentRoute(primaryRepaymentLoan)}'" title="Record repayment for ${escapeHtml(primaryRepaymentLoan.loan_no)}">+ Repayment</button>` : ''}
+        ${primaryRepaymentLoan && !isLifecycleManaged ? `<button class="btn btn-outline btn-sm" onclick="window.location.hash = '${getRepaymentRoute(primaryRepaymentLoan)}'" title="Record repayment for ${escapeHtml(primaryRepaymentLoan.loan_no)}">+ Repayment</button>` : ''}
         <button class="btn btn-primary btn-sm" id="member-context-action-btn" style="display: none;">+</button>
       </div>
     </div>
@@ -128,11 +129,7 @@ export const renderMemberProfile = async (params) => {
               </div>
               <div class="form-group"><label class="form-label">Phone</label><input type="tel" name="phone_number" class="form-control" value="${memberPhone}" required /></div>
               <div class="form-group"><label class="form-label">Residence</label><input type="text" name="address" class="form-control" value="${member.address || member.residence || ''}" required /></div>
-              <div class="form-group"><label class="form-label">Account Status</label>
-                <select name="status" class="form-control">
-                  ${['active','inactive','suspended'].map(s => `<option value="${s}" ${member.status === s ? 'selected' : ''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}
-                </select>
-              </div>
+              <div class="form-group"><label class="form-label">Account Status</label><input type="text" class="form-control" value="${String(member.status || 'active').toUpperCase()}" disabled /><div class="text-xs text-muted" style="margin-top:4px;">Lifecycle status is managed from the Members table or Lifecycle Report.</div></div>
             </div>
             <div>
               <h4 class="text-sm text-muted" style="margin-bottom: 12px; border-bottom: 1px solid var(--bg-light);">Photos & Next of Kin</h4>
@@ -932,7 +929,7 @@ export const renderMemberProfile = async (params) => {
     loans: {
       label: primaryRepaymentLoan ? '+ Repayment' : '+ Apply for Loan',
       route: primaryRepaymentLoan ? getRepaymentRoute(primaryRepaymentLoan) : withReturnTo(`#/loans/new?memberId=${legacyRegNo}`, memberProfileRoute),
-      visible: true
+      visible: !isLifecycleManaged
     },
     savings: {
       label: '+ Record Savings',

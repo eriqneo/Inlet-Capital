@@ -44,6 +44,7 @@ export const renderMemberList = async () => {
             <button type="button" class="btn btn-primary btn-sm" data-status-filter="all">All</button>
             <button type="button" class="btn btn-outline btn-sm" data-status-filter="active">Active</button>
             <button type="button" class="btn btn-outline btn-sm" data-status-filter="inactive">Inactive</button>
+            <button type="button" class="btn btn-outline btn-sm" data-status-filter="suspended">Suspended</button>
           </div>
           <div id="member-filter-count" class="text-xs font-semibold" style="color: var(--secondary); white-space: nowrap;">0 members</div>
         </div>
@@ -76,6 +77,8 @@ export const renderMemberList = async () => {
       .member-icon-action.warning:hover { border-color: var(--warning); background: rgba(245, 158, 11, 0.08); }
       .member-icon-action.danger { color: var(--danger); }
       .member-icon-action.danger:hover { border-color: var(--danger); background: rgba(239, 68, 68, 0.06); }
+      .member-row-suspended { background: rgba(245, 158, 11, 0.055); }
+      .member-row-suspended .member-suspended-identity { text-decoration: line-through; text-decoration-thickness: 1px; text-decoration-color: var(--warning); opacity: 0.75; }
     </style>
   `;
 
@@ -136,16 +139,17 @@ export const renderMemberList = async () => {
     ` : members.map(m => {
       const photoUrl = memberService.getPhotoUrl(m);
       const activityStatus = getActivityStatus(m);
+      const isSuspended = String(m.status || '').toLowerCase() === 'suspended';
       const groupName = m.expand?.group?.name || (m.group ? 'Group member' : 'Individual');
       const groupCode = m.expand?.group?.group_id || '';
       return `
-      <tr>
+      <tr class="${isSuspended ? 'member-row-suspended' : ''}">
         <td>
           <div style="display: flex; align-items: center; gap: 12px;">
             <div style="width: 40px; height: 40px; background: var(--bg-light); border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center;">
               ${photoUrl ? `<img src="${photoUrl}" style="width: 100%; height: 100%; object-fit: cover;" />` : `<span style="font-size: 20px;">👤</span>`}
             </div>
-            <div>
+            <div class="${isSuspended ? 'member-suspended-identity' : ''}">
               <div class="font-semibold">${m.full_name || m.fullName}</div>
               <div class="text-xs text-muted">${m.reg_no || m.regNo}</div>
             </div>
@@ -159,19 +163,20 @@ export const renderMemberList = async () => {
         <td>${m.phone_number || ''}</td>
         <td>
           <span class="badge ${activityStatus.className}">${activityStatus.label}</span>
-          <div class="text-xs text-muted" style="margin-top: 4px;">${m.group ? `Last saved: ${m.__lastSavingsDate ? m.__lastSavingsDate.toLocaleDateString() : 'Never'}` : 'Savings rule: Individual'}</div>
+          <div class="text-xs text-muted" style="margin-top: 4px;">${isSuspended ? 'Excluded from active portfolio' : (m.group ? `Last saved: ${m.__lastSavingsDate ? m.__lastSavingsDate.toLocaleDateString() : 'Never'}` : 'Savings rule: Individual')}</div>
         </td>
         <td>
           <div class="member-action-group">
             <button type="button" class="btn btn-outline btn-sm member-row-action" data-action="view" data-id="${m.id}">View Profile</button>
             ${canManageLifecycle ? `
+              ${isSuspended ? `<button type="button" class="btn btn-primary btn-sm member-row-action" data-action="reinstate" data-id="${m.id}" title="Reinstate member">Reinstate</button>` : `
               <button type="button" class="member-icon-action warning member-row-action" data-action="suspend" data-id="${m.id}" title="Suspend member" aria-label="Suspend member">!</button>
               <button type="button" class="member-icon-action danger member-row-action" data-action="close" data-id="${m.id}" title="Close member account" aria-label="Close member account">×</button>
               <button type="button" class="member-icon-action danger member-row-action" data-action="delete" data-id="${m.id}" title="Delete mistaken/duplicate member" aria-label="Delete mistaken or duplicate member">
                 <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
                   <path d="M3 6h18M8 6V4h8v2M9 10v8M15 10v8M6 6l1 15h10l1-15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
-              </button>
+              </button>`}
             ` : ''}
           </div>
         </td>
@@ -188,6 +193,7 @@ export const renderMemberList = async () => {
           return;
         }
         if (btn.dataset.action === 'suspend') await suspendMember(member);
+        if (btn.dataset.action === 'reinstate') await reinstateMember(member);
         if (btn.dataset.action === 'close') await closeMember(member);
         if (btn.dataset.action === 'delete') await deleteMember(member);
       };
@@ -211,7 +217,11 @@ export const renderMemberList = async () => {
 
   const filterMembersByActivity = (memberRows) => {
     if (statusFilter === 'all') return memberRows;
+    if (statusFilter === 'suspended') {
+      return memberRows.filter(member => String(member.status || '').toLowerCase() === 'suspended');
+    }
     return memberRows.filter(member => {
+      if (String(member.status || '').toLowerCase() === 'suspended') return false;
       const activityStatus = getActivityStatus(member);
       return statusFilter === 'active'
         ? activityStatus.isActive
@@ -238,6 +248,28 @@ export const renderMemberList = async () => {
       loadMembers();
     } catch (err) {
       if (window.notify) window.notify.error('Failed to suspend member: ' + (err.message || 'Please try again.'));
+    }
+  };
+
+  const reinstateMember = async (member) => {
+    if (!canManageLifecycle) {
+      if (window.notify) window.notify.error('Only super admins can reinstate members.');
+      return;
+    }
+    const confirmed = window.confirmDialog ? await window.confirmDialog({
+      title: 'Reinstate Member',
+      message: `Reinstate ${member.full_name || 'this member'}? Their financial records will return to active portfolio calculations.`,
+      confirmText: 'Reinstate Member',
+      cancelText: 'Cancel',
+      type: 'info'
+    }) : confirm(`Reinstate ${member.full_name || 'this member'}?`);
+    if (!confirmed) return;
+    try {
+      await memberService.revive(member.id);
+      if (window.notify) window.notify.success('Member reinstated and returned to the active portfolio.');
+      loadMembers();
+    } catch (err) {
+      if (window.notify) window.notify.error('Failed to reinstate member: ' + (err.message || 'Please try again.'));
     }
   };
 
@@ -298,17 +330,17 @@ export const renderMemberList = async () => {
 
     try {
       const searchFilter = buildSearchFilter(currentSearch);
-      const lifecycleFilter = 'status!="suspended" && status!="closed"';
+      const lifecycleFilter = 'status!="closed"';
       const officerScopeFilter = officerFilter === 'all'
         ? ''
         : `(assigned_officer="${escapeFilterValue(officerFilter)}" || (assigned_officer="" && registered_by="${escapeFilterValue(officerFilter)}"))`;
       const filterParts = [lifecycleFilter, searchFilter ? `(${searchFilter})` : '', officerScopeFilter].filter(Boolean);
       const filter = filterParts.join(' && ');
       const sort = alphaSort === 'az' ? 'full_name' : (alphaSort === 'za' ? '-full_name' : '-created');
-      const query = { page: currentPage, perPage: pageSize, filter, sort };
+      const query = { page: currentPage, perPage: pageSize, filter, sort, includeSuspended: true };
 
       if (statusFilter !== 'all') {
-        const allMatchingMembers = (await memberService.list({ page: 1, perPage: 10000, filter, sort })).items;
+        const allMatchingMembers = (await memberService.list({ page: 1, perPage: 10000, filter, sort, includeSuspended: true })).items;
         const enrichedMembers = await enrichMembersWithActivity(allMatchingMembers);
         if (thisRequest !== requestId) return;
         const filteredMembers = filterMembersByActivity(enrichedMembers);

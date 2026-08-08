@@ -51,6 +51,7 @@ export const renderLoanList = async () => {
           <option value="declined">Declined</option>
           <option value="completed">Completed</option>
           <option value="written_off">Written Off</option>
+          <option value="balanced_off">Balanced Off</option>
           <option value="all">All Loans</option>
         </select>
         <select id="loan-alpha-sort" class="form-control" style="max-width: 160px;">
@@ -389,6 +390,30 @@ export const renderLoanList = async () => {
         });
         if (pagination) paginationWrapper.appendChild(pagination);
       };
+
+      if (statusFilter === 'balanced_off') {
+        const [allLoans, balanceOffs] = await Promise.all([
+          loanService.getFullListCached({
+            sort: '-application_date',
+            cacheKey: 'loans:list:balanced-off:expanded:v1'
+          }),
+          loanService.getBalanceOffsFullList({ expand: '' })
+        ]);
+        const balancedLoanIds = new Set(balanceOffs
+          .filter(record => record.status !== 'reversed')
+          .map(record => typeof record.loan === 'string' ? record.loan : record.loan?.id)
+          .filter(Boolean));
+        const matchedLoans = allLoans.filter(loan => balancedLoanIds.has(loan.id));
+        const officerLoans = filterLoansByOfficer(matchedLoans);
+        const searchedLoans = filterLoansBySearch(officerLoans);
+        const sortedLoans = alphaSort !== 'default' ? sortLoansAlphabetically(searchedLoans) : searchedLoans;
+        const start = (currentPage - 1) * pageSize;
+        renderLoanResult({
+          items: sortedLoans.slice(start, start + pageSize),
+          totalItems: sortedLoans.length
+        });
+        return;
+      }
 
       if (alphaSort !== 'default' || searchTerm || officerFilter !== 'all') {
         const allLoans = await loanService.getFullListCached({

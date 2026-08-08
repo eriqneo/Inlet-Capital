@@ -16,6 +16,7 @@ import {
   getRepaymentContractAmount,
   getSettlementContractAmount
 } from '../../core/repaymentAllocation.js';
+import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
 
 export const renderAnalyticsDashboard = async () => {
   const container = document.createElement('div');
@@ -53,6 +54,9 @@ export const renderAnalyticsDashboard = async () => {
       </div>`;
       return false;
     }
+    const portfolioMemberIds = getPortfolioMemberIds(members);
+    loans = filterPortfolioFinancialRecords(loans, portfolioMemberIds);
+    savings = filterPortfolioFinancialRecords(savings, portfolioMemberIds);
     const visibleLoanIds = new Set(loans.map(loan => loan.id));
     schedules = schedules.filter(schedule => visibleLoanIds.has(schedule.loan));
     repayments = repayments.filter(repayment => visibleLoanIds.has(repayment.loan));

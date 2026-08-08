@@ -38,8 +38,12 @@ const calculateLoanBalance = (loan, repayments = [], settlements = []) => {
 };
 
 const buildSummaryPayload = ({ groupId, members, loans, savings, repayments, settlements, schedules }) => {
+  const portfolioMembers = members.filter(member => !['suspended', 'closed'].includes(String(member.status || '').toLowerCase()));
+  const portfolioMemberIds = new Set(portfolioMembers.map(member => member.id));
+  const portfolioLoans = loans.filter(loan => !loan.member || portfolioMemberIds.has(loan.member));
+  const portfolioSavings = savings.filter(record => !record.member || portfolioMemberIds.has(record.member));
   const activeMemberCutoff = Date.now() - (90 * 24 * 60 * 60 * 1000);
-  const activeGroupLoans = loans.filter(loan => !loan.member && isCollectibleLoan(loan));
+  const activeGroupLoans = portfolioLoans.filter(loan => !loan.member && isCollectibleLoan(loan));
   const activeGroupLoanIds = new Set(activeGroupLoans.map(loan => loan.id));
   const groupLevelArrears = getArrearsTotal(
     schedules.filter(schedule => activeGroupLoanIds.has(schedule.loan) && isScheduleInArrears(schedule))
@@ -49,9 +53,9 @@ const buildSummaryPayload = ({ groupId, members, loans, savings, repayments, set
   let membersInArrears = 0;
   let inactiveMembers = 0;
 
-  members.forEach(member => {
-    const memberSavings = savings.filter(record => record.member === member.id);
-    const memberLoans = loans.filter(loan => loan.member === member.id);
+  portfolioMembers.forEach(member => {
+    const memberSavings = portfolioSavings.filter(record => record.member === member.id);
+    const memberLoans = portfolioLoans.filter(loan => loan.member === member.id);
     const activeMemberLoanIds = new Set(memberLoans.filter(isCollectibleLoan).map(loan => loan.id));
     const memberArrears = getArrearsTotal(
       schedules.filter(schedule => activeMemberLoanIds.has(schedule.loan) && isScheduleInArrears(schedule))
@@ -68,9 +72,9 @@ const buildSummaryPayload = ({ groupId, members, loans, savings, repayments, set
 
   return {
     group: groupId,
-    member_count: members.length,
-    total_savings: calculateSavingsTotal(savings),
-    outstanding_loan: loans
+    member_count: portfolioMembers.length,
+    total_savings: calculateSavingsTotal(portfolioSavings),
+    outstanding_loan: portfolioLoans
       .filter(isDisbursedLoanForBalance)
       .reduce((sum, loan) => sum + calculateLoanBalance(loan, repayments, settlements), 0),
     total_arrears: totalArrears,

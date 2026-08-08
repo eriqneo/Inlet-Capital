@@ -27,11 +27,17 @@ export const savingsService = {
    */
   async recordTransaction(data) {
     const payload = { ...data };
+    let selectedMember = null;
+    if (payload.member) {
+      selectedMember = await pb.collection('members').getOne(payload.member);
+      if (['suspended', 'closed', 'exited'].includes(String(selectedMember.status || '').toLowerCase())) {
+        throw new Error('Savings transactions cannot be recorded for a suspended or closed member.');
+      }
+    }
     if (shouldScopeToCurrentOfficer()) {
       const officerId = getCurrentOfficerId();
       if (payload.member) {
-        const member = await pb.collection('members').getOne(payload.member);
-        if (getMemberOfficerId(member) !== officerId) {
+        if (getMemberOfficerId(selectedMember) !== officerId) {
           throw new Error('You can only record savings for members assigned to your portfolio.');
         }
       } else if (payload.group) {

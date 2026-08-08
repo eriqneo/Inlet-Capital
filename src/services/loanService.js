@@ -96,11 +96,18 @@ export const loanService = {
    */
   async apply(data) {
     const payload = { ...data };
+    let selectedMember = null;
+    if (payload.member) {
+      selectedMember = await pb.collection('members').getOne(payload.member);
+      if (['suspended', 'closed', 'exited'].includes(String(selectedMember.status || '').toLowerCase())) {
+        throw new Error('Loan applications cannot be created for a suspended or closed member.');
+      }
+    }
     if (shouldScopeToCurrentOfficer()) {
       const officerId = getCurrentOfficerId();
       let applicant;
       if (payload.member) {
-        applicant = await pb.collection('members').getOne(payload.member);
+        applicant = selectedMember;
         if (getMemberOfficerId(applicant) !== officerId) {
           throw new Error('You can only request loans for members assigned to your portfolio.');
         }

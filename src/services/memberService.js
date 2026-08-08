@@ -20,6 +20,7 @@ const normalizeIdNumber = (value = '') => String(value || '').trim().toLowerCase
 
 const getPrimaryPhone = (record = {}) => record.phone_number || record.phone || '';
 const visibleMemberFilter = 'status!="suspended" && status!="closed"';
+const memberTableFilter = 'status!="closed"';
 const combineFilters = (...filters) => filters.filter(Boolean).map(filter => `(${filter})`).join(' && ');
 const requireSuperAdminLifecycleManager = () => {
   if (pb.authStore.model?.role !== 'super_admin') {
@@ -48,10 +49,11 @@ const stripOptionalRegistrationFeeDetails = (data) => {
 };
 
 export const memberService = {
-  async list({ page = 1, perPage = 20, filter = '', sort = '-created' } = {}) {
+  async list({ page = 1, perPage = 20, filter = '', sort = '-created', includeSuspended = false } = {}) {
+    const lifecycleFilter = includeSuspended ? memberTableFilter : visibleMemberFilter;
     if (shouldScopeOfficerData()) {
       const items = await pb.collection('members').getFullList({
-        filter: combineFilters(visibleMemberFilter, filter, getMemberOfficerScopeFilter()),
+        filter: combineFilters(lifecycleFilter, filter, getMemberOfficerScopeFilter()),
         sort,
         expand: 'group',
       });
@@ -59,16 +61,16 @@ export const memberService = {
     }
 
     return await pb.collection('members').getList(page, perPage, {
-      filter: combineFilters(visibleMemberFilter, filter),
+      filter: combineFilters(lifecycleFilter, filter),
       sort,
       expand: 'group',
     });
   },
 
   async listCached(options = {}, onUpdate = null) {
-    const { page = 1, perPage = 20, filter = '', sort = '-created' } = options;
-    const key = `members:list:${getOfficerScopeCacheKey()}:${page}:${perPage}:${sort}:${filter}`;
-    return await dataCache.getLocalFirst(key, () => this.list({ page, perPage, filter, sort }), onUpdate);
+    const { page = 1, perPage = 20, filter = '', sort = '-created', includeSuspended = false } = options;
+    const key = `members:list:${getOfficerScopeCacheKey()}:${page}:${perPage}:${sort}:${filter}:${includeSuspended ? 'with-suspended' : 'visible'}`;
+    return await dataCache.getLocalFirst(key, () => this.list({ page, perPage, filter, sort, includeSuspended }), onUpdate);
   },
 
   async getAll(onUpdate = null) {
@@ -136,6 +138,14 @@ export const memberService = {
       delete payload.registered_by;
       delete payload.assigned_officer;
     }
+    if (Object.prototype.hasOwnProperty.call(payload, 'status') && pb.authStore.model?.role !== 'super_admin') {
+      const current = await pb.collection('members').getOne(id, { fields: 'id,status' });
+      const currentStatus = String(current.status || 'active').toLowerCase();
+      const nextStatus = String(payload.status || 'active').toLowerCase();
+      if (['suspended', 'closed'].includes(currentStatus) && nextStatus !== currentStatus) {
+        throw new Error('Only super admins can reinstate lifecycle-managed member accounts.');
+      }
+    }
     const duplicate = await this.findDuplicatePrincipalIdentifiers(payload, id);
     if (duplicate) {
       throw new Error(`${duplicate.field} already belongs to ${duplicate.memberName}. A principal member cannot be registered twice.`);
@@ -154,8 +164,8 @@ export const memberService = {
     requireSuperAdminLifecycleManager();
     const record = await pb.collection('members').update(id, { status: 'suspended' });
     await dataCache.invalidatePrefix('members:');
-    await dataCache.invalidatePrefix('group_summary:');
     await dataCache.invalidatePrefix('groups:profile:');
+    await dataCache.invalidatePrefix('group_summary:');
     return record;
   },
 
@@ -172,8 +182,8 @@ export const memberService = {
     requireSuperAdminLifecycleManager();
     const record = await pb.collection('members').update(id, { status: 'active' });
     await dataCache.invalidatePrefix('members:');
-    await dataCache.invalidatePrefix('group_summary:');
     await dataCache.invalidatePrefix('groups:profile:');
+    await dataCache.invalidatePrefix('group_summary:');
     return record;
   },
 
