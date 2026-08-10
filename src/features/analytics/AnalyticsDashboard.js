@@ -530,11 +530,6 @@ export const renderAnalyticsDashboard = async () => {
     );
     const repaymentRateNumber = totalLiabilityOverall > 0 ? (totalRepaid / totalLiabilityOverall) * 100 : 0;
     const repaymentRate = formatPercent(repaymentRateNumber);
-    const repaymentHealth = repaymentRateNumber <= 50
-      ? { label: 'Action Required', color: 'var(--danger)' }
-      : repaymentRateNumber <= 70
-        ? { label: 'Average Portfolio', color: 'var(--warning)' }
-        : { label: 'Healthy Portfolio', color: 'var(--success)' };
     const windowRepaymentHealth = scheduledGrossCollection <= 0
       ? { label: 'No scheduled target', color: 'var(--text-muted)' }
       : windowRepaymentRateNumber <= 50
@@ -703,7 +698,7 @@ export const renderAnalyticsDashboard = async () => {
           <div class="kpi-icon" style="background: rgba(201, 168, 76, 0.1); color: var(--accent);">✅</div>
           <div class="kpi-label">Global Repayment Rate</div>
           <div class="kpi-value">${repaymentRate}</div>
-          <div class="kpi-trend" style="color: ${repaymentHealth.color};">${repaymentHealth.label} · Portfolio position as at ${formatShortDate(snapshotDate)}</div>
+          <div class="kpi-trend" style="color: var(--success);">Repayment Progress</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(239, 68, 68, 0.1); color: var(--danger);">⚠️</div>

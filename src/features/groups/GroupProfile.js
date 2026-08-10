@@ -14,6 +14,7 @@ import { withReturnTo } from '../../core/navigation.js';
 import { getArrearsTotal, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
 import { getOfficerScopeCacheKey } from '../../core/officerScope.js';
 import { getSettlementContractAmount } from '../../core/repaymentAllocation.js';
+import { calculateGroupSavingsPerformance } from '../../core/groupSavingsPerformance.js';
 
 export const renderGroupProfile = async (params) => {
   const { id } = params;
@@ -370,35 +371,6 @@ export const renderGroupProfile = async (params) => {
   let totalGroupArrears = 0;
   let membersInArrearsCount = 0;
   let inactiveMembersCount = 0;
-  const getMeetingCycleStart = () => {
-    const dayIndex = {
-      Sunday: 0,
-      Monday: 1,
-      Tuesday: 2,
-      Wednesday: 3,
-      Thursday: 4,
-      Friday: 5,
-      Saturday: 6
-    }[group.meeting_day];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (dayIndex === undefined) {
-      const fallback = new Date(today);
-      fallback.setDate(fallback.getDate() - 7);
-      return fallback;
-    }
-    const daysSinceMeeting = (today.getDay() - dayIndex + 7) % 7;
-    const cycleStart = new Date(today);
-    cycleStart.setDate(today.getDate() - daysSinceMeeting);
-    return cycleStart;
-  };
-  const meetingCycleStart = getMeetingCycleStart();
-  const hasSavedInMeetingCycle = (memberId) => groupSavings.some(record => {
-    if (record.member !== memberId || record.is_reversed || record.type !== 'deposit') return false;
-    const date = new Date(record.date || record.created);
-    return !Number.isNaN(date.getTime()) && date >= meetingCycleStart;
-  });
-
   const enrichedMembers = sortMembersByGroupJoinedAsc(allGroupMembers).map((m) => {
     const mSavings = groupSavings.filter(s => s.member === m.id);
     const mLoans = groupLoans.filter(l => l.member === m.id);
@@ -414,9 +386,7 @@ export const renderGroupProfile = async (params) => {
     const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
     const isActive = lastSavingsDate && (new Date() - lastSavingsDate <= 90 * 24 * 60 * 60 * 1000);
 
-    const savedThisCycle = hasSavedInMeetingCycle(m.id);
-
-    return { ...m, totalSavings, olBalance, totalArrears, isActive, lastSavingsDate, savedThisCycle };
+    return { ...m, totalSavings, olBalance, totalArrears, isActive, lastSavingsDate };
   });
 
   // Aggregate group savings
@@ -445,18 +415,14 @@ export const renderGroupProfile = async (params) => {
   const activeLoanPortfolio = calculateActiveLoanPortfolio(financialGroupLoans);
   const groupParRateNumber = activeLoanPortfolio > 0 ? (totalGroupArrears / activeLoanPortfolio) * 100 : 0;
   const groupParHealth = getParHealth(groupParRateNumber);
-  const savedThisCycleCount = activeEnrichedMembers.filter(member => member.savedThisCycle).length;
-  const savingsParticipationRate = activeEnrichedMembers.length > 0
-    ? (savedThisCycleCount / activeEnrichedMembers.length) * 100
-    : 0;
-  const autoPerformanceRating = activeEnrichedMembers.length === 0 ? 0
-    : savingsParticipationRate === 100 ? 5
-      : savingsParticipationRate >= 80 ? 4
-        : savingsParticipationRate >= 60 ? 3
-          : savingsParticipationRate >= 40 ? 2
-            : 1;
+  const savingsPerformance = calculateGroupSavingsPerformance({
+    group,
+    members: activeEnrichedMembers,
+    savings: financialGroupSavings
+  });
+  const autoPerformanceRating = savingsPerformance.rating;
   const performanceLabels = {
-    0: 'No Members',
+    0: 'No Savings History',
     1: 'Very Poor',
     2: 'Poor',
     3: 'Fair',
@@ -1084,7 +1050,7 @@ export const renderGroupProfile = async (params) => {
     filterBtns.inactive.onclick = () => { currentMemberStatusFilter = 'inactive'; updateActiveFilterBtn('inactive'); refreshFilteredViews(); };
   }
 
-  // Auto rating logic: tied to savings participation since the latest meeting day.
+  // Historical savings attendance: one completed saving per member per eligible meeting cycle.
   const ratingContainer = container.querySelector('#group-rating-container');
   ratingContainer.innerHTML = `
     <div style="display: flex; gap: 4px; font-size: 1.25rem; color: ${performanceColor};">
@@ -1094,8 +1060,9 @@ export const renderGroupProfile = async (params) => {
       ${autoPerformanceRating}/5 — ${performanceLabels[autoPerformanceRating]}
     </div>
     <div class="text-xs text-muted" style="margin-top: 4px; line-height: 1.45;">
-      ${savedThisCycleCount}/${enrichedMembers.length} members saved since ${formatDate(meetingCycleStart)}.
-      Excellent requires every member to save in the current meeting cycle.
+      ${savingsPerformance.savedParticipations}/${savingsPerformance.expectedParticipations} expected member savings completed across ${savingsPerformance.meetingCycles} meeting ${savingsPerformance.meetingCycles === 1 ? 'cycle' : 'cycles'}.
+      <br>${formatPercent(savingsPerformance.participationRate)} historical participation${savingsPerformance.periodStart && savingsPerformance.periodEnd ? `, ${formatDate(savingsPerformance.periodStart)} to ${formatDate(savingsPerformance.periodEnd)}` : ''}.
+      Excellent requires every eligible member to have saved in every meeting cycle.
     </div>
   `;
   if (canManageRecords && group.performance_rating !== autoPerformanceRating) {

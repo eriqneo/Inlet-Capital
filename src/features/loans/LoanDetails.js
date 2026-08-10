@@ -122,11 +122,30 @@ export const renderLoanDetails = async (params) => {
   const guarantorPhoto = resolveImageSource(guarantor.photo);
   const collaterals = Array.isArray(loan.collaterals) ? loan.collaterals : [];
   const totalCollateralValue = collaterals.reduce((sum, item) => sum + (Number(item?.value) || 0), 0);
+  const canEditSecurities = authService.hasRole('super_admin', 'admin');
+  const getCollateralItemName = (item, index) => item?.item || item?.name || item?.description || `Security ${index + 1}`;
   const renderSecurityPhoto = (photo, itemName) => {
     const src = resolveImageSource(photo);
     return src
       ? `<img src="${src}" alt="${escapeHtml(itemName)}" style="width: 100%; height: 100%; object-fit: cover;" />`
       : '<span style="font-size: 1.8rem; color: var(--text-muted);">▣</span>';
+  };
+  const renderSecurityActions = (item, index) => {
+    const hasPhoto = Boolean(resolveImageSource(item?.photo));
+    return `
+      <div class="security-card-actions" data-security-actions="${index}">
+        ${hasPhoto ? `
+          <button type="button" class="btn btn-primary btn-xs security-view-btn" data-index="${index}" title="View security picture" aria-label="View security picture">
+            View
+          </button>
+        ` : ''}
+        ${canEditSecurities ? `
+          <button type="button" class="btn btn-outline btn-xs security-photo-btn" data-index="${index}" title="${hasPhoto ? 'Update security picture' : 'Add security picture'}" aria-label="${hasPhoto ? 'Update security picture' : 'Add security picture'}">
+            ${hasPhoto ? 'Update Picture' : 'Add Picture'}
+          </button>
+        ` : ''}
+      </div>
+    `;
   };
   const renderSecuritiesOverview = () => {
     if (collaterals.length === 0) {
@@ -140,7 +159,7 @@ export const renderLoanDetails = async (params) => {
     return `
       <div style="padding: 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px;">
         ${collaterals.map((item, index) => {
-          const itemName = item?.item || item?.name || item?.description || `Security ${index + 1}`;
+          const itemName = getCollateralItemName(item, index);
           const value = Number(item?.value) || 0;
           return `
             <div data-security-card="${index}" style="border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; background: white;">
@@ -152,11 +171,7 @@ export const renderLoanDetails = async (params) => {
                 <div class="text-xs text-muted">Estimated Value</div>
                 <div class="font-semibold" style="color: var(--primary);">KES ${formatMoney(value)}</div>
                 <div data-security-meta="${index}" class="text-xs text-muted" style="margin-top: 6px;">${item?.photo_size_kb ? `Photo: ${formatMoney(item.photo_size_kb)} KB` : 'No photo attached'}</div>
-                ${canEditSecurities ? `
-                  <button type="button" class="btn btn-outline btn-xs security-photo-btn" data-index="${index}" style="margin-top: 10px; width: 100%;">
-                    ${resolveImageSource(item?.photo) ? 'Update Picture' : 'Add Picture'}
-                  </button>
-                ` : ''}
+                ${renderSecurityActions(item, index)}
               </div>
             </div>
           `;
@@ -210,7 +225,6 @@ export const renderLoanDetails = async (params) => {
   const canWriteOff = authService.hasRole('super_admin') && loan.status === 'disbursed' && balanceBeforeWriteOff > 0;
   const canEditComments = authService.hasRole('super_admin', 'admin');
   const canDeleteComments = authService.hasRole('super_admin');
-  const canEditSecurities = authService.hasRole('super_admin', 'admin');
   const canRepairSchedule = authService.hasRole('super_admin', 'admin')
     && loan.status === 'disbursed'
     && !scheduleLoadError
@@ -819,6 +833,44 @@ export const renderLoanDetails = async (params) => {
       </div>
     </div>
 
+    <div id="security-viewer-modal" class="security-viewer-modal" role="dialog" aria-modal="true" aria-labelledby="security-viewer-title" tabindex="-1">
+      <div class="security-viewer-shell">
+        <div class="security-viewer-header">
+          <div>
+            <div class="text-xs text-muted" style="font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;">Security Picture</div>
+            <h2 class="text-lg" id="security-viewer-title" style="margin-top: 4px;">Loan Collateral</h2>
+          </div>
+          <button type="button" class="security-viewer-close" id="security-viewer-close" aria-label="Close security picture viewer">&times;</button>
+        </div>
+        <div class="security-viewer-body">
+          <div class="security-viewer-image-wrap">
+            <button type="button" class="security-viewer-nav security-viewer-prev" id="security-viewer-prev" aria-label="Previous security picture">‹</button>
+            <img id="security-viewer-image" alt="Security picture" />
+            <button type="button" class="security-viewer-nav security-viewer-next" id="security-viewer-next" aria-label="Next security picture">›</button>
+          </div>
+          <aside class="security-viewer-details">
+            <div>
+              <div class="text-xs text-muted">Item</div>
+              <div class="font-semibold" id="security-viewer-item">-</div>
+            </div>
+            <div>
+              <div class="text-xs text-muted">Estimated Value</div>
+              <div class="font-semibold" id="security-viewer-value">KES 0</div>
+            </div>
+            <div>
+              <div class="text-xs text-muted">Photo Size</div>
+              <div class="font-semibold" id="security-viewer-size">-</div>
+            </div>
+            <div>
+              <div class="text-xs text-muted">Loan Number</div>
+              <div class="font-semibold">${escapeHtml(loan.loan_no)}</div>
+            </div>
+            <button type="button" id="security-viewer-open" class="btn btn-outline btn-sm" style="justify-content: center;">Open Full Image</button>
+          </aside>
+        </div>
+      </div>
+    </div>
+
     <style>
       .tab-btn {
         flex: 1;
@@ -875,16 +927,240 @@ export const renderLoanDetails = async (params) => {
         border-color: var(--danger);
         background: rgba(239, 68, 68, 0.06);
       }
+      .security-card-actions {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .security-viewer-modal {
+        display: none;
+        position: fixed;
+        z-index: 1200;
+        inset: 0;
+        background: rgba(8, 18, 35, 0.74);
+        backdrop-filter: blur(8px);
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }
+      .security-viewer-shell {
+        width: min(1080px, 100%);
+        max-height: min(860px, calc(100vh - 40px));
+        background: #fff;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 24px 60px rgba(8, 18, 35, 0.32);
+        display: flex;
+        flex-direction: column;
+      }
+      .security-viewer-header {
+        padding: 18px 22px;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+      }
+      .security-viewer-close {
+        width: 38px;
+        height: 38px;
+        border-radius: 8px;
+        border: 1px solid var(--border-color);
+        background: #fff;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 1.5rem;
+        line-height: 1;
+      }
+      .security-viewer-body {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 260px;
+      }
+      .security-viewer-image-wrap {
+        position: relative;
+        min-height: 420px;
+        background: #081223;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+      .security-viewer-image-wrap img {
+        width: 100%;
+        height: 100%;
+        max-height: calc(100vh - 180px);
+        object-fit: contain;
+        display: block;
+      }
+      .security-viewer-details {
+        padding: 22px;
+        display: grid;
+        gap: 18px;
+        align-content: start;
+        background: var(--bg-light);
+        border-left: 1px solid var(--border-color);
+      }
+      .security-viewer-nav {
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 42px;
+        height: 42px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.4);
+        background: rgba(255, 255, 255, 0.9);
+        color: var(--primary);
+        cursor: pointer;
+        font-size: 1.6rem;
+        line-height: 1;
+        box-shadow: 0 12px 30px rgba(0,0,0,0.18);
+      }
+      .security-viewer-prev { left: 16px; }
+      .security-viewer-next { right: 16px; }
+      .security-viewer-nav:disabled {
+        display: none;
+      }
+      @media (max-width: 760px) {
+        .security-viewer-body {
+          grid-template-columns: 1fr;
+        }
+        .security-viewer-image-wrap {
+          min-height: 320px;
+        }
+        .security-viewer-details {
+          border-left: none;
+          border-top: 1px solid var(--border-color);
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .security-viewer-details .btn {
+          grid-column: 1 / -1;
+        }
+      }
     </style>
   `;
 
-  if (canEditSecurities) {
+  const getViewableSecurities = () => collaterals
+    .map((item, index) => ({ item, index, src: resolveImageSource(item?.photo) }))
+    .filter(entry => entry.src);
+  const securityViewerModal = container.querySelector('#security-viewer-modal');
+  const securityViewerImage = container.querySelector('#security-viewer-image');
+  const securityViewerTitle = container.querySelector('#security-viewer-title');
+  const securityViewerItem = container.querySelector('#security-viewer-item');
+  const securityViewerValue = container.querySelector('#security-viewer-value');
+  const securityViewerSize = container.querySelector('#security-viewer-size');
+  const securityViewerOpen = container.querySelector('#security-viewer-open');
+  const securityViewerPrev = container.querySelector('#security-viewer-prev');
+  const securityViewerNext = container.querySelector('#security-viewer-next');
+  let activeSecurityIndex = null;
+  let activeSecuritySource = '';
+
+  const openImageInNewWindow = (src, title) => {
+    const imageWindow = window.open('', '_blank');
+    if (!imageWindow) {
+      if (window.notify) window.notify.error('Popup blocked. Allow popups for this app to open the full image.');
+      return;
+    }
+
+    imageWindow.opener = null;
+    imageWindow.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <title>${escapeHtml(title)}</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <style>
+            body {
+              margin: 0;
+              min-height: 100vh;
+              display: grid;
+              grid-template-rows: auto 1fr;
+              background: #081223;
+              color: #fff;
+              font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            }
+            header {
+              padding: 14px 18px;
+              background: rgba(255, 255, 255, 0.08);
+              border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+              font-weight: 700;
+            }
+            main {
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 18px;
+            }
+            img {
+              width: 100%;
+              height: 100%;
+              max-width: 100vw;
+              max-height: calc(100vh - 68px);
+              object-fit: contain;
+            }
+          </style>
+        </head>
+        <body>
+          <header>${escapeHtml(title)}</header>
+          <main><img src="${src}" alt="${escapeHtml(title)}" /></main>
+        </body>
+      </html>
+    `);
+    imageWindow.document.close();
+  };
+
+  const showSecurityPhoto = (index) => {
+    const collateral = collaterals[index];
+    const src = resolveImageSource(collateral?.photo);
+    if (!collateral || !src) {
+      if (window.notify) window.notify.info('No picture is attached to this security item yet.');
+      return;
+    }
+
+    const viewable = getViewableSecurities();
+    const itemName = getCollateralItemName(collateral, index);
+    activeSecurityIndex = index;
+    activeSecuritySource = src;
+    securityViewerTitle.textContent = itemName;
+    securityViewerImage.src = src;
+    securityViewerImage.alt = `${itemName} security picture`;
+    securityViewerItem.textContent = itemName;
+    securityViewerValue.textContent = `KES ${formatMoney(collateral.value || 0)}`;
+    securityViewerSize.textContent = collateral.photo_size_kb ? `${formatMoney(collateral.photo_size_kb)} KB` : 'Not recorded';
+    securityViewerPrev.disabled = viewable.length <= 1;
+    securityViewerNext.disabled = viewable.length <= 1;
+    securityViewerModal.style.display = 'flex';
+    securityViewerModal.focus({ preventScroll: true });
+  };
+
+  const moveSecurityViewer = (direction) => {
+    const viewable = getViewableSecurities();
+    if (viewable.length <= 1 || activeSecurityIndex === null) return;
+    const currentPosition = viewable.findIndex(entry => entry.index === activeSecurityIndex);
+    const nextPosition = (currentPosition + direction + viewable.length) % viewable.length;
+    showSecurityPhoto(viewable[nextPosition].index);
+  };
+
+  const closeSecurityViewer = () => {
+    securityViewerModal.style.display = 'none';
+    securityViewerImage.removeAttribute('src');
+    activeSecurityIndex = null;
+    activeSecuritySource = '';
+  };
+
+  const wireSecurityCardActions = () => {
+    container.querySelectorAll('.security-view-btn').forEach(btn => {
+      btn.onclick = () => showSecurityPhoto(Number(btn.dataset.index));
+    });
+
+    if (!canEditSecurities) return;
     container.querySelectorAll('.security-photo-btn').forEach(btn => {
       btn.onclick = () => {
         const index = Number(btn.dataset.index);
         const collateral = collaterals[index];
         if (!collateral) return;
-        const itemName = collateral.item || collateral.name || collateral.description || `Security ${index + 1}`;
+        const itemName = getCollateralItemName(collateral, index);
 
         openCamera(async (dataUrl, file, meta) => {
           const restoreButton = setButtonLoading(btn, 'Saving...');
@@ -905,20 +1181,40 @@ export const renderLoanDetails = async (params) => {
             collaterals[index] = updatedCollaterals[index];
             const preview = container.querySelector(`[data-security-preview="${index}"]`);
             const metaEl = container.querySelector(`[data-security-meta="${index}"]`);
+            const actionsEl = container.querySelector(`[data-security-actions="${index}"]`);
             if (preview) preview.innerHTML = renderSecurityPhoto(dataUrl, itemName);
             if (metaEl) metaEl.textContent = meta?.sizeKb ? `Photo: ${formatMoney(meta.sizeKb)} KB` : 'Photo updated';
+            if (actionsEl) actionsEl.outerHTML = renderSecurityActions(updatedCollaterals[index], index);
             saved = true;
             if (window.notify) window.notify.success('Security picture saved to loan file.');
           } catch (error) {
             if (window.notify) window.notify.error('Failed to save security picture: ' + (error.message || 'Please try again.'));
           } finally {
             restoreButton();
-            if (saved) btn.textContent = 'Update Picture';
+            if (saved) wireSecurityCardActions();
           }
         });
       };
     });
-  }
+  };
+
+  container.querySelector('#security-viewer-close').onclick = closeSecurityViewer;
+  securityViewerOpen.onclick = () => {
+    if (!activeSecuritySource || activeSecurityIndex === null) return;
+    const title = getCollateralItemName(collaterals[activeSecurityIndex], activeSecurityIndex);
+    openImageInNewWindow(activeSecuritySource, title);
+  };
+  securityViewerPrev.onclick = () => moveSecurityViewer(-1);
+  securityViewerNext.onclick = () => moveSecurityViewer(1);
+  securityViewerModal.onclick = (event) => {
+    if (event.target === securityViewerModal) closeSecurityViewer();
+  };
+  securityViewerModal.onkeydown = (event) => {
+    if (event.key === 'Escape') closeSecurityViewer();
+    if (event.key === 'ArrowLeft') moveSecurityViewer(-1);
+    if (event.key === 'ArrowRight') moveSecurityViewer(1);
+  };
+  wireSecurityCardActions();
 
   const updateHistoryUI = () => {
     const start = (historyPage - 1) * pageSize;
