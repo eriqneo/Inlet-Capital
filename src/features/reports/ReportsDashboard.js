@@ -19,7 +19,7 @@ import {
   getLoanLiabilityAmount as getContractLiabilityAmount,
   getLoanPrincipalAmount as getContractPrincipalAmount
 } from '../../core/repaymentAllocation.js';
-import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, loadOfficerOptions, matchesOfficer, populateOfficerSelect, shouldScopeOfficerData } from '../../core/officerScope.js';
+import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, getOfficerScopeCacheKey, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
 import { createLoanPortfolioCalculator, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
 import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
 
@@ -639,6 +639,51 @@ export const renderReportsDashboard = async () => {
   const getLoanGroupId = (loan) => getRelationId(loan?.group) || loan?.expand?.group?.id || '';
   const getRepaymentLoanId = (repayment) => getRelationId(repayment?.loan) || repayment?.expand?.loan?.id || '';
   const getScheduleLoanId = (schedule) => getRelationId(schedule?.loan) || schedule?.expand?.loan?.id || '';
+  const getScheduleTimestamp = (schedule) => {
+    const date = new Date(schedule?.updated || schedule?.created || 0);
+    return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+  };
+  const normalizeLoanSchedules = (items = []) => {
+    const byLoanInstallment = new Map();
+    const passthrough = [];
+
+    items.forEach(schedule => {
+      const loanId = getScheduleLoanId(schedule);
+      const installmentNo = Number(schedule?.installment_no);
+      if (!loanId || !Number.isFinite(installmentNo)) {
+        passthrough.push(schedule);
+        return;
+      }
+
+      const key = `${loanId}:${installmentNo}`;
+      const existing = byLoanInstallment.get(key);
+      if (!existing) {
+        byLoanInstallment.set(key, schedule);
+        return;
+      }
+
+      const newer = getScheduleTimestamp(schedule) >= getScheduleTimestamp(existing) ? schedule : existing;
+      const older = newer === schedule ? existing : schedule;
+      const amount = Math.max(Number(existing.amount) || 0, Number(schedule.amount) || 0);
+      const paid = Math.max(Number(existing.paid) || 0, Number(schedule.paid) || 0);
+
+      byLoanInstallment.set(key, {
+        ...older,
+        ...newer,
+        amount,
+        paid: Math.min(amount, paid),
+        status: amount > 0 && paid >= amount ? 'paid' : (paid > 0 ? 'partial' : (newer.status || older.status || 'pending'))
+      });
+    });
+
+    return [...byLoanInstallment.values(), ...passthrough].sort((a, b) => {
+      const loanDiff = getScheduleLoanId(a).localeCompare(getScheduleLoanId(b));
+      if (loanDiff !== 0) return loanDiff;
+      const installmentDiff = (Number(a.installment_no) || 0) - (Number(b.installment_no) || 0);
+      if (installmentDiff !== 0) return installmentDiff;
+      return new Date(a.due_date || 0) - new Date(b.due_date || 0);
+    });
+  };
   const isActiveSavingsTransaction = (saving) => !saving?.is_reversed;
   const getSavingsTransactionDate = (saving) => saving?.date || saving?.created;
   const getSavingsSignedAmount = (saving) => {
@@ -1767,25 +1812,68 @@ export const renderReportsDashboard = async () => {
     const upcomingThreshold = new Date();
     upcomingThreshold.setDate(now.getDate() + 7);
 
-    // Find all unpaid schedule items that are overdue or upcoming
-    const alertItems = schedules.filter(s => !isSchedulePaid(s)).map(s => {
-      if (!isWithinDateRange(s.due_date)) return null;
-      const loan = loans.find(l => l.id === s.loan);
-      const isCollectibleLoan = loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
-      if (!isCollectibleLoan) return null;
+    const alertItemsByLoan = new Map();
+    schedules.filter(s => !isSchedulePaid(s)).forEach(s => {
+      if (!isWithinDateRange(s.due_date)) return;
+      const loanId = getScheduleLoanId(s);
+      const loan = loans.find(l => l.id === loanId);
+      const collectibleLoan = loan?.status === 'disbursed'
+        || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
+      if (!collectibleLoan) return;
+
       const remainingAmount = getScheduleRemaining(s);
-      if (remainingAmount <= 0) return null;
-      
+      if (remainingAmount <= 0) return;
+
+      const dueDate = new Date(s.due_date);
+      if (Number.isNaN(dueDate.getTime())) return;
+
+      const diffDays = isScheduleInArrears(s, now)
+        ? getDaysInArrears(s, now)
+        : Math.floor((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate())) / (1000 * 60 * 60 * 24));
+
+      if (diffDays < 0 && dueDate > upcomingThreshold) return;
+
       const member = loan.expand?.member;
       const groupName = member?.expand?.group?.name || loan.expand?.group?.name || 'Individual';
       const guarantor = loan.guarantor || {};
       const guarantorPhone = guarantor.phone || guarantor.phone_number || guarantor.guarantorPhone || '-';
 
-      const dueDate = new Date(s.due_date);
-      const diffDays = isScheduleInArrears(s, now)
-        ? getDaysInArrears(s, now)
-        : Math.floor((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate())) / (1000 * 60 * 60 * 24));
+      if (!alertItemsByLoan.has(loanId)) {
+        alertItemsByLoan.set(loanId, {
+          loan: loanId,
+          loanObj: loan,
+          member,
+          groupName,
+          guarantorPhone,
+          schedules: [],
+          remainingAmount: 0,
+          amount: 0,
+          paid: 0,
+          maxDiffDays: diffDays,
+          earliestDueDate: dueDate,
+          latestDueDate: dueDate
+        });
+      }
 
+      const item = alertItemsByLoan.get(loanId);
+      item.schedules.push(s);
+      item.remainingAmount += remainingAmount;
+      item.amount += Number(s.amount) || 0;
+      item.paid += Number(s.paid) || 0;
+      item.maxDiffDays = Math.max(item.maxDiffDays, diffDays);
+      if (dueDate < item.earliestDueDate) item.earliestDueDate = dueDate;
+      if (dueDate > item.latestDueDate) item.latestDueDate = dueDate;
+    });
+
+    const alertItems = Array.from(alertItemsByLoan.values()).map(item => {
+      const sortedSchedules = item.schedules.sort((a, b) => {
+        const dateDiff = new Date(a.due_date || 0) - new Date(b.due_date || 0);
+        if (dateDiff !== 0) return dateDiff;
+        return (Number(a.installment_no) || 0) - (Number(b.installment_no) || 0);
+      });
+      const firstSchedule = sortedSchedules[0] || {};
+      const lastSchedule = sortedSchedules[sortedSchedules.length - 1] || firstSchedule;
+      const diffDays = item.maxDiffDays;
       let priority = '';
       let color = '';
       let label = '';
@@ -1793,11 +1881,22 @@ export const renderReportsDashboard = async () => {
       if (diffDays > 30) { priority = 'CRITICAL'; color = '#ef4444'; label = 'OVERDUE > 30 DAYS'; }
       else if (diffDays > 0) { priority = 'URGENT'; color = '#f59e0b'; label = `OVERDUE ${diffDays} DAYS`; }
       else if (diffDays === 0) { priority = 'DUE TODAY'; color = '#d97706'; label = 'DUE TODAY'; }
-      else if (dueDate <= upcomingThreshold) { priority = 'UPCOMING'; color = '#3b82f6'; label = 'DUE IN ' + Math.abs(diffDays) + ' DAYS'; }
-      else return null;
+      else { priority = 'UPCOMING'; color = '#3b82f6'; label = 'DUE IN ' + Math.abs(diffDays) + ' DAYS'; }
 
-      return { ...s, loanObj: loan, member, groupName, guarantorPhone, remainingAmount, diffDays, priority, color, label };
-    }).filter(Boolean).sort((a, b) => b.diffDays - a.diffDays);
+      return {
+        ...item,
+        diffDays,
+        priority,
+        color,
+        label,
+        installmentLabel: sortedSchedules.length === 1
+          ? `#${firstSchedule.installment_no}`
+          : `${sortedSchedules.length} installments (#${firstSchedule.installment_no}-${lastSchedule.installment_no})`,
+        due_date: sortedSchedules.length === 1
+          ? firstSchedule.due_date
+          : `${formatDate(item.earliestDueDate)} - ${formatDate(item.latestDueDate)}`
+      };
+    }).sort((a, b) => b.diffDays - a.diffDays);
 
     const counts = { critical: 0, urgent: 0, today: 0, upcoming: 0 };
     alertItems.forEach(a => {
@@ -1830,10 +1929,10 @@ export const renderReportsDashboard = async () => {
         </div>
         <div style="font-size: 0.8rem; margin-bottom: 16px; background: var(--bg-light); padding: 8px; border-radius: 6px;">
           <div style="display: flex; justify-content: space-between;"><span>Loan No:</span> <strong>${a.loanObj?.loan_no}</strong></div>
-          <div style="display: flex; justify-content: space-between;"><span>Installment:</span> <strong>#${a.installment_no}</strong></div>
-          <div style="display: flex; justify-content: space-between;"><span>Due Date:</span> <strong>${formatDate(a.due_date)}</strong></div>
-          <div style="display: flex; justify-content: space-between;"><span>Installment Amount:</span> <strong>${formatMoney(a.amount)}</strong></div>
-          <div style="display: flex; justify-content: space-between;"><span>Paid This Installment:</span> <strong>${formatMoney(a.paid)}</strong></div>
+          <div style="display: flex; justify-content: space-between;"><span>Installment:</span> <strong>${a.installmentLabel}</strong></div>
+          <div style="display: flex; justify-content: space-between;"><span>Due Date:</span> <strong>${typeof a.due_date === 'string' && a.due_date.includes(' - ') ? a.due_date : formatDate(a.due_date)}</strong></div>
+          <div style="display: flex; justify-content: space-between;"><span>Scheduled Amount:</span> <strong>${formatMoney(a.amount)}</strong></div>
+          <div style="display: flex; justify-content: space-between;"><span>Paid Toward Due:</span> <strong>${formatMoney(a.paid)}</strong></div>
         </div>
         <div style="font-size: 0.8rem; margin-bottom: 16px;">
           <div>📞 <strong>Phone:</strong> ${getMemberPhone(a.member) !== '-' ? getMemberPhone(a.member) : getGroupPhone(a.loanObj?.expand?.group)}</div>
@@ -1942,7 +2041,7 @@ export const renderReportsDashboard = async () => {
     loans = portfolioLoans.filter(loan => matchesOfficer(scope.getLoanOfficerId(loan), officerFilter));
     savings = portfolioSavings.filter(saving => matchesOfficer(scope.getSavingOfficerId(saving), officerFilter));
     const loanIds = new Set(loans.map(loan => loan.id));
-    schedules = sourceSchedules.filter(schedule => loanIds.has(getScheduleLoanId(schedule)));
+    schedules = normalizeLoanSchedules(sourceSchedules.filter(schedule => loanIds.has(getScheduleLoanId(schedule))));
     repayments = sourceRepayments.filter(repayment => loanIds.has(getRepaymentLoanId(repayment)));
     settlements = sourceSettlements.filter(settlement => loanIds.has(getRelationId(settlement?.loan)));
   };
@@ -2238,9 +2337,7 @@ export const renderReportsDashboard = async () => {
         groupService.getAllIncludingLifecycle(),
         memberService.getAllIncludingLifecycle(),
         loanService.getFullListFresh({ expand: 'member,member.group,group,processed_by', cacheKey: 'loans:financial:expanded:v1' }),
-        shouldScopeOfficerData()
-          ? Promise.resolve([])
-          : dataCache.get('expenses', () => expenseService.getFullList())
+        dataCache.get(`expenses:reports:${getOfficerScopeCacheKey()}`, () => expenseService.getFullList())
       ]);
 
       applyOfficerScope();

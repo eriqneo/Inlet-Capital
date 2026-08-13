@@ -1,5 +1,17 @@
 import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
+import {
+  getCurrentOfficerId,
+  getOfficerDataScopeId,
+  getOfficerScopeCacheKey,
+  shouldScopeOfficerData,
+  shouldScopeToCurrentOfficer
+} from '../core/officerScope.js';
+
+const combineFilters = (...filters) => filters.filter(Boolean).map(filter => `(${filter})`).join(' && ');
+const getExpenseOfficerScopeFilter = (officerId = getOfficerDataScopeId()) => officerId
+  ? `recorded_by="${officerId}"`
+  : '';
 
 export const expenseService = {
   /**
@@ -7,7 +19,7 @@ export const expenseService = {
    */
   async getAll({ page = 1, perPage = 50, filter = '', sort = '-date' } = {}) {
     return await pb.collection('expenses').getList(page, perPage, {
-      filter,
+      filter: combineFilters(filter, shouldScopeOfficerData() ? getExpenseOfficerScopeFilter() : ''),
       sort,
       expand: 'votehead,recorded_by'
     });
@@ -15,7 +27,7 @@ export const expenseService = {
 
   async getAllCached(options = {}, onUpdate = null) {
     const { page = 1, perPage = 50, filter = '', sort = '-date' } = options;
-    const key = `expenses:list:${page}:${perPage}:${sort}:${filter}`;
+    const key = `expenses:list:${getOfficerScopeCacheKey()}:${page}:${perPage}:${sort}:${filter}`;
     return await dataCache.get(key, () => this.getAll({ page, perPage, filter, sort }), onUpdate);
   },
 
@@ -25,7 +37,7 @@ export const expenseService = {
   async getFullList({ filter = '', sort = '-date' } = {}) {
     return await pb.collection('expenses').getFullList({
       sort,
-      filter,
+      filter: combineFilters(filter, shouldScopeOfficerData() ? getExpenseOfficerScopeFilter() : ''),
       expand: 'votehead,recorded_by'
     });
   },
@@ -34,7 +46,12 @@ export const expenseService = {
    * Record new expense
    */
   async create(data) {
-    const record = await pb.collection('expenses').create(data);
+    const userId = getCurrentOfficerId();
+    const payload = { ...data };
+    if (userId && (shouldScopeToCurrentOfficer() || !payload.recorded_by)) {
+      payload.recorded_by = userId;
+    }
+    const record = await pb.collection('expenses').create(payload);
     await dataCache.invalidatePrefix('expenses:');
     return record;
   },

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'inlet-v9-live-reset';
+const CACHE_NAME = 'inlet-v10-permission-refresh';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -33,6 +33,20 @@ self.addEventListener('fetch', (event) => {
     event.request.method !== 'GET'
   ) {
     return; // Will fall back to standard browser network request natively
+  }
+
+  // Always prefer the deployed app shell so permission and navigation fixes are not hidden by stale HTML.
+  if (event.request.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html') {
+    event.respondWith(
+      fetch(event.request).then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const responseToCache = networkResponse.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseToCache));
+        }
+        return networkResponse;
+      }).catch(() => caches.match(event.request).then(response => response || caches.match('/index.html')))
+    );
+    return;
   }
 
   // 2. VITE HASHED ASSETS (Cache First, Fallback to Network)

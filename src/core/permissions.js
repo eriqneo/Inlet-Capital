@@ -24,8 +24,13 @@ export const getDefaultModulesForRole = (role = '') => ROLE_MODULE_DEFAULTS[role
 
 export const getAssignedModules = (user = {}) => {
   if (user.role === 'super_admin') return MODULES.map(module => module.id);
-  const assigned = Array.isArray(user.module_permissions) ? user.module_permissions.filter(Boolean) : [];
-  return assigned.length > 0 ? assigned : getDefaultModulesForRole(user.role);
+  if (!Array.isArray(user.module_permissions)) return getDefaultModulesForRole(user.role);
+
+  const validModuleIds = new Set(MODULES.map(module => module.id));
+  return [
+    'dashboard',
+    ...user.module_permissions.filter(moduleId => moduleId !== 'dashboard' && validModuleIds.has(moduleId))
+  ];
 };
 
 export const canAccessModule = (user = {}, moduleId = '') => {

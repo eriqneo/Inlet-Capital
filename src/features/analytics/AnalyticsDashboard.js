@@ -6,10 +6,10 @@ import { groupService } from '../../services/groupService.js';
 import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
 import { formatMoney, formatPercent } from '../../core/utils.js';
-import { getDaysInArrears, getScheduleArrearsAmount, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
+import { buildEffectiveSchedulePaidMap, getDaysInArrears, getScheduleArrearsAmount, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
 import { canUseOfficerFilter, createOfficerScope, getGlobalOfficerFilter, getGroupOfficerId, getMemberOfficerId } from '../../core/officerScope.js';
 import { settingsService } from '../../services/settingsService.js';
-import { createLoanPortfolioCalculator, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
+import { createLoanPortfolioCalculator, isCollectibleLoanRecord, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
 import {
   getLoanLiabilityAmount,
   getLoanPrincipalAmount,
@@ -31,11 +31,17 @@ export const renderAnalyticsDashboard = async () => {
       [members, loans, repayments, settlements, groups, savings, schedules, users, automaticPenaltyAmount] = await Promise.all([
         memberService.getAll(),
         loanService.getFullListFresh({ cacheKey: 'loans:financial:expanded:v1' }),
-        pb.collection('loan_repayments').getFullList(),
+        dataCache.refreshDedupe(
+          'loan_repayments:dashboard:all',
+          () => pb.collection('loan_repayments').getFullList()
+        ),
         loanService.getBalanceOffsFullList({ expand: '' }),
         groupService.getAll(),
         savingsService.getFullListCached({ expand: '', cacheKey: 'savings:analytics:basic:v1' }),
-        pb.collection('loan_schedule').getFullList(),
+        dataCache.refreshDedupe(
+          'loan_schedule:dashboard:all',
+          () => pb.collection('loan_schedule').getFullList()
+        ),
         dataCache.get('users:analytics:loan-users:v1', () => pb.collection('users').getFullList({
           filter: 'role="loan_officer" || role="group_officer" || role="manager" || role="admin" || role="super_admin"',
           sort: 'email'
@@ -226,13 +232,20 @@ export const renderAnalyticsDashboard = async () => {
       : collectionWindow.end
         ? `Until ${formatShortDate(collectionWindow.end)}`
         : `From ${formatShortDate(collectionWindow.start || todayStart)}`;
-    const scheduleMatchesCollectionWindow = (schedule) => {
+    const thisMonthCollectionWindow = {
+      label: 'This Month',
+      start: new Date(todayStart.getFullYear(), todayStart.getMonth(), 1),
+      end: new Date(todayStart.getFullYear(), todayStart.getMonth() + 1, 0, 23, 59, 59, 999),
+      includeOverdue: false
+    };
+    const scheduleMatchesWindow = (schedule, windowDef) => {
       const dueDate = new Date(schedule.due_date);
       if (Number.isNaN(dueDate.getTime())) return false;
-      if (collectionWindow.start && dueDate < collectionWindow.start) return false;
-      if (collectionWindow.end && dueDate > collectionWindow.end) return false;
+      if (windowDef.start && dueDate < windowDef.start) return false;
+      if (windowDef.end && dueDate > windowDef.end) return false;
       return true;
     };
+    const scheduleMatchesCollectionWindow = (schedule) => scheduleMatchesWindow(schedule, collectionWindow);
     const recordMatchesCollectionWindow = (value) => {
       const recordDate = toValidDate(value);
       if (!recordDate) return false;
@@ -262,70 +275,11 @@ export const renderAnalyticsDashboard = async () => {
     const snapshotSettlements = hasAnalyticsDateRange
       ? settlements.filter(record => recordIsOnOrBeforeSnapshot(record, ['effective_date', 'created']))
       : settlements;
-    const buildEffectiveSchedulePaidMap = ({
-      repaymentRecords = repayments,
-      settlementRecords = settlements,
-      useRecordedPaid = true
-    } = {}) => {
-      const schedulesByLoan = new Map();
-      schedules.forEach(schedule => {
-        if (!schedule.loan) return;
-        if (!schedulesByLoan.has(schedule.loan)) schedulesByLoan.set(schedule.loan, []);
-        schedulesByLoan.get(schedule.loan).push(schedule);
-      });
-      schedulesByLoan.forEach(loanSchedules => {
-        loanSchedules.sort((a, b) => {
-          const installmentDiff = (Number(a.installment_no) || 0) - (Number(b.installment_no) || 0);
-          if (installmentDiff !== 0) return installmentDiff;
-          return new Date(a.due_date || 0) - new Date(b.due_date || 0);
-        });
-      });
-
-      const repaymentsByLoan = new Map();
-      [
-        ...repaymentRecords,
-        ...settlementRecords.map(settlement => ({
-          ...settlement,
-          amount: Number(settlement.amount) || 0,
-          date: settlement.effective_date || settlement.created
-        }))
-      ].forEach(repayment => {
-        if (!repayment.loan) return;
-        if (!repaymentsByLoan.has(repayment.loan)) repaymentsByLoan.set(repayment.loan, []);
-        repaymentsByLoan.get(repayment.loan).push(repayment);
-      });
-      repaymentsByLoan.forEach(loanRepayments => {
-        loanRepayments.sort((a, b) => new Date(a.date || a.created || 0) - new Date(b.date || b.created || 0));
-      });
-
-      const paidMap = new Map();
-      schedulesByLoan.forEach((loanSchedules, loanId) => {
-        const allocated = new Map(loanSchedules.map(schedule => [schedule.id, 0]));
-        (repaymentsByLoan.get(loanId) || []).forEach(repayment => {
-          let remainingPayment = Number(repayment.amount) || 0;
-          for (const schedule of loanSchedules) {
-            if (remainingPayment <= 0) break;
-            const scheduleAmount = Number(schedule.amount) || 0;
-            const currentPaid = allocated.get(schedule.id) || 0;
-            const openAmount = Math.max(0, scheduleAmount - currentPaid);
-            if (openAmount <= 0) continue;
-            const applied = Math.min(openAmount, remainingPayment);
-            allocated.set(schedule.id, currentPaid + applied);
-            remainingPayment -= applied;
-          }
-        });
-        loanSchedules.forEach(schedule => {
-          const recordedPaid = useRecordedPaid ? (Number(schedule.paid) || 0) : 0;
-          const allocatedPaid = allocated.get(schedule.id) || 0;
-          paidMap.set(schedule.id, Math.min(Number(schedule.amount) || 0, Math.max(recordedPaid, allocatedPaid)));
-        });
-      });
-      return paidMap;
-    };
     const effectiveSchedulePaidMap = buildEffectiveSchedulePaidMap({
-      repaymentRecords: hasAnalyticsDateRange ? snapshotRepayments : repayments,
-      settlementRecords: hasAnalyticsDateRange ? snapshotSettlements : settlements,
-      useRecordedPaid: !hasAnalyticsDateRange
+      schedules,
+      repayments: hasAnalyticsDateRange ? snapshotRepayments : repayments,
+      settlements: hasAnalyticsDateRange ? snapshotSettlements : settlements,
+      useRecordedPaid: false
     });
     const getEffectiveSchedulePaid = (schedule) => effectiveSchedulePaidMap.get(schedule.id) ?? Math.min(Number(schedule.amount) || 0, Math.max(0, Number(schedule.paid) || 0));
     const getEffectiveScheduleRemaining = (schedule) => Math.max(0, (Number(schedule.amount) || 0) - getEffectiveSchedulePaid(schedule));
@@ -342,6 +296,7 @@ export const renderAnalyticsDashboard = async () => {
       .filter(loan => {
         const disbursedAt = toValidDate(loan.disbursement_date);
         if (!disbursedAt || disbursedAt > snapshotDate || !filterByOfficer(loan)) return false;
+        if (!hasAnalyticsDateRange) return isCollectibleLoanRecord(loan);
         if (loan.status !== 'written_off') return isGivenLoan(loan);
         const writtenOffAt = toValidDate(loan.written_off_at);
         return Boolean(writtenOffAt && writtenOffAt > snapshotDate);
@@ -392,6 +347,23 @@ export const renderAnalyticsDashboard = async () => {
       (sum, repayment) => sum + getRepaymentContractAmount(repayment),
       0
     );
+    const thisMonthRepaymentByOfficer = {};
+    scopedSchedules
+      .filter(schedule => {
+        const loan = loansById.get(schedule.loan);
+        if (!loan || !filterByOfficer(loan)) return false;
+        if (!isGivenLoan(loan)) return false;
+        return scheduleMatchesWindow(schedule, thisMonthCollectionWindow);
+      })
+      .forEach(schedule => {
+        const loan = loansById.get(schedule.loan);
+        const officerKey = getLoanResponsibleOfficer(loan) || 'unassigned';
+        if (!thisMonthRepaymentByOfficer[officerKey]) {
+          thisMonthRepaymentByOfficer[officerKey] = { gross: 0, paid: 0 };
+        }
+        thisMonthRepaymentByOfficer[officerKey].gross += Number(schedule.amount) || 0;
+        thisMonthRepaymentByOfficer[officerKey].paid += getEffectiveSchedulePaid(schedule);
+      });
     const collectionOfficerMap = {};
     forecastSchedules.forEach(schedule => {
       const loan = loansById.get(schedule.loan);
@@ -430,7 +402,19 @@ export const renderAnalyticsDashboard = async () => {
       collectionOfficerMap[officerKey].collectedInWindow = collected;
     });
     const collectionOfficerRows = Object.values(collectionOfficerMap)
-      .map(row => ({ ...row, clients: row.clients.size }))
+      .map(row => {
+        const thisMonthStats = thisMonthRepaymentByOfficer[row.id] || { gross: 0, paid: 0 };
+        const thisMonthRepaymentRate = thisMonthStats.gross > 0
+          ? Math.min(100, (thisMonthStats.paid / thisMonthStats.gross) * 100)
+          : 0;
+        return {
+          ...row,
+          clients: row.clients.size,
+          thisMonthGross: thisMonthStats.gross,
+          thisMonthPaid: thisMonthStats.paid,
+          thisMonthRepaymentRate
+        };
+      })
       .sort((a, b) => b.expected - a.expected);
     const getEfficiencyRating = (rate, gross) => {
       if (gross <= 0) return { label: 'No Due', color: 'var(--text-muted)' };
@@ -496,16 +480,17 @@ export const renderAnalyticsDashboard = async () => {
     }
     const officerScopedSavingsAllTime = savings.filter(filterSavingsByOfficer);
     const officerScopedLoansAllTime = loans.filter(filterByOfficer);
-    const getSavingsMovementForMonth = (bounds) => officerScopedSavingsAllTime
+    const getSavingsDepositsForPeriod = (bounds) => officerScopedSavingsAllTime
       .filter(s => !s.is_reversed)
+      .filter(s => s.type === 'deposit')
       .filter(s => isWithinBounds(s.date || s.created, bounds))
-      .reduce((sum, s) => s.type === 'deposit' ? sum + (Number(s.amount) || 0) : sum - (Number(s.amount) || 0), 0);
+      .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
     const getLoanDisbursedForMonth = (bounds) => officerScopedLoansAllTime
       .filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date)
       .filter(l => isWithinBounds(l.disbursement_date, bounds))
       .reduce((sum, l) => sum + (Number(l.approved_amount || l.amount_applied) || 0), 0);
-    const currentMonthSavings = getSavingsMovementForMonth(currentMonthBounds);
-    const previousMonthSavings = getSavingsMovementForMonth(previousMonthBounds);
+    const currentMonthSavings = getSavingsDepositsForPeriod(currentMonthBounds);
+    const previousMonthSavings = getSavingsDepositsForPeriod(previousMonthBounds);
     const savingsGrowthRate = calculateGrowthRate(currentMonthSavings, previousMonthSavings);
     const savingsGrowthHealth = getGrowthHealth(savingsGrowthRate);
     const currentMonthLoans = getLoanDisbursedForMonth(currentMonthBounds);
@@ -561,6 +546,38 @@ export const renderAnalyticsDashboard = async () => {
       })
       .filter(b => b.balance > 0)
       .sort((a, b) => b.balance - a.balance)
+      .slice(0, 5);
+
+    const saverMap = new Map();
+    scopedSavings
+      .filter(saving => !saving.is_reversed)
+      .forEach(saving => {
+        const memberId = getSavingMemberId(saving);
+        const groupId = getSavingGroupId(saving);
+        const accountId = memberId || groupId;
+        if (!accountId) return;
+
+        const member = memberId ? membersById.get(memberId) : null;
+        const group = groupId ? groupsById.get(groupId) : null;
+        const amount = Math.max(0, Number(saving.amount) || 0);
+        const current = saverMap.get(accountId) || {
+          id: member?.reg_no || group?.group_id || accountId,
+          name: member?.full_name || group?.name || 'Unknown saver',
+          account: member
+            ? (group?.name || member?.expand?.group?.name || 'Individual')
+            : 'Group Account',
+          deposits: 0,
+          withdrawals: 0
+        };
+
+        if (saving.type === 'withdrawal') current.withdrawals += amount;
+        else if (saving.type === 'deposit') current.deposits += amount;
+        saverMap.set(accountId, current);
+      });
+    const topSavers = [...saverMap.values()]
+      .map(saver => ({ ...saver, netSavings: saver.deposits - saver.withdrawals }))
+      .filter(saver => saver.netSavings > 0)
+      .sort((a, b) => b.netSavings - a.netSavings || b.deposits - a.deposits)
       .slice(0, 5);
 
     // Compute Arrears Aging (All Time logic for arrears)
@@ -692,13 +709,13 @@ export const renderAnalyticsDashboard = async () => {
           <div class="kpi-icon" style="background: rgba(16, 185, 129, 0.1); color: var(--success);">📊</div>
           <div class="kpi-label">Savings Growth</div>
           <div class="kpi-value" style="color: ${savingsGrowthHealth.color};">${savingsGrowthHealth.label}</div>
-          <div class="kpi-trend" style="color: ${savingsGrowthHealth.color};">${savingsGrowthHealth.note} · ${growthCurrentLabel} KES ${formatMoney(currentMonthSavings)} vs ${growthPreviousLabel} KES ${formatMoney(previousMonthSavings)}</div>
+          <div class="kpi-trend" style="color: ${savingsGrowthHealth.color};">${savingsGrowthHealth.note} · deposits ${growthCurrentLabel} KES ${formatMoney(currentMonthSavings)} vs ${growthPreviousLabel} KES ${formatMoney(previousMonthSavings)}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(201, 168, 76, 0.1); color: var(--accent);">✅</div>
           <div class="kpi-label">Global Repayment Rate</div>
           <div class="kpi-value">${repaymentRate}</div>
-          <div class="kpi-trend" style="color: var(--success);">Repayment Progress</div>
+          <div class="kpi-trend" style="color: var(--success);">Historical Repayment Progress</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(239, 68, 68, 0.1); color: var(--danger);">⚠️</div>
@@ -731,11 +748,12 @@ export const renderAnalyticsDashboard = async () => {
                 <th>Installments</th>
                 <th class="text-right">Scheduled Due</th>
                 <th class="text-right">Already Paid</th>
+                <th class="text-right">This Month Repayment Rate</th>
                 <th class="text-right">Expected Collection</th>
               </tr>
             </thead>
             <tbody>
-              ${collectionOfficerRows.length === 0 ? '<tr><td colspan="6" class="text-center text-muted">No scheduled collections for this forecast window.</td></tr>' : collectionOfficerRows.map(row => `
+              ${collectionOfficerRows.length === 0 ? '<tr><td colspan="7" class="text-center text-muted">No scheduled collections for this forecast window.</td></tr>' : collectionOfficerRows.map(row => `
                 <tr>
                   <td>
                     <div class="font-semibold">${escapeHtml(row.name)}</div>
@@ -745,6 +763,11 @@ export const renderAnalyticsDashboard = async () => {
                   <td>${row.installments.toLocaleString()}</td>
                   <td class="text-right">${formatMoney(row.gross)}</td>
                   <td class="text-right text-success">${formatMoney(row.paid)}</td>
+                  <td class="text-right">
+                    ${row.thisMonthGross > 0
+                      ? `<div class="font-semibold">${formatPercent(row.thisMonthRepaymentRate)}</div><div class="text-xs text-muted">${formatMoney(row.thisMonthPaid)} / ${formatMoney(row.thisMonthGross)}</div>`
+                      : '<span class="text-muted">No due</span>'}
+                  </td>
                   <td class="text-right font-semibold text-danger">${formatMoney(row.expected)}</td>
                 </tr>
               `).join('')}
@@ -879,8 +902,45 @@ export const renderAnalyticsDashboard = async () => {
           </div>
         </div>
 
+        <!-- Top Savers -->
+        <div class="chart-card" style="min-height: auto; border-color: rgba(16, 185, 129, 0.3);">
+          <div class="chart-header">
+            <div>
+              <div class="chart-title" style="color: var(--success);">Top 5 Savers</div>
+              <div class="text-xs text-muted" style="margin-top: 4px;">${hasAnalyticsDateRange ? 'Net savings movement in the selected period' : 'Current net savings balance'}</div>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table class="table" style="font-size: 0.875rem;">
+              <thead>
+                <tr>
+                  <th>Saver</th>
+                  <th class="text-right">Deposits</th>
+                  <th class="text-right">Withdrawals</th>
+                  <th class="text-right">Net Savings</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${topSavers.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No positive savings balances</td></tr>' : topSavers.map(saver => `
+                  <tr>
+                    <td>
+                      <div class="font-semibold">${escapeHtml(saver.name)}</div>
+                      <div class="text-xs text-muted">${escapeHtml(saver.id)} · ${escapeHtml(saver.account)}</div>
+                    </td>
+                    <td class="text-right text-success">${formatMoney(saver.deposits)}</td>
+                    <td class="text-right text-danger">${formatMoney(saver.withdrawals)}</td>
+                    <td class="text-right font-semibold">${formatMoney(saver.netSavings)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="charts-grid" style="margin-top: 24px;">
         <!-- Arrears Aging -->
-        <div class="chart-card" style="min-height: auto; border-color: rgba(239, 68, 68, 0.3);">
+        <div class="chart-card" style="min-height: auto; border-color: rgba(239, 68, 68, 0.3); grid-column: 1 / -1;">
           <div class="chart-header">
             <div class="chart-title" style="color: var(--danger);">Arrears & Aging Watchlist</div>
           </div>
@@ -1150,13 +1210,12 @@ export const renderAnalyticsDashboard = async () => {
     }
 
     // 5. Loan Growth vs Savings Growth
-    const savingsNetData = monthKeys.map(mk => {
+    const savingsDepositGrowthBase = monthKeys.map(mk => {
       return fSavings
+        .filter(s => !s.is_reversed)
+        .filter(s => s.type === 'deposit')
         .filter(s => (s.date || s.created || '').startsWith(mk))
-        .reduce((sum, s) => {
-          const amount = Number(s.amount) || 0;
-          return s.type === 'withdrawal' ? sum - amount : sum + amount;
-        }, 0);
+        .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
     });
     const calculateGrowthSeries = (values) => values.map((value, index) => {
       if (index === 0) return 0;
@@ -1166,7 +1225,7 @@ export const renderAnalyticsDashboard = async () => {
       if (current > 0) return 100;
       return 0;
     });
-    const savingsGrowthData = calculateGrowthSeries(savingsNetData);
+    const savingsGrowthData = calculateGrowthSeries(savingsDepositGrowthBase);
     const loanGrowthData = calculateGrowthSeries(disbData);
 
     const canvas5 = document.getElementById('loanSavingsGrowthChart');

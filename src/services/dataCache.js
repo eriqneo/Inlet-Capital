@@ -6,7 +6,7 @@ const STORE_NAME = 'collections';
 const TTL = 5 * 60 * 1000; // 5 minutes (data older than this triggers background refresh on access)
 const DEFAULT_LOCAL_FIRST_REFRESH_INTERVAL = 10 * 1000;
 const CACHE_EPOCH_KEY = 'inlet_data_cache_epoch';
-export const DATA_CACHE_EPOCH = 'officer-isolation-2026-08-06-v1';
+export const DATA_CACHE_EPOCH = 'group-officer-transfer-2026-08-13-v2';
 const inFlightRefreshes = new Map();
 
 const getCacheOwner = () => pb.authStore.model?.id || 'anonymous';

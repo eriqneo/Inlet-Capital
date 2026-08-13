@@ -2,12 +2,20 @@ import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
 
 const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000;
+const SESSION_REFRESH_MIN_INTERVAL_MS = 30 * 1000;
 const LAST_ACTIVITY_KEY = 'inlet_last_activity_at';
 let inactivityTimer = null;
 let inactivityWatchStarted = false;
+let lastSessionRefreshAt = 0;
 
 const now = () => Date.now();
 const isSuspendedUser = (user) => String(user?.status || '').toLowerCase() === 'suspended';
+const getAccessFingerprint = (user) => JSON.stringify({
+  role: user?.role || '',
+  status: user?.status || '',
+  forcePasswordChange: Boolean(user?.force_password_change),
+  modules: Array.isArray(user?.module_permissions) ? [...user.module_permissions].sort() : null
+});
 
 const formatPocketBaseError = (err, fallback = 'Request failed.') => {
   const details = err?.data?.data;
@@ -92,10 +100,15 @@ export const authService = {
         this.logout({ reason: 'inactivity' });
         return false;
       }
+      const previousAccess = getAccessFingerprint(this.getUser());
       await pb.collection('users').authRefresh();
+      lastSessionRefreshAt = now();
       if (this.isSuspended()) {
         this.logout({ reason: 'suspended' });
         return false;
+      }
+      if (previousAccess !== getAccessFingerprint(this.getUser())) {
+        window.dispatchEvent(new CustomEvent('inlet:user-access-changed'));
       }
       this.markActivity();
       this.startInactivityWatch();
@@ -232,6 +245,16 @@ export const authService = {
         this.logout({ reason: 'inactivity' });
       } else if (!document.hidden) {
         this.markActivity();
+        if (now() - lastSessionRefreshAt >= SESSION_REFRESH_MIN_INTERVAL_MS) {
+          void this.refreshSession();
+        }
+      }
+    });
+
+    window.addEventListener('focus', () => {
+      if (!this.isAuthenticated() || this.isInactiveExpired()) return;
+      if (now() - lastSessionRefreshAt >= SESSION_REFRESH_MIN_INTERVAL_MS) {
+        void this.refreshSession();
       }
     });
 

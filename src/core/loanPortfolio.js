@@ -4,6 +4,9 @@ import { getLoanLiabilityAmount, getRepaymentContractAmount, getSettlementContra
 export const isDisbursedLoanRecord = (loan) => Boolean(loan?.disbursement_date)
   && ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan?.status);
 
+export const isCollectibleLoanRecord = (loan) => Boolean(loan?.disbursement_date)
+  && ['disbursed', 'approved', 'partial_approved'].includes(loan?.status);
+
 export const isWrittenOffLoanRecord = (loan) => loan?.status === 'written_off';
 
 export const calculateLoanOutstandingBalance = ({

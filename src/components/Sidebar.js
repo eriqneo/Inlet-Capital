@@ -10,18 +10,6 @@ const PENDING_LOANS_TTL = 2 * 60 * 1000;
 let pendingLoanCountPromise = null;
 const getPendingLoansCacheKey = () => `${PENDING_LOANS_CACHE_KEY}:${getOfficerScopeCacheKey()}`;
 
-const roleLinks = {
-  '#/':           ['*'],
-  '#/analytics':  ['super_admin', 'admin', 'manager', 'auditor'],
-  '#/members':    ['super_admin', 'admin', 'manager', 'loan_officer', 'cashier', 'group_officer', 'auditor'],
-  '#/groups':     ['super_admin', 'admin', 'manager', 'loan_officer', 'group_officer', 'auditor'],
-  '#/loans':      ['super_admin', 'admin', 'manager', 'loan_officer'],
-  '#/savings':    ['super_admin', 'admin', 'cashier'],
-  '#/expenses':   ['super_admin', 'admin', 'cashier'],
-  '#/reports':    ['super_admin', 'admin', 'manager', 'loan_officer', 'auditor'],
-  '#/settings':   ['super_admin', 'admin'],
-};
-
 const pathModules = {
   '#/': 'dashboard',
   '#/analytics': 'analytics',
@@ -35,10 +23,10 @@ const pathModules = {
 };
 
 const canView = (path, user) => {
-  const allowed = roleLinks[path];
-  if (!allowed) return false;
-  const roleAllowed = allowed.includes('*') || allowed.includes(user?.role);
-  return roleAllowed && canAccessModule(user, pathModules[path]);
+  const moduleId = pathModules[path];
+  if (!moduleId) return false;
+  if (moduleId === 'settings' && !['super_admin', 'admin'].includes(user?.role)) return false;
+  return canAccessModule(user, moduleId);
 };
 
 export const updateSidebarActiveRoute = (currentHash = window.location.hash || '#/') => {

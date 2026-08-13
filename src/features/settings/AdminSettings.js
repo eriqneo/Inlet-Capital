@@ -43,6 +43,52 @@ export const renderAdminSettings = async () => {
   const isSuperAdmin = authService.hasRole('super_admin');
   const canManageUsers = isSuperAdmin;
   const userAssignableModules = MODULES.filter(module => module.id !== 'dashboard');
+  const getRelationId = (value) => {
+    if (Array.isArray(value)) return getRelationId(value[0]);
+    if (value && typeof value === 'object') return value.id || '';
+    return String(value || '');
+  };
+  const getAssignedOfficerId = (record, fallbackField) => (
+    getRelationId(record?.assigned_officer) || getRelationId(record?.[fallbackField])
+  );
+  const getMemberGroupId = (member) => (
+    getRelationId(member?.group) || getRelationId(member?.expand?.group)
+  );
+  const getAssignmentTargets = ({ fromOfficer = 'all', scope = 'both', mode = 'bulk' } = {}) => {
+    const memberPool = assignmentMembers.filter(member => (
+      fromOfficer === 'all' || getAssignedOfficerId(member, 'registered_by') === fromOfficer
+    ));
+    const groupPool = assignmentGroups.filter(group => (
+      fromOfficer === 'all' || getAssignedOfficerId(group, 'created_by') === fromOfficer
+    ));
+    const groupTargets = scope === 'members'
+      ? []
+      : mode === 'selected'
+        ? groupPool.filter(group => assignmentSelectedGroups.has(group.id))
+        : groupPool;
+    const directMemberTargets = scope === 'groups'
+      ? []
+      : mode === 'selected'
+        ? memberPool.filter(member => assignmentSelectedMembers.has(member.id))
+        : memberPool;
+    const targetGroupIds = new Set(groupTargets.map(group => group.id));
+    const groupMemberTargets = targetGroupIds.size > 0
+      ? assignmentMembers.filter(member => targetGroupIds.has(getMemberGroupId(member)))
+      : [];
+    const memberTargets = Array.from(new Map(
+      [...directMemberTargets, ...groupMemberTargets].map(member => [member.id, member])
+    ).values());
+
+    return { memberPool, groupPool, memberTargets, groupTargets };
+  };
+  const transferRecordsInBatches = async (collection, records, officerId, batchSize = 10) => {
+    for (let index = 0; index < records.length; index += batchSize) {
+      const batch = records.slice(index, index + batchSize);
+      await Promise.all(batch.map(record => (
+        pb.collection(collection).update(record.id, { assigned_officer: officerId })
+      )));
+    }
+  };
   const settingValue = (key, fallback = '') => (
     Object.prototype.hasOwnProperty.call(settings, key) && settings[key] !== null && settings[key] !== undefined && settings[key] !== ''
       ? settings[key]
@@ -189,7 +235,6 @@ export const renderAdminSettings = async () => {
     const officerUsers = users
       .filter(user => ['loan_officer', 'group_officer', 'manager', 'admin', 'super_admin'].includes(user.role || ''))
       .sort((a, b) => String(a.name || a.email || '').localeCompare(String(b.name || b.email || ''), undefined, { sensitivity: 'base' }));
-    const getAssignedOfficerId = (record, fallbackField) => record.assigned_officer || record[fallbackField] || '';
     const selectedFromOfficer = container.querySelector('#assignment-from-officer')?.value || 'all';
     const selectedAssignmentScope = container.querySelector('#assignment-scope')?.value || 'both';
     assignmentToOfficer = container.querySelector('#assignment-to-officer')?.value ?? assignmentToOfficer;
@@ -201,8 +246,11 @@ export const renderAdminSettings = async () => {
       return user?.name || user?.email || (officerId ? `User ${String(officerId).slice(0, 6)}` : 'Unassigned');
     };
     const searchNeedle = assignmentSearch.trim().toLowerCase();
-    const memberPool = assignmentMembers.filter(member => selectedFromOfficer === 'all' || getAssignedOfficerId(member, 'registered_by') === selectedFromOfficer);
-    const groupPool = assignmentGroups.filter(group => selectedFromOfficer === 'all' || getAssignedOfficerId(group, 'created_by') === selectedFromOfficer);
+    const { memberPool, groupPool, memberTargets: previewMemberTargets, groupTargets: previewGroupTargets } = getAssignmentTargets({
+      fromOfficer: selectedFromOfficer,
+      scope: selectedAssignmentScope,
+      mode: assignmentMode
+    });
     const searchableMemberPool = memberPool.filter(member => {
       if (!searchNeedle) return true;
       return [member.full_name, member.reg_no, member.phone_number, member.phone, member.id_number, member.expand?.group?.name]
@@ -215,13 +263,7 @@ export const renderAdminSettings = async () => {
     });
     const visibleAssignmentMembers = selectedAssignmentScope === 'groups' ? [] : searchableMemberPool.slice(0, 12);
     const visibleAssignmentGroups = selectedAssignmentScope === 'members' ? [] : searchableGroupPool.slice(0, 12);
-    const assignedMemberCount = memberPool.length;
-    const assignedGroupCount = groupPool.length;
-    const selectedMemberCount = Array.from(assignmentSelectedMembers).filter(id => memberPool.some(member => member.id === id)).length;
-    const selectedGroupCount = Array.from(assignmentSelectedGroups).filter(id => groupPool.some(group => group.id === id)).length;
-    const assignmentPreviewCount = assignmentMode === 'selected'
-      ? (selectedAssignmentScope === 'groups' ? 0 : selectedMemberCount) + (selectedAssignmentScope === 'members' ? 0 : selectedGroupCount)
-      : (selectedAssignmentScope === 'groups' ? 0 : assignedMemberCount) + (selectedAssignmentScope === 'members' ? 0 : assignedGroupCount);
+    const assignmentPreviewCount = previewMemberTargets.length + previewGroupTargets.length;
 
     container.innerHTML = `
       <div style="margin-bottom: 24px;">
@@ -403,9 +445,9 @@ export const renderAdminSettings = async () => {
                       <div class="form-group" style="margin: 0;">
                         <label class="form-label">Scope</label>
                         <select id="assignment-scope" name="scope" class="form-control" required>
-                          <option value="both" ${selectedAssignmentScope === 'both' ? 'selected' : ''}>Members and Groups</option>
+                          <option value="both" ${selectedAssignmentScope === 'both' ? 'selected' : ''}>Members and Groups + their members</option>
                           <option value="members" ${selectedAssignmentScope === 'members' ? 'selected' : ''}>Members only</option>
-                          <option value="groups" ${selectedAssignmentScope === 'groups' ? 'selected' : ''}>Groups only</option>
+                          <option value="groups" ${selectedAssignmentScope === 'groups' ? 'selected' : ''}>Groups + their members</option>
                         </select>
                       </div>
                       <div class="form-group" style="margin: 0;">
@@ -476,8 +518,8 @@ export const renderAdminSettings = async () => {
                     <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-color);">
                       <div class="text-xs text-muted">
                         Preview: <strong>${assignmentPreviewCount}</strong> records selected
-                        <span style="margin-left: 8px;">Members: ${assignmentMode === 'selected' ? selectedMemberCount : assignedMemberCount}</span>
-                        <span style="margin-left: 8px;">Groups: ${assignmentMode === 'selected' ? selectedGroupCount : assignedGroupCount}</span>
+                        <span style="margin-left: 8px;">Members: ${previewMemberTargets.length}</span>
+                        <span style="margin-left: 8px;">Groups: ${previewGroupTargets.length}</span>
                       </div>
                       <button type="submit" class="btn btn-primary" ${assignmentPreviewCount === 0 ? 'disabled' : ''}>Transfer Clients</button>
                     </div>
@@ -1093,18 +1135,7 @@ export const renderAdminSettings = async () => {
           return;
         }
 
-        const memberPool = assignmentMembers.filter(member => fromOfficer === 'all' || (member.assigned_officer || member.registered_by || '') === fromOfficer);
-        const groupPool = assignmentGroups.filter(group => fromOfficer === 'all' || (group.assigned_officer || group.created_by || '') === fromOfficer);
-        const memberTargets = scope === 'groups'
-          ? []
-          : mode === 'selected'
-            ? memberPool.filter(member => assignmentSelectedMembers.has(member.id))
-            : memberPool;
-        const groupTargets = scope === 'members'
-          ? []
-          : mode === 'selected'
-            ? groupPool.filter(group => assignmentSelectedGroups.has(group.id))
-            : groupPool;
+        const { memberTargets, groupTargets } = getAssignmentTargets({ fromOfficer, scope, mode });
         const totalTargets = memberTargets.length + groupTargets.length;
         if (totalTargets === 0) {
           if (window.notify) window.notify.error('No clients match this transfer selection.');
@@ -1117,23 +1148,18 @@ export const renderAdminSettings = async () => {
         const toLabel = users.find(user => user.id === toOfficer)?.name || users.find(user => user.id === toOfficer)?.email || 'new officer';
         const confirmed = window.confirmDialog ? await window.confirmDialog({
           title: 'Transfer Client Assignments',
-          message: `Transfer ${totalTargets} client assignment${totalTargets === 1 ? '' : 's'} from ${fromLabel} to ${toLabel}? Historical registration and loan records will not be changed.`,
+          message: `Transfer ${groupTargets.length} group${groupTargets.length === 1 ? '' : 's'} and ${memberTargets.length} member${memberTargets.length === 1 ? '' : 's'} from ${fromLabel} to ${toLabel}? Members belonging to transferred groups will move with their group. Historical registration and loan records will not be changed.`,
           confirmText: 'Transfer Clients',
           cancelText: 'Cancel',
           type: 'warning'
-        }) : confirm(`Transfer ${totalTargets} client assignments from ${fromLabel} to ${toLabel}?`);
+        }) : confirm(`Transfer ${groupTargets.length} groups and ${memberTargets.length} members from ${fromLabel} to ${toLabel}?`);
         if (!confirmed) return;
 
         const restoreButton = setButtonLoading(assignmentTransferForm.querySelector('button[type="submit"]'), 'Transferring...');
         try {
-          await Promise.all([
-            ...memberTargets.map(member => pb.collection('members').update(member.id, { assigned_officer: toOfficer })),
-            ...groupTargets.map(group => pb.collection('groups').update(group.id, { assigned_officer: toOfficer }))
-          ]);
-          await dataCache.invalidatePrefix('members:');
-          await dataCache.invalidatePrefix('groups:');
-          await dataCache.invalidatePrefix('savings:');
-          await dataCache.invalidatePrefix('loans:analytics:');
+          await transferRecordsInBatches('members', memberTargets, toOfficer);
+          await transferRecordsInBatches('groups', groupTargets, toOfficer);
+          await dataCache.invalidateAll();
           await logAudit(
             'client_assignment_transfer',
             `Transferred ${memberTargets.length} members and ${groupTargets.length} groups from ${fromLabel} to ${toLabel} using ${mode} mode${reason ? ` (${reason})` : ''}`
@@ -1143,7 +1169,7 @@ export const renderAdminSettings = async () => {
           assignmentSearch = '';
           assignmentToOfficer = '';
           assignmentReason = '';
-          if (window.notify) window.notify.success(`Transferred ${totalTargets} client assignments.`);
+          if (window.notify) window.notify.success(`Transferred ${groupTargets.length} groups and ${memberTargets.length} members.`);
           await loadData();
           renderUI();
         } catch (err) {

@@ -10,6 +10,11 @@ let routeRequestId = 0;
 export const initRouter = (rootId) => {
   rootElement = document.getElementById(rootId);
   window.addEventListener('hashchange', handleRoute);
+  window.addEventListener('inlet:user-access-changed', () => {
+    if (!rootElement) return;
+    destroyAppShell(rootElement);
+    void handleRoute();
+  });
   handleRoute();
 };
 

@@ -6,10 +6,10 @@ import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { formatMoney, formatPercent } from '../../core/utils.js';
-import { getArrearsTotal, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
+import { applyEffectiveSchedulePayments, buildEffectiveSchedulePaidMap, getArrearsTotal, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
 import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
-import { createLoanPortfolioCalculator } from '../../core/loanPortfolio.js';
+import { createLoanPortfolioCalculator, isCollectibleLoanRecord } from '../../core/loanPortfolio.js';
 import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
 
 export const renderDashboard = async () => {
@@ -162,14 +162,25 @@ export const renderDashboard = async () => {
     ] = await Promise.all([
       safe('members', () => memberService.getAll(), []),
       safe('groups', () => groupService.getAll(), []),
-      safe('loans', () => loanService.getFullListCached({ cacheKey: 'loans:dashboard:expanded:v1' }), []),
+      safe('loans', () => loanService.getFullListCached(
+        { cacheKey: 'loans:financial:expanded:v1' },
+        () => debouncedRefresh()
+      ), []),
       safe('savings ledger', () => savingsService.getFullListCached({
         filter: 'is_reversed=false',
         expand: 'member,group',
         cacheKey: 'savings:dashboard:active:v1'
       }), []),
-      safe('loan schedules', () => dataCache.getLocalFirst('loan_schedule:dashboard:all', () => pb.collection('loan_schedule').getFullList()), []),
-      safe('loan repayments', () => dataCache.getLocalFirst('loan_repayments:dashboard:all', () => pb.collection('loan_repayments').getFullList()), []),
+      safe('loan schedules', () => dataCache.getLocalFirst(
+        'loan_schedule:dashboard:all',
+        () => pb.collection('loan_schedule').getFullList(),
+        () => debouncedRefresh()
+      ), []),
+      safe('loan repayments', () => dataCache.getLocalFirst(
+        'loan_repayments:dashboard:all',
+        () => pb.collection('loan_repayments').getFullList(),
+        () => debouncedRefresh()
+      ), []),
       safe('loan balance-offs', () => loanService.getBalanceOffsFullList({ expand: '' }), [])
     ]);
 
@@ -209,7 +220,7 @@ export const renderDashboard = async () => {
     const activeGroups = groups.length;
     const pendingLoans = loans.filter(l => l.status === 'pending').length;
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
-    const isCollectibleLoan = (loan) => loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
+    const isCollectibleLoan = isCollectibleLoanRecord;
     const getLoanLiability = (loan) => {
       const storedLiability = Number(loan?.total_liability) || 0;
       if (storedLiability > 0) return storedLiability;
@@ -218,7 +229,14 @@ export const renderDashboard = async () => {
     };
     const portfolioCalculator = createLoanPortfolioCalculator({ repayments, settlements, schedules });
     const getLoanOutstandingBalance = portfolioCalculator.getOutstanding;
-    const overdueSchedules = schedules.filter(s => isCollectibleLoan(loansById.get(s.loan)) && isScheduleInArrears(s, today));
+    const effectiveSchedulePaidMap = buildEffectiveSchedulePaidMap({
+      schedules,
+      repayments,
+      settlements,
+      useRecordedPaid: false
+    });
+    const effectiveSchedules = applyEffectiveSchedulePayments(schedules, effectiveSchedulePaidMap);
+    const overdueSchedules = effectiveSchedules.filter(s => isCollectibleLoan(loansById.get(s.loan)) && isScheduleInArrears(s, today));
     const alertSchedules = schedules.filter(s => !isSchedulePaid(s) && new Date(s.due_date) <= upcomingThreshold);
 
   // calculate savings correctly
@@ -259,12 +277,14 @@ export const renderDashboard = async () => {
           ? { label: 'Good', color: 'var(--primary)', accent: 'var(--primary)' }
           : { label: 'Excellent', color: 'var(--success)', accent: 'var(--success)' };
 
-  const totalAlerts = alertSchedules.map(s => {
-    const loan = loans.find(l => l.id === s.loan);
-    if (getScheduleRemaining(s) <= 0) return null;
-    if (!isCollectibleLoan(loan)) return null;
-    return true;
-  }).filter(Boolean).length;
+  const alertLoanIds = new Set();
+  alertSchedules.forEach(s => {
+    const loanId = typeof s.loan === 'string' ? s.loan : s.loan?.id;
+    const loan = loans.find(l => l.id === loanId);
+    if (!loanId || getScheduleRemaining(s) <= 0 || !isCollectibleLoan(loan)) return;
+    alertLoanIds.add(loanId);
+  });
+  const totalAlerts = alertLoanIds.size;
 
   // Compile Recent Activity
   let activities = [];

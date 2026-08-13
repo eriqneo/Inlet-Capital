@@ -39,6 +39,7 @@ export const renderMemberProfile = async (params) => {
   const memberChildrenCount = member.childrenCount ?? member.children_count ?? member.children ?? member.no_of_children ?? 0;
   const memberMaritalStatus = member.maritalStatus || member.marital_status || 'Single';
   const memberPhone = member.phone_number || member.phone || '';
+  const memberKraPin = member.kraPin || member.kra_pin || '';
   const memberGroupId = member.group || '';
   const memberPhotoUrl = memberService.getPhotoUrl(member);
   const canAssignGroup = canManageRecords;
@@ -129,6 +130,7 @@ export const renderMemberProfile = async (params) => {
               </div>
               <div class="form-group"><label class="form-label">Phone</label><input type="tel" name="phone_number" class="form-control" value="${memberPhone}" required /></div>
               <div class="form-group"><label class="form-label">Residence</label><input type="text" name="address" class="form-control" value="${member.address || member.residence || ''}" required /></div>
+              <div class="form-group"><label class="form-label">KRA PIN</label><input type="text" name="kraPin" class="form-control" value="${escapeHtml(memberKraPin)}" placeholder="Enter when available" /></div>
               <div class="form-group"><label class="form-label">Account Status</label><input type="text" class="form-control" value="${String(member.status || 'active').toUpperCase()}" disabled /><div class="text-xs text-muted" style="margin-top:4px;">Lifecycle status is managed from the Members table or Lifecycle Report.</div></div>
             </div>
             <div>
@@ -266,6 +268,7 @@ export const renderMemberProfile = async (params) => {
                   <p style="margin-bottom: 8px;"><strong>ID Number:</strong> ${member.id_number || 'N/A'}</p>
                   <p style="margin-bottom: 8px;"><strong>Phone:</strong> ${memberPhone || 'N/A'}</p>
                   <p style="margin-bottom: 8px;"><strong>Residence:</strong> ${member.address || member.residence || 'N/A'}</p>
+                  <p style="margin-bottom: 8px;"><strong>KRA PIN:</strong> ${memberKraPin ? escapeHtml(memberKraPin) : 'N/A'}</p>
                   <p style="margin-bottom: 8px;"><strong>Date of Birth:</strong> ${memberDob ? formatDate(memberDob) : 'N/A'}</p>
                   <p style="margin-bottom: 8px;"><strong>Marital Status:</strong> ${memberMaritalStatus}</p>
                   <p style="margin-bottom: 8px;"><strong>No. of Children:</strong> ${memberChildrenCount}</p>
@@ -999,6 +1002,7 @@ export const renderMemberProfile = async (params) => {
       childrenCount,
       children_count: childrenCount,
       address: updatedData.address || '',
+      kraPin: String(updatedData.kraPin || updatedData.kra_pin || '').trim(),
       status: updatedData.status || member.status || 'active',
       nok_name: updatedData.nok_name || '',
       nok_phone: updatedData.nok_phone || '',
