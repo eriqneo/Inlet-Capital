@@ -78,8 +78,8 @@ export const renderHeader = async () => {
       ${showPortfolioFilter ? `
         <label class="global-portfolio-filter ${selectedPortfolioOfficer !== 'all' ? 'is-filtered' : ''}" for="global-officer-filter">
           <span class="global-portfolio-label">Portfolio View</span>
-          <select id="global-officer-filter" class="global-portfolio-select" aria-label="Filter all client modules by loan officer">
-            <option value="all">All Loan Officers</option>
+          <select id="global-officer-filter" class="global-portfolio-select" aria-label="Filter all client modules by portfolio owner">
+            <option value="all">All Members</option>
           </select>
         </label>
       ` : ''}
@@ -93,8 +93,8 @@ export const renderHeader = async () => {
   const globalOfficerSelect = header.querySelector('#global-officer-filter');
   if (globalOfficerSelect) {
     loadOfficerOptions().then(options => {
-      const portfolioOfficers = options.filter(option => ['loan_officer', 'group_officer', 'manager'].includes(option.role));
-      globalOfficerSelect.innerHTML = '<option value="all">All Loan Officers</option>' + portfolioOfficers.map(option => {
+      const portfolioOwners = options.filter(option => ['loan_officer', 'group_officer', 'manager', 'admin', 'super_admin'].includes(option.role));
+      globalOfficerSelect.innerHTML = '<option value="all">All Members</option>' + portfolioOwners.map(option => {
         const safeId = String(option.id).replace(/"/g, '&quot;');
         const safeName = String(option.name).replace(/[&<>"']/g, char => ({
           '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
@@ -102,7 +102,7 @@ export const renderHeader = async () => {
         return `<option value="${safeId}">${safeName}</option>`;
       }).join('');
       const selectionExists = selectedPortfolioOfficer === 'all'
-        || portfolioOfficers.some(option => option.id === selectedPortfolioOfficer);
+        || portfolioOwners.some(option => option.id === selectedPortfolioOfficer);
       globalOfficerSelect.value = selectionExists ? selectedPortfolioOfficer : 'all';
       if (!selectionExists) setGlobalOfficerFilter('all');
     }).catch(err => {
@@ -112,12 +112,12 @@ export const renderHeader = async () => {
 
     globalOfficerSelect.onchange = () => {
       const selectedOfficerId = setGlobalOfficerFilter(globalOfficerSelect.value);
-      const selectedName = globalOfficerSelect.selectedOptions[0]?.textContent || 'All Loan Officers';
+      const selectedName = globalOfficerSelect.selectedOptions[0]?.textContent || 'All Members';
       globalOfficerSelect.closest('.global-portfolio-filter')?.classList.toggle('is-filtered', selectedOfficerId !== 'all');
       document.querySelector('.sidebar [data-nav-path="#/loans"] .badge-counter')?.remove();
       if (window.notify) {
         window.notify.info(selectedOfficerId === 'all'
-          ? 'Portfolio view reset to all loan officers.'
+          ? 'Portfolio view reset to all members.'
           : `Portfolio view changed to ${selectedName}.`);
       }
       window.dispatchEvent(new Event('hashchange'));

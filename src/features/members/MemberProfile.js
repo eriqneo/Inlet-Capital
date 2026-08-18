@@ -131,6 +131,7 @@ export const renderMemberProfile = async (params) => {
               <div class="form-group"><label class="form-label">Phone</label><input type="tel" name="phone_number" class="form-control" value="${memberPhone}" required /></div>
               <div class="form-group"><label class="form-label">Residence</label><input type="text" name="address" class="form-control" value="${member.address || member.residence || ''}" required /></div>
               <div class="form-group"><label class="form-label">KRA PIN</label><input type="text" name="kraPin" class="form-control" value="${escapeHtml(memberKraPin)}" placeholder="Enter when available" /></div>
+              <div class="form-group"><label class="form-label">Registration Date</label><input type="date" name="registration_date" class="form-control" value="${toDateInputValue(member.registration_date || member.created)}" required /></div>
               <div class="form-group"><label class="form-label">Account Status</label><input type="text" class="form-control" value="${String(member.status || 'active').toUpperCase()}" disabled /><div class="text-xs text-muted" style="margin-top:4px;">Lifecycle status is managed from the Members table or Lifecycle Report.</div></div>
             </div>
             <div>
@@ -990,6 +991,7 @@ export const renderMemberProfile = async (params) => {
     const phoneNumber = updatedData.phone_number || updatedData.phone || memberPhone;
     const maritalStatus = updatedData.maritalStatus || updatedData.marital_status || memberMaritalStatus;
     const childrenCount = Number(updatedData.childrenCount || updatedData.children_count || memberChildrenCount || 0);
+    const selectedRegistrationDate = updatedData.registration_date || toDateInputValue(member.registration_date || member.created);
     const updatedMember = {
       full_name: updatedData.full_name || member.full_name || '',
       id_number: updatedData.id_number || member.id_number || '',
@@ -1003,6 +1005,9 @@ export const renderMemberProfile = async (params) => {
       children_count: childrenCount,
       address: updatedData.address || '',
       kraPin: String(updatedData.kraPin || updatedData.kra_pin || '').trim(),
+      registration_date: selectedRegistrationDate
+        ? new Date(`${selectedRegistrationDate}T12:00:00`).toISOString()
+        : (member.registration_date || member.created || new Date().toISOString()),
       status: updatedData.status || member.status || 'active',
       nok_name: updatedData.nok_name || '',
       nok_phone: updatedData.nok_phone || '',

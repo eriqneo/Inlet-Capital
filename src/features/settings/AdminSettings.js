@@ -51,8 +51,16 @@ export const renderAdminSettings = async () => {
   const getAssignedOfficerId = (record, fallbackField) => (
     getRelationId(record?.assigned_officer) || getRelationId(record?.[fallbackField])
   );
+  const getExplicitAssignedOfficerId = (record) => getRelationId(record?.assigned_officer);
   const getMemberGroupId = (member) => (
     getRelationId(member?.group) || getRelationId(member?.expand?.group)
+  );
+  const escapeFilterValue = (value) => String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const uniqueRecords = (records = []) => Array.from(new Map(
+    records.filter(record => record?.id).map(record => [record.id, record])
+  ).values());
+  const chunkRecords = (records = [], size = 25) => (
+    Array.from({ length: Math.ceil(records.length / size) }, (_, index) => records.slice(index * size, (index + 1) * size))
   );
   const getAssignmentTargets = ({ fromOfficer = 'all', scope = 'both', mode = 'bulk' } = {}) => {
     const memberPool = assignmentMembers.filter(member => (
@@ -79,14 +87,66 @@ export const renderAdminSettings = async () => {
       [...directMemberTargets, ...groupMemberTargets].map(member => [member.id, member])
     ).values());
 
-    return { memberPool, groupPool, memberTargets, groupTargets };
+    return { memberPool, groupPool, directMemberTargets, memberTargets, groupTargets };
   };
-  const transferRecordsInBatches = async (collection, records, officerId, batchSize = 10) => {
-    for (let index = 0; index < records.length; index += batchSize) {
-      const batch = records.slice(index, index + batchSize);
-      await Promise.all(batch.map(record => (
-        pb.collection(collection).update(record.id, { assigned_officer: officerId })
+  const loadCurrentGroupMembers = async (groups = []) => {
+    const groupIds = uniqueRecords(groups).map(group => group.id);
+    if (groupIds.length === 0) return [];
+
+    const records = [];
+    for (const groupIdBatch of chunkRecords(groupIds, 20)) {
+      const filter = groupIdBatch.map(id => `group="${escapeFilterValue(id)}"`).join(' || ');
+      const members = await pb.collection('members').getFullList({
+        filter,
+        expand: 'assigned_officer,registered_by,group'
+      });
+      records.push(...members);
+    }
+    return uniqueRecords(records);
+  };
+  const verifyAssignmentTransfer = async (collection, records, officerId) => {
+    for (const batch of chunkRecords(uniqueRecords(records), 30)) {
+      const filter = batch.map(record => `id="${escapeFilterValue(record.id)}"`).join(' || ');
+      const currentRecords = await pb.collection(collection).getFullList({
+        filter,
+        fields: 'id,assigned_officer'
+      });
+      const currentOfficerById = new Map(currentRecords.map(record => [record.id, getExplicitAssignedOfficerId(record)]));
+      const unmatched = batch.filter(record => currentOfficerById.get(record.id) !== officerId);
+      if (unmatched.length > 0) {
+        throw new Error(`${unmatched.length} ${collection} record${unmatched.length === 1 ? '' : 's'} did not retain the new assignment.`);
+      }
+    }
+  };
+  const transferAssignmentsSafely = async (memberTargets, groupTargets, officerId, batchSize = 8) => {
+    const completed = [];
+    const updateRecords = async (collection, records) => {
+      for (const batch of chunkRecords(uniqueRecords(records), batchSize)) {
+        const results = await Promise.allSettled(batch.map(record => (
+          pb.collection(collection).update(record.id, { assigned_officer: officerId })
+        )));
+        results.forEach((result, index) => {
+          if (result.status === 'fulfilled') completed.push({ collection, record: batch[index] });
+        });
+        const failedResult = results.find(result => result.status === 'rejected');
+        if (failedResult) throw failedResult.reason;
+      }
+    };
+
+    try {
+      await updateRecords('members', memberTargets);
+      await updateRecords('groups', groupTargets);
+      await verifyAssignmentTransfer('members', memberTargets, officerId);
+      await verifyAssignmentTransfer('groups', groupTargets, officerId);
+    } catch (transferError) {
+      const rollbackResults = await Promise.allSettled(completed.reverse().map(({ collection, record }) => (
+        pb.collection(collection).update(record.id, { assigned_officer: getExplicitAssignedOfficerId(record) })
       )));
+      const rollbackFailures = rollbackResults.filter(result => result.status === 'rejected').length;
+      const rollbackMessage = rollbackFailures > 0
+        ? ` Automatic rollback was incomplete for ${rollbackFailures} record${rollbackFailures === 1 ? '' : 's'}; review assignments before retrying.`
+        : ' All completed assignment changes were rolled back.';
+      throw new Error(`${transferError?.message || 'The assignment update failed.'}${rollbackMessage}`);
     }
   };
   const settingValue = (key, fallback = '') => (
@@ -117,6 +177,7 @@ export const renderAdminSettings = async () => {
     assignmentLoadError = '';
     renderUI();
     try {
+      const assignmentLoadErrors = [];
       const [userRecords, loginActivity, memberRecords, groupRecords] = await Promise.all([
         pb.collection('users').getFullList({ sort: '-created' }),
         pb.collection('user_login_activity').getFullList({ sort: '-login_at' }).catch(err => {
@@ -126,14 +187,14 @@ export const renderAdminSettings = async () => {
         canManageUsers
           ? pb.collection('members').getFullList({ sort: 'full_name', expand: 'assigned_officer,registered_by,group' }).catch(err => {
               console.warn('[AdminSettings] Member assignment data unavailable:', err);
-              assignmentLoadError = err.message || 'Could not load member assignments.';
+              assignmentLoadErrors.push(`Members: ${err.message || 'Could not load assignments.'}`);
               return [];
             })
           : Promise.resolve([]),
         canManageUsers
           ? pb.collection('groups').getFullList({ sort: 'name', expand: 'assigned_officer,created_by' }).catch(err => {
               console.warn('[AdminSettings] Group assignment data unavailable:', err);
-              assignmentLoadError = err.message || 'Could not load group assignments.';
+              assignmentLoadErrors.push(`Groups: ${err.message || 'Could not load assignments.'}`);
               return [];
             })
           : Promise.resolve([])
@@ -146,7 +207,7 @@ export const renderAdminSettings = async () => {
         return map;
       }, {});
       usersLoadError = '';
-      if (memberRecords.length || groupRecords.length) assignmentLoadError = '';
+      assignmentLoadError = assignmentLoadErrors.join(' ');
     } catch (err) {
       console.error("Failed to load users", err);
       users = [];
@@ -1135,9 +1196,8 @@ export const renderAdminSettings = async () => {
           return;
         }
 
-        const { memberTargets, groupTargets } = getAssignmentTargets({ fromOfficer, scope, mode });
-        const totalTargets = memberTargets.length + groupTargets.length;
-        if (totalTargets === 0) {
+        const { directMemberTargets, groupTargets } = getAssignmentTargets({ fromOfficer, scope, mode });
+        if (directMemberTargets.length + groupTargets.length === 0) {
           if (window.notify) window.notify.error('No clients match this transfer selection.');
           return;
         }
@@ -1146,19 +1206,27 @@ export const renderAdminSettings = async () => {
           ? 'all officers'
           : (users.find(user => user.id === fromOfficer)?.name || users.find(user => user.id === fromOfficer)?.email || 'selected officer');
         const toLabel = users.find(user => user.id === toOfficer)?.name || users.find(user => user.id === toOfficer)?.email || 'new officer';
-        const confirmed = window.confirmDialog ? await window.confirmDialog({
-          title: 'Transfer Client Assignments',
-          message: `Transfer ${groupTargets.length} group${groupTargets.length === 1 ? '' : 's'} and ${memberTargets.length} member${memberTargets.length === 1 ? '' : 's'} from ${fromLabel} to ${toLabel}? Members belonging to transferred groups will move with their group. Historical registration and loan records will not be changed.`,
-          confirmText: 'Transfer Clients',
-          cancelText: 'Cancel',
-          type: 'warning'
-        }) : confirm(`Transfer ${groupTargets.length} groups and ${memberTargets.length} members from ${fromLabel} to ${toLabel}?`);
-        if (!confirmed) return;
-
-        const restoreButton = setButtonLoading(assignmentTransferForm.querySelector('button[type="submit"]'), 'Transferring...');
+        const transferButton = assignmentTransferForm.querySelector('button[type="submit"]');
+        const restoreButton = setButtonLoading(transferButton, 'Preparing transfer...');
         try {
-          await transferRecordsInBatches('members', memberTargets, toOfficer);
-          await transferRecordsInBatches('groups', groupTargets, toOfficer);
+          // Re-read group membership immediately before transfer so recently added
+          // members cannot remain assigned to the former officer.
+          const currentGroupMembers = await loadCurrentGroupMembers(groupTargets);
+          const memberTargets = uniqueRecords([...directMemberTargets, ...currentGroupMembers]);
+          const confirmed = window.confirmDialog ? await window.confirmDialog({
+            title: 'Transfer Client Assignments',
+            message: `Transfer ${groupTargets.length} group${groupTargets.length === 1 ? '' : 's'} and ${memberTargets.length} member${memberTargets.length === 1 ? '' : 's'} from ${fromLabel} to ${toLabel}? Every current member of a transferred group will move with it. Historical registration and loan records will not be changed.`,
+            confirmText: 'Transfer Clients',
+            cancelText: 'Cancel',
+            type: 'warning'
+          }) : confirm(`Transfer ${groupTargets.length} groups and ${memberTargets.length} members from ${fromLabel} to ${toLabel}?`);
+          if (!confirmed) {
+            restoreButton();
+            return;
+          }
+
+          if (transferButton) transferButton.innerHTML = 'Transferring...';
+          await transferAssignmentsSafely(memberTargets, groupTargets, toOfficer);
           await dataCache.invalidateAll();
           await logAudit(
             'client_assignment_transfer',
