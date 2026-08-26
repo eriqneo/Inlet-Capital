@@ -599,11 +599,50 @@ async function run() {
         changed = true;
         console.log('Loans collection delete rule restricted to super admins.');
       }
+      const loanWorkflowStatuses = ['pending', 'approved', 'partial_approved', 'disbursed', 'completed', 'written_off', 'closed', 'rejected', 'expired'];
       const loanStatusField = loansColl.fields.find(field => field.name === 'status');
-      if (loanStatusField && !loanStatusField.values?.includes('written_off')) {
-        loanStatusField.values = Array.from(new Set([...(loanStatusField.values || []), 'written_off']));
+      if (loanStatusField) {
+        const currentValues = loanStatusField.values || [];
+        const missingStatuses = loanWorkflowStatuses.filter(status => !currentValues.includes(status));
+        if (missingStatuses.length > 0) {
+          loanStatusField.values = Array.from(new Set([...currentValues, ...missingStatuses]));
+          changed = true;
+          console.log(`Loans collection updated with workflow statuses: ${missingStatuses.join(', ')}.`);
+        }
+      } else {
+        loansColl.fields.push({
+          name: 'status',
+          type: 'select',
+          required: true,
+          maxSelect: 1,
+          values: loanWorkflowStatuses
+        });
         changed = true;
-        console.log('Loans collection updated with written_off status.');
+        console.log('Loans collection updated with status field.');
+      }
+      const loanWorkflowFields = [
+        { name: 'approved_amount', type: 'number', required: false },
+        { name: 'interest_rate', type: 'number', required: false },
+        { name: 'interest_amount', type: 'number', required: false },
+        { name: 'total_liability', type: 'number', required: false },
+        { name: 'processing_fee', type: 'number', required: false },
+        { name: 'processing_fee_rate', type: 'number', required: false },
+        { name: 'processing_fee_paid', type: 'bool', required: false },
+        { name: 'processing_fee_details', type: 'json', required: false },
+        { name: 'application_date', type: 'date', required: false },
+        { name: 'approved_date', type: 'date', required: false },
+        { name: 'disbursement_date', type: 'date', required: false },
+        { name: 'expired_date', type: 'date', required: false },
+        { name: 'approval_comment', type: 'text', required: false },
+        { name: 'guarantor', type: 'json', required: false },
+        { name: 'collaterals', type: 'json', required: false }
+      ];
+      const loanFieldNames = new Set(loansColl.fields.map(field => field.name));
+      const missingWorkflowFields = loanWorkflowFields.filter(field => !loanFieldNames.has(field.name));
+      if (missingWorkflowFields.length > 0) {
+        loansColl.fields.push(...missingWorkflowFields);
+        changed = true;
+        console.log(`Loans collection updated with workflow fields: ${missingWorkflowFields.map(field => field.name).join(', ')}.`);
       }
       if (!loansColl.fields.some(field => field.name === 'approval_comment')) {
         loansColl.fields.push({

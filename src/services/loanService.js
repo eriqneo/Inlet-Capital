@@ -29,6 +29,18 @@ const repeatLoanAllowedTypes = ['emergency', 'school_fees'];
 const awaitingDisbursementStatuses = ['approved', 'partial_approved'];
 const preDisbursementStatuses = ['pending', 'approved', 'partial_approved', 'rejected', 'expired'];
 
+const formatPocketBaseError = (err, fallback = 'Request failed.') => {
+  const details = err?.data?.data;
+  if (!details || typeof details !== 'object') return err?.message || fallback;
+  const messages = Object.entries(details)
+    .map(([field, value]) => {
+      const message = value?.message || value?.code || 'Invalid value';
+      return `${field}: ${message}`;
+    })
+    .join(' ');
+  return messages || err?.message || fallback;
+};
+
 const normalizeLoanStatusPayload = async (id, data) => {
   const payload = { ...data };
   if (!payload.status) return payload;
@@ -49,13 +61,13 @@ const normalizeLoanStatusPayload = async (id, data) => {
   }
 
   if (preDisbursementStatuses.includes(payload.status)) {
-    payload.disbursement_date = null;
+    payload.disbursement_date = '';
   }
 
   if (payload.status === 'pending') {
-    payload.approved_date = null;
+    payload.approved_date = '';
     payload.approved_amount = 0;
-    payload.expired_date = null;
+    payload.expired_date = '';
   }
 
   if (awaitingDisbursementStatuses.includes(payload.status) && !payload.approved_date && existing?.approved_date) {
@@ -333,13 +345,22 @@ export const loanService = {
    */
   async update(id, data) {
     const payload = await normalizeLoanStatusPayload(id, data);
-    const record = await pb.collection('loans').update(id, payload);
-    await dataCache.invalidatePrefix('loans:');
-    await dataCache.invalidatePrefix('loans:all:');
-    await dataCache.invalidatePrefix('loans:analytics:');
-    await dataCache.invalidatePrefix('group_summary:');
-    await dataCache.invalidatePrefix('groups:profile:');
-    return record;
+    try {
+      const record = await pb.collection('loans').update(id, payload);
+      await dataCache.invalidatePrefix('loans:');
+      await dataCache.invalidatePrefix('loans:all:');
+      await dataCache.invalidatePrefix('loans:analytics:');
+      await dataCache.invalidatePrefix('group_summary:');
+      await dataCache.invalidatePrefix('groups:profile:');
+      return record;
+    } catch (err) {
+      console.error('[loanService] Failed to update loan record:', {
+        id,
+        payload,
+        response: err?.data || err?.response || null
+      });
+      throw new Error(formatPocketBaseError(err, 'Failed to update loan record.'));
+    }
   },
 
   async delete(id) {
