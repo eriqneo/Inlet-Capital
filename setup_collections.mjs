@@ -589,8 +589,9 @@ async function run() {
         changed = true;
         console.log('Loan creation restricted to the current officer portfolio.');
       }
-      if (loansColl.updateRule !== LOAN_SCOPE_RULE) {
-        loansColl.updateRule = LOAN_SCOPE_RULE;
+      const loanUpdateRule = `(${LOAN_SCOPE_RULE}) && (@request.body.savings_disbursement_review:isset = false || @request.auth.role = "super_admin")`;
+      if (loansColl.updateRule !== loanUpdateRule) {
+        loansColl.updateRule = loanUpdateRule;
         changed = true;
         console.log('Loan updates restricted to the current officer portfolio.');
       }
@@ -634,6 +635,7 @@ async function run() {
         { name: 'disbursement_date', type: 'date', required: false },
         { name: 'expired_date', type: 'date', required: false },
         { name: 'approval_comment', type: 'text', required: false },
+        { name: 'savings_disbursement_review', type: 'json', required: false },
         { name: 'guarantor', type: 'json', required: false },
         { name: 'collaterals', type: 'json', required: false }
       ];

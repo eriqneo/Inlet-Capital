@@ -1,12 +1,15 @@
 import { memberService } from '../../services/memberService.js';
+import { renderIdentityPhoto } from '../../components/IdentityPhoto.js';
 import { groupService } from '../../services/groupService.js';
 import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
+import { calculateSavingsConsistency } from '../../core/savingsConsistency.js';
+import { renderSavingsConsistency } from '../../components/SavingsConsistency.js';
 import { renderPagination } from '../../components/Pagination.js';
-import { formatDate, formatMoney, initDateMask, parseInputDate, formatToInputDate } from '../../core/utils.js';
+import { formatDate, formatMoney, initDateMask, initDobAgeLabel, parseInputDate, formatToInputDate } from '../../core/utils.js';
 import { openCamera } from '../../components/Camera.js';
 import { navigate } from '../../core/router.js';
-import { setButtonLoading } from '../../core/uiState.js';
+import { setButtonLoading, renderDatabaseLoaderIcon, DATABASE_LOADING_LABEL } from '../../core/uiState.js';
 import { authService } from '../../services/authService.js';
 import { getReturnTo, withReturnTo } from '../../core/navigation.js';
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
@@ -17,8 +20,10 @@ export const renderMemberProfile = async (params) => {
   const container = document.createElement('div');
   container.innerHTML = `
     <div class="card text-center" style="padding:60px;">
-      <div class="spinner" style="margin: 0 auto 16px;"></div>
-      <p class="text-muted">Loading member profile...</p>
+      <div class="database-loading-copy">
+        ${renderDatabaseLoaderIcon()}
+        <span>${DATABASE_LOADING_LABEL}</span>
+      </div>
     </div>
   `;
 
@@ -46,8 +51,9 @@ export const renderMemberProfile = async (params) => {
 
   // Fetch live data from PocketBase
   let memberLoans = [], memberSavings = [], allGroups = [];
+  let savingsLoadFailed = false;
   try { memberLoans = await loanService.getByMember(member.id); } catch(e) { console.warn('[MemberProfile] Loans:', e.message); }
-  try { memberSavings = await savingsService.getByMember(member.id); } catch(e) { console.warn('[MemberProfile] Savings:', e.message); }
+  try { memberSavings = await savingsService.getByMember(member.id); } catch(e) { savingsLoadFailed = true; console.warn('[MemberProfile] Savings:', e.message); }
   try { allGroups = await groupService.getAll(); } catch(e) { console.warn('[MemberProfile] Groups:', e.message); }
   const currentGroup = member.expand?.group || allGroups.find(g => g.id === memberGroupId) || null;
   const currentGroupName = currentGroup?.name || '';
@@ -118,7 +124,7 @@ export const renderMemberProfile = async (params) => {
               <div class="form-group"><label class="form-label">Full Name</label><input type="text" name="full_name" class="form-control" value="${member.full_name || ''}" required /></div>
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
                 <div class="form-group"><label class="form-label">ID Number</label><input type="text" name="id_number" class="form-control" value="${member.id_number || ''}" required /></div>
-                <div class="form-group"><label class="form-label">Date of Birth</label><input type="text" id="edit-dob-input" name="dob" class="form-control" value="${memberDob ? formatToInputDate(memberDob) : ''}" placeholder="dd/mm/yyyy" /></div>
+                <div class="form-group"><label class="form-label">Date of Birth</label><div id="edit-dob-age-label" class="dob-age-label text-xs text-muted">Age will appear after DOB is entered.</div><input type="text" id="edit-dob-input" name="dob" class="form-control" value="${memberDob ? formatToInputDate(memberDob) : ''}" placeholder="dd/mm/yyyy" /></div>
               </div>
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
                 <div class="form-group"><label class="form-label">Marital Status</label>
@@ -138,7 +144,7 @@ export const renderMemberProfile = async (params) => {
               <h4 class="text-sm text-muted" style="margin-bottom: 12px; border-bottom: 1px solid var(--bg-light);">Photos & Next of Kin</h4>
               <div class="form-group" style="text-align: center;">
                 <div id="edit-photo-preview" style="width: 100px; height: 100px; border-radius: 50%; border: 2px solid var(--border-color); margin: 0 auto 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--bg-light);">
-                  ${memberPhotoUrl ? `<img src="${memberPhotoUrl}" style="width: 100%; height: 100%; object-fit: cover;" />` : '<span>👤</span>'}
+                  ${memberPhotoUrl ? renderIdentityPhoto(memberPhotoUrl, member.full_name) : '<span>👤</span>'}
                 </div>
                 <button type="button" id="edit-photo-btn" class="btn btn-outline btn-xs">Change Photo</button>
                 <input type="hidden" name="passportPhoto" id="edit-photo-data" value="" />
@@ -231,7 +237,7 @@ export const renderMemberProfile = async (params) => {
       <div>
         <div class="card text-center" style="margin-bottom: 24px;">
           <div style="width: 120px; height: 120px; background: var(--bg-light); border-radius: 50%; margin: 0 auto 16px; overflow: hidden; display: flex; align-items: center; justify-content: center; border: 4px solid white; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-            ${memberPhotoUrl ? `<img src="${memberPhotoUrl}" style="width: 100%; height: 100%; object-fit: cover;" />` : `<span style="font-size: 48px;">👤</span>`}
+            ${memberPhotoUrl ? renderIdentityPhoto(memberPhotoUrl, member.full_name) : `<span style="font-size: 48px;">👤</span>`}
           </div>
           <h2 style="font-size: 1.25rem;">${member.full_name}</h2>
           <p class="text-muted text-sm">${member.reg_no}</p>
@@ -294,6 +300,7 @@ export const renderMemberProfile = async (params) => {
               <div id="member-loans-pagination"></div>
             </div>
             <div id="savings-tab" style="display: none;">
+              <section id="member-savings-consistency" class="savings-consistency-section"></section>
               <div class="table-responsive">
                 <table class="table">
                   <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Ref</th><th>Remarks</th><th>Actions</th></tr></thead>
@@ -523,6 +530,10 @@ export const renderMemberProfile = async (params) => {
   const updateSavingsSummary = () => {
     const totalSavingsEl = container.querySelector('#member-total-savings');
     if (totalSavingsEl) totalSavingsEl.textContent = `KES ${formatMoney(calculateSavingsBalance())}`;
+    container.querySelector('#member-savings-consistency').innerHTML = renderSavingsConsistency(
+      savingsLoadFailed ? null : calculateSavingsConsistency({ member, group: currentGroup, savings: memberSavings }),
+      { history: true }
+    );
   };
 
   const savingsModal = container.querySelector('#savings-transaction-modal');
@@ -969,14 +980,18 @@ export const renderMemberProfile = async (params) => {
   const toggleModal = (show) => { modal.style.display = show ? 'flex' : 'none'; };
 
   const editProfileBtn = container.querySelector('#edit-profile-btn');
-  if (editProfileBtn) editProfileBtn.onclick = () => { toggleModal(true); initDateMask(container.querySelector('#edit-dob-input')); };
+  if (editProfileBtn) editProfileBtn.onclick = () => {
+    toggleModal(true);
+    initDateMask(container.querySelector('#edit-dob-input'));
+    initDobAgeLabel(container.querySelector('#edit-dob-input'), container.querySelector('#edit-dob-age-label'));
+  };
   container.querySelector('#close-modal-btn').onclick = () => toggleModal(false);
   container.querySelector('#cancel-modal-btn').onclick = () => toggleModal(false);
 
   let passportPhotoFile = null;
   container.querySelector('#edit-photo-btn').onclick = () => {
     openCamera((dataUrl, file, meta) => {
-      container.querySelector('#edit-photo-preview').innerHTML = `<img src="${dataUrl}" style="width: 100%; height: 100%; object-fit: cover;" />`;
+      container.querySelector('#edit-photo-preview').innerHTML = renderIdentityPhoto(dataUrl, member.full_name);
       container.querySelector('#edit-photo-data').value = '';
       passportPhotoFile = file || null;
       if (window.notify && meta?.sizeKb) window.notify.success(`Photo compressed to ${meta.sizeKb} KB.`);
@@ -1042,11 +1057,16 @@ export const renderMemberProfile = async (params) => {
   const fetchAndRenderSavings = async () => {
     try { 
       memberSavings = await savingsService.getByMember(member.id);
+      savingsLoadFailed = false;
       const savingsTabBtn = container.querySelector('[data-tab="savings"]');
       if (savingsTabBtn) savingsTabBtn.textContent = `Savings History (${memberSavings.length})`;
       updateSavingsSummary();
       updateSavingsUI();
-    } catch(e) { console.warn('[MemberProfile] Savings refresh:', e.message); }
+    } catch(e) {
+      savingsLoadFailed = true;
+      updateSavingsSummary();
+      console.warn('[MemberProfile] Savings refresh:', e.message);
+    }
   };
 
   container.__subscriptionPromise = Promise.all([

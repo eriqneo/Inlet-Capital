@@ -5,6 +5,7 @@ import { authService } from '../../services/authService.js';
 import { settingsService } from '../../services/settingsService.js';
 import { generateLoanNo } from '../../core/numberGen.js';
 import { openCamera } from '../../components/Camera.js';
+import { renderIdentityPhoto } from '../../components/IdentityPhoto.js';
 import { setButtonLoading } from '../../core/uiState.js';
 import { getReturnTo, navigateToReturn } from '../../core/navigation.js';
 import { formatMoney } from '../../core/utils.js';
@@ -604,7 +605,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
 
   takeGPhotoBtn.onclick = () => {
     openCamera((dataUrl, _file, meta) => {
-      gPreview.innerHTML = `<img src="${dataUrl}" style="width: 100%; height: 100%; object-fit: cover;" />`;
+      gPreview.innerHTML = renderIdentityPhoto(dataUrl, 'Guarantor');
       gPhotoInput.value = dataUrl;
       guarantorPhotoMeta = {
         sizeKb: meta?.sizeKb || 0,

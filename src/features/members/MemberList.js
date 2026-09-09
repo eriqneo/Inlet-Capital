@@ -1,4 +1,5 @@
 import { memberService } from '../../services/memberService.js';
+import { renderIdentityPhoto } from '../../components/IdentityPhoto.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { debounce } from '../../services/dataCache.js';
 import { renderTableSkeletonRows, showDelayedLoading } from '../../core/uiState.js';
@@ -15,6 +16,7 @@ export const renderMemberList = async () => {
   let currentSearch = '';
   let statusFilter = 'all';
   let alphaSort = 'default';
+  let dateRange = { from: '', to: '' };
   let totalItems = 0;
   let officerFilter = 'all';
   let requestId = 0;
@@ -31,9 +33,14 @@ export const renderMemberList = async () => {
     </div>
 
     <div class="card" style="padding: 0; overflow: hidden;">
-      <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; gap: 16px; flex-wrap: wrap; align-items: center; justify-content: space-between;">
-        <input type="text" id="member-search" class="form-control" placeholder="Search by name, ID or Phone..." style="max-width: 400px;" />
-        <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+      <div class="member-filter-bar">
+        <input type="text" id="member-search" class="form-control member-search-input" placeholder="Search by name, ID or Phone..." />
+        <div class="member-filter-controls">
+          <div class="compact-date-range">
+            <label><span>From</span><input type="date" id="member-date-from" class="form-control" /></label>
+            <label><span>To</span><input type="date" id="member-date-to" class="form-control" /></label>
+            <button type="button" class="btn btn-outline btn-sm" id="member-date-clear">Clear</button>
+          </div>
           <select id="member-alpha-sort" class="form-control" style="width: 145px; padding: 6px 8px; font-size: 0.75rem;">
             <option value="default">Latest</option>
             <option value="az">Name A-Z</option>
@@ -79,12 +86,26 @@ export const renderMemberList = async () => {
       .member-icon-action.danger:hover { border-color: var(--danger); background: rgba(239, 68, 68, 0.06); }
       .member-row-suspended { background: rgba(245, 158, 11, 0.055); }
       .member-row-suspended .member-suspended-identity { text-decoration: line-through; text-decoration-thickness: 1px; text-decoration-color: var(--warning); opacity: 0.75; }
+      .member-filter-bar { padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; gap: 16px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+      .member-search-input { max-width: 400px; }
+      .member-filter-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      .compact-date-range { display: inline-flex; align-items: end; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px solid var(--border-color); border-radius: 8px; background: #fff; }
+      .compact-date-range label { display: grid; gap: 4px; font-size: 0.68rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; }
+      .compact-date-range input { width: 146px; padding: 7px 8px; font-size: 0.78rem; }
+      @media (max-width: 760px) {
+        .member-filter-bar, .member-filter-controls, .member-search-input, .compact-date-range { width: 100%; }
+        .compact-date-range { display: grid; grid-template-columns: 1fr 1fr auto; align-items: end; }
+        .compact-date-range input { width: 100%; }
+      }
     </style>
   `;
 
   const tableBody = container.querySelector('#member-table-body');
   const paginationWrapper = container.querySelector('#pagination-wrapper');
   const searchInput = container.querySelector('#member-search');
+  const dateFromInput = container.querySelector('#member-date-from');
+  const dateToInput = container.querySelector('#member-date-to');
+  const dateClearBtn = container.querySelector('#member-date-clear');
   const alphaSortSelect = container.querySelector('#member-alpha-sort');
   const officerFilterSelect = container.querySelector('#member-officer-filter');
   const statusFilterButtons = Array.from(container.querySelectorAll('[data-status-filter]'));
@@ -97,6 +118,23 @@ export const renderMemberList = async () => {
     if (!q) return '';
     return `full_name~"${q}" || reg_no~"${q}" || id_number~"${q}" || phone_number~"${q}"`;
   };
+  const toPocketDateTime = (value, endOfDay = false) => {
+    if (!value) return '';
+    return `${value} ${endOfDay ? '23:59:59.999Z' : '00:00:00.000Z'}`;
+  };
+  const buildMemberDateFilter = () => {
+    const parts = [];
+    if (dateRange.from) {
+      const from = toPocketDateTime(dateRange.from);
+      parts.push(`(registration_date>="${from}" || (registration_date="" && created>="${from}"))`);
+    }
+    if (dateRange.to) {
+      const to = toPocketDateTime(dateRange.to, true);
+      parts.push(`(registration_date<="${to}" || (registration_date="" && created<="${to}"))`);
+    }
+    return parts.join(' && ');
+  };
+  const hasInvalidDateRange = () => Boolean(dateRange.from && dateRange.to && dateRange.from > dateRange.to);
 
   const getActivityStatus = (member) => {
     return getMemberActivityStatus(member, member.__lastSavingsDate || null);
@@ -146,8 +184,8 @@ export const renderMemberList = async () => {
       <tr class="${isSuspended ? 'member-row-suspended' : ''}">
         <td>
           <div style="display: flex; align-items: center; gap: 12px;">
-            <div style="width: 40px; height: 40px; background: var(--bg-light); border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center;">
-              ${photoUrl ? `<img src="${photoUrl}" style="width: 100%; height: 100%; object-fit: cover;" />` : `<span style="font-size: 20px;">👤</span>`}
+            <div style="width: 40px; height: 40px; flex-shrink: 0; background: var(--bg-light); border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+              ${photoUrl ? renderIdentityPhoto(photoUrl, m.full_name || m.fullName) : `<span style="font-size: 20px;">👤</span>`}
             </div>
             <div class="${isSuspended ? 'member-suspended-identity' : ''}">
               <div class="font-semibold">${m.full_name || m.fullName}</div>
@@ -329,12 +367,23 @@ export const renderMemberList = async () => {
     });
 
     try {
+      if (hasInvalidDateRange()) {
+        cancelLoading();
+        totalItems = 0;
+        if (filterCountEl) filterCountEl.textContent = '0 members';
+        paginationWrapper.innerHTML = '';
+        tableBody.innerHTML = `
+          <tr><td colspan="6" class="text-center text-danger" style="padding: 40px;">Select a From date that is before the To date.</td></tr>
+        `;
+        return;
+      }
       const searchFilter = buildSearchFilter(currentSearch);
+      const dateFilter = buildMemberDateFilter();
       const lifecycleFilter = 'status!="closed"';
       const officerScopeFilter = officerFilter === 'all'
         ? ''
         : `(assigned_officer="${escapeFilterValue(officerFilter)}" || (assigned_officer="" && registered_by="${escapeFilterValue(officerFilter)}"))`;
-      const filterParts = [lifecycleFilter, searchFilter ? `(${searchFilter})` : '', officerScopeFilter].filter(Boolean);
+      const filterParts = [lifecycleFilter, searchFilter ? `(${searchFilter})` : '', dateFilter, officerScopeFilter].filter(Boolean);
       const filter = filterParts.join(' && ');
       const sort = alphaSort === 'az' ? 'full_name' : (alphaSort === 'za' ? '-full_name' : '-created');
       const query = { page: currentPage, perPage: pageSize, filter, sort, includeSuspended: true };
@@ -387,6 +436,21 @@ export const renderMemberList = async () => {
   }, 300);
 
   searchInput.addEventListener('input', debouncedSearch);
+  const applyDateFilter = () => {
+    dateRange = {
+      from: dateFromInput?.value || '',
+      to: dateToInput?.value || ''
+    };
+    currentPage = 1;
+    loadMembers();
+  };
+  dateFromInput.addEventListener('change', applyDateFilter);
+  dateToInput.addEventListener('change', applyDateFilter);
+  dateClearBtn.onclick = () => {
+    dateFromInput.value = '';
+    dateToInput.value = '';
+    applyDateFilter();
+  };
   alphaSortSelect.onchange = () => {
     alphaSort = alphaSortSelect.value;
     currentPage = 1;

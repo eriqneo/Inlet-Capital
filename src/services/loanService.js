@@ -1,4 +1,5 @@
 import { pb } from './api.js';
+import { reviewSavingsBeforeDisbursement } from './savingsDisbursementReview.js';
 import { dataCache } from './dataCache.js';
 import { addMonthsPreservingDay, getRepaymentScheduleAnchorDate } from '../core/repaymentSchedule.js';
 import {
@@ -41,15 +42,20 @@ const formatPocketBaseError = (err, fallback = 'Request failed.') => {
   return messages || err?.message || fallback;
 };
 
-const normalizeLoanStatusPayload = async (id, data) => {
+const normalizeLoanStatusPayload = async (id, data, existingRecord) => {
   const payload = { ...data };
   if (!payload.status) return payload;
 
-  const existing = await pb.collection('loans').getOne(id).catch(() => null);
+  const existing = existingRecord === undefined ? await pb.collection('loans').getOne(id).catch(() => null) : existingRecord;
   const hasDisbursementDate = Boolean(payload.disbursement_date || existing?.disbursement_date);
 
   if (payload.status === 'disbursed') {
     if (!hasDisbursementDate) payload.disbursement_date = new Date().toISOString();
+    const approvedAmount = Number(payload.approved_amount ?? existing?.approved_amount) || 0;
+    if (approvedAmount <= 0) {
+      const fallbackPrincipal = Number(payload.amount_applied ?? existing?.amount_applied) || 0;
+      if (fallbackPrincipal > 0) payload.approved_amount = fallbackPrincipal;
+    }
     return payload;
   }
 
@@ -103,6 +109,33 @@ const invalidateLoanFinancialCaches = async () => {
 };
 
 export const loanService = {
+  async recoveryAction(id, data) {
+    if (pb.authStore.model?.role !== 'super_admin') throw new Error('Only superadmins can renew loans.');
+    try {
+      const result = await pb.send(`/api/inlet/loans/${encodeURIComponent(id)}/recovery`, {
+        method: 'POST', body: data, requestKey: null
+      });
+      if (data.action === 'renew') {
+        // A committed renewal must remain successful even if browser cache cleanup fails.
+        await Promise.allSettled([
+          invalidateLoanFinancialCaches(),
+          dataCache.invalidatePrefix('loan_schedule'),
+          dataCache.invalidatePrefix('analytics'),
+          dataCache.invalidatePrefix('reports'),
+          dataCache.invalidatePrefix('dashboard')
+        ]);
+      }
+      return result;
+    } catch (error) {
+      if (error?.status === 404) throw new Error('Loan renewal is not available on the server yet. Ask your administrator to enable Debt Recovery Unit.');
+      throw new Error(formatPocketBaseError(error, 'Unable to renew this loan.'));
+    }
+  },
+
+  async getRenewalsForLoan(id) {
+    return pb.collection('loan_renewals').getFullList({ filter: pb.filter('loan = {:id}', { id }), sort: '-renewal_date' });
+  },
+
   /**
    * Apply for a new loan
    */
@@ -343,8 +376,20 @@ export const loanService = {
   /**
    * Update a loan (approve, disburse, reject, etc.)
    */
-  async update(id, data) {
-    const payload = await normalizeLoanStatusPayload(id, data);
+  async update(id, data, { confirmSavingsException } = {}) {
+    const existing = data.status === 'disbursed' ? await pb.collection('loans').getOne(id) : undefined;
+    const payload = await normalizeLoanStatusPayload(id, data, existing);
+    if (data.status === 'disbursed' && !existing.disbursement_date) {
+      const review = await reviewSavingsBeforeDisbursement({
+        api: pb, loan: existing, disbursementDate: payload.disbursement_date,
+        getUser: () => pb.authStore.model, confirmException: confirmSavingsException
+      });
+      if (review) payload.savings_disbursement_review = review;
+      const latest = await pb.collection('loans').getOne(id);
+      if (latest.updated !== existing.updated || latest.status !== existing.status || latest.disbursement_date) {
+        throw new Error('This loan changed during disbursement review. Refresh and review it again.');
+      }
+    }
     try {
       const record = await pb.collection('loans').update(id, payload);
       await dataCache.invalidatePrefix('loans:');

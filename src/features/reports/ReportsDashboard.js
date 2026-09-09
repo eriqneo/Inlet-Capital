@@ -207,6 +207,7 @@ export const renderReportsDashboard = async () => {
           <div class="card" style="background: var(--bg-light); border: none; border-left: 4px solid #f59e0b; box-shadow: var(--shadow-sm); transition: transform 0.2s, box-shadow 0.2s;">
             <div class="text-xs text-muted" style="font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;">Expected Interest Portfolio</div>
             <div class="text-xl font-semibold text-primary" id="pl-expected-interest" style="margin-top: 8px;">KES 0</div>
+            <div class="text-xs text-muted" style="margin-top: 4px; font-size: 0.7rem; opacity: 0.75;">Remaining after collected interest</div>
           </div>
         </div>
       </div>
@@ -256,9 +257,15 @@ export const renderReportsDashboard = async () => {
       <!-- 3. Group Performance -->
       <div id="groups-tab" class="report-section" style="display: none;">
         <h2 style="margin-bottom: 16px;">Group Reports</h2>
-        <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary); margin-bottom: 16px; max-width: 260px;">
-          <div class="text-xs text-muted">Table Entries</div>
-          <div class="text-xl font-semibold text-primary" id="groups-entry-count">0</div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px;">
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--success);">
+            <div class="text-xs text-muted">Total Savings</div>
+            <div class="text-xl font-semibold text-success" id="groups-total-savings">KES 0</div>
+          </div>
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
+            <div class="text-xs text-muted">Table Entries</div>
+            <div class="text-xl font-semibold text-primary" id="groups-entry-count">0</div>
+          </div>
         </div>
         <div class="table-responsive card" style="padding: 0;">
           <table class="table">
@@ -621,11 +628,11 @@ export const renderReportsDashboard = async () => {
       if (tbody) tbody.innerHTML = renderTableSkeletonRows(tab === 'cashflow' ? 7 : 9, 6);
     });
     container.querySelector('#alerts-container').innerHTML = `
-      <div style="grid-column: 1/-1;">${renderCardSkeleton({ title: 'Loading repayment alerts from PocketHost...', rows: 4 })}</div>
+      <div style="grid-column: 1/-1;">${renderCardSkeleton({ title: 'Fetching records from Inlet Database', rows: 4 })}</div>
     `;
     const activeSection = container.querySelector('.report-section[style*="block"]') || container.querySelector('#pl-tab');
     if (activeSection && !activeSection.querySelector('.inline-sync-status')) {
-      activeSection.insertAdjacentHTML('afterbegin', `<div class="no-print" style="margin-bottom: 12px;">${renderInlineSyncStatus('Syncing report data from PocketHost...')}</div>`);
+      activeSection.insertAdjacentHTML('afterbegin', `<div class="no-print" style="margin-bottom: 12px;">${renderInlineSyncStatus('Fetching records from Inlet Database')}</div>`);
     }
   };
 
@@ -802,7 +809,7 @@ export const renderReportsDashboard = async () => {
   const getSortAmount = (tab, row) => {
     if (tab === 'individuals') return Number(row.olBalance) || 0;
     if (tab === 'groups') return Number(row.outstandingLoan || row.arrearsAmount || row.totalSavings) || 0;
-    if (tab === 'disbursements') return Number(row.approved_amount || row.amount_applied) || 0;
+    if (tab === 'disbursements') return getLoanPrincipalAmount(row);
     if (tab === 'registrations') return Number(row.registration_fee) || 0;
     if (tab === 'cashflow' || tab === 'withdrawals') return Number(row.amount) || 0;
     if (tab === 'repayments') return Number(row.paid || row.olb) || 0;
@@ -842,20 +849,35 @@ export const renderReportsDashboard = async () => {
         toDate
       });
     };
+    const getInterestCollectedUpTo = (loan, toDate) => calculateCollectedInterest({
+      loan,
+      repayments: repaymentsByLoanId.get(String(loan.id)) || [],
+      toDate
+    });
     const isIncomeLoan = (loan) => {
       if (!['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status)) return false;
       return !!(loan.disbursement_date || repaymentsByLoanId.has(String(loan.id)));
     };
     const getLoanIncomeDate = (loan) => loan.disbursement_date || loan.approved_date || loan.application_date || loan.created;
+    const { toDate } = getDateRangeBounds();
+    const interestSnapshotDate = toDate || new Date();
     const approvedLoans = loans.filter(l => isIncomeLoan(l) && isWithinDateRange(getLoanIncomeDate(l)));
     const repaymentLoans = loans.filter(isIncomeLoan);
+    const interestPortfolioLoans = repaymentLoans.filter(loan => {
+      const incomeDate = toValidDate(getLoanIncomeDate(loan));
+      return Boolean(incomeDate && incomeDate <= interestSnapshotDate);
+    });
     const filteredExpenses = expenses.filter(e => isWithinDateRange(e.date || e.expense_date || e.created));
     const filteredMembers = members.filter(m => isWithinDateRange(getRegistrationFeeDate(m)));
     const filteredProcessingFeeLoans = loans.filter(l => l.processing_fee_paid && isWithinDateRange(getProcessingFeeDate(l)));
     const filteredFineRepayments = repayments.filter(r => isWithinDateRange(r.date || r.created));
     const totalExpenses = filteredExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
     const totalCapitalDisbursed = approvedLoans.reduce((sum, l) => sum + getContractPrincipalAmount(l), 0);
-    const expectedInterest = approvedLoans.reduce((sum, l) => sum + getContractInterestAmount(l), 0);
+    const expectedInterest = interestPortfolioLoans.reduce((sum, loan) => {
+      const contractualInterest = getContractInterestAmount(loan);
+      const collectedToSnapshot = getInterestCollectedUpTo(loan, interestSnapshotDate);
+      return sum + Math.max(0, contractualInterest - collectedToSnapshot);
+    }, 0);
     const collectedInterest = repaymentLoans.reduce((sum, loan) => sum + getInterestCollectedInRange(loan), 0);
     const collectedFines = filteredFineRepayments.reduce((sum, r) => sum + (Number(r.fine_amount) || 0), 0);
     const processingFeesCollected = filteredProcessingFeeLoans.reduce((sum, l) => sum + (l.processing_fee || 0), 0);
@@ -866,7 +888,11 @@ export const renderReportsDashboard = async () => {
     container.querySelector('#pl-capital-disbursed').textContent = `KES ${formatMoney(totalCapitalDisbursed)}`;
     container.querySelector('#pl-registration-fees').textContent = `KES ${formatMoney(registrationFeesCollected)}`;
     container.querySelector('#pl-processing-fees').textContent = `KES ${formatMoney(processingFeesCollected)}`;
-    container.querySelector('#pl-expected-interest').textContent = `KES ${formatMoney(expectedInterest)}`;
+    const expectedInterestEl = container.querySelector('#pl-expected-interest');
+    expectedInterestEl.textContent = repaymentLoadError
+      ? 'Unavailable'
+      : repaymentsLoaded ? `KES ${formatMoney(expectedInterest)}` : 'Syncing...';
+    expectedInterestEl.title = repaymentLoadError?.message || '';
     const collectedInterestEl = container.querySelector('#pl-collected-interest');
     collectedInterestEl.textContent = repaymentLoadError
       ? 'Unavailable'
@@ -1122,6 +1148,11 @@ export const renderReportsDashboard = async () => {
     });
     const entriesCountEl = container.querySelector('#groups-entry-count');
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
+    const totalSavingsEl = container.querySelector('#groups-total-savings');
+    if (totalSavingsEl) {
+      const filteredTotalSavings = filtered.reduce((sum, group) => sum + (Number(group.totalSavings) || 0), 0);
+      totalSavingsEl.textContent = `KES ${formatMoney(filteredTotalSavings)}`;
+    }
 
     const sortedRows = sortReportRows('groups', filtered);
     const paginated = getReportRowsForView('groups', sortedRows);
@@ -1178,7 +1209,7 @@ export const renderReportsDashboard = async () => {
           .sort((a, b) => b - a)[0];
         if (latestDueDate) return latestDueDate;
       }
-      return addMonths(loan.disbursement_date, loan.period);
+      return addMonths(loan.renewal_date || loan.disbursement_date, loan.period);
     };
 
     const allApproved = loans.filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date);
@@ -1196,7 +1227,7 @@ export const renderReportsDashboard = async () => {
     });
     const entriesCountEl = container.querySelector('#disbursements-entry-count');
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
-    const totalDisbursed = filtered.reduce((sum, loan) => sum + (Number(loan.approved_amount || loan.amount_applied) || 0), 0);
+    const totalDisbursed = filtered.reduce((sum, loan) => sum + getLoanPrincipalAmount(loan), 0);
     const totalDisbursedEl = container.querySelector('#disbursements-total-amount');
     if (totalDisbursedEl) totalDisbursedEl.textContent = `KES ${formatMoney(totalDisbursed)}`;
 
@@ -1215,6 +1246,7 @@ export const renderReportsDashboard = async () => {
       const guarantorRelation = guarantor.relationship || guarantor.relation || '-';
       const officerName = officer?.name || officer?.email || officer?.username || '-';
       const endDate = getLoanEndDate(l);
+      const disbursedAmount = getLoanPrincipalAmount(l);
 
       return `
       <tr>
@@ -1222,7 +1254,7 @@ export const renderReportsDashboard = async () => {
         <td class="font-semibold">${clientName}</td>
         <td>${clientPhone}</td>
         <td><span class="badge badge-outline" style="font-size: 0.65rem;">${groupName}</span></td>
-        <td class="text-success font-semibold">${formatMoney(l.approved_amount)}</td>
+        <td class="text-success font-semibold">${formatMoney(disbursedAmount)}</td>
         <td>${formatDate(l.application_date)}</td>
         <td>${l.approved_date ? formatDate(l.approved_date) : '-'}</td>
         <td>${formatDate(l.disbursement_date)}</td>

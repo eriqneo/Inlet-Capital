@@ -38,19 +38,14 @@ const meetingOnOrBefore = (date, meetingDayIndex) => {
   return meeting;
 };
 
-const getCycleKey = (date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
+const WEEKLY_SAVINGS_AMOUNT = 200;
 
-const getRating = (participationRate, expectedParticipations) => {
-  if (expectedParticipations === 0) return 0;
-  if (participationRate >= 100) return 5;
-  if (participationRate >= 80) return 4;
-  if (participationRate >= 60) return 3;
-  if (participationRate >= 40) return 2;
+const getRating = (coverageRate, expectedAmount) => {
+  if (expectedAmount === 0) return 0;
+  if (coverageRate >= 100) return 5;
+  if (coverageRate >= 80) return 4;
+  if (coverageRate >= 60) return 3;
+  if (coverageRate >= 40) return 2;
   return 1;
 };
 
@@ -58,54 +53,62 @@ export const calculateGroupSavingsPerformance = ({
   group,
   members = [],
   savings = [],
-  referenceDate = new Date()
+  referenceDate = new Date(),
+  periodStartDate = null,
+  weeklyAmount = WEEKLY_SAVINGS_AMOUNT
 } = {}) => {
   const meetingDayIndex = MEETING_DAY_INDEX[group?.meeting_day];
   const periodEnd = toDate(referenceDate);
   const groupStart = toDate(group?.registration_date || group?.created);
+  const requestedPeriodStart = toDate(periodStartDate);
+  const effectivePeriodStart = laterDate(groupStart, requestedPeriodStart) || groupStart;
 
-  if (meetingDayIndex === undefined || !periodEnd || !groupStart || members.length === 0) {
+  if (meetingDayIndex === undefined || !periodEnd || !groupStart || !effectivePeriodStart || members.length === 0) {
     return {
       rating: 0,
       participationRate: 0,
+      contributionRate: 0,
       expectedParticipations: 0,
       savedParticipations: 0,
+      expectedAmount: 0,
+      contributedAmount: 0,
+      shortfallAmount: 0,
+      surplusAmount: 0,
+      weeklyAmount,
       meetingCycles: 0,
-      periodStart: groupStart,
+      periodStart: effectivePeriodStart,
       periodEnd
     };
   }
 
   const latestMeeting = meetingOnOrBefore(periodEnd, meetingDayIndex);
-  const firstGroupMeeting = firstMeetingOnOrAfter(groupStart, meetingDayIndex);
+  const firstGroupMeeting = firstMeetingOnOrAfter(effectivePeriodStart, meetingDayIndex);
   if (firstGroupMeeting > latestMeeting) {
     return {
       rating: 0,
       participationRate: 0,
+      contributionRate: 0,
       expectedParticipations: 0,
       savedParticipations: 0,
+      expectedAmount: 0,
+      contributedAmount: 0,
+      shortfallAmount: 0,
+      surplusAmount: 0,
+      weeklyAmount,
       meetingCycles: 0,
       periodStart: firstGroupMeeting,
       periodEnd: latestMeeting
     };
   }
 
-  const depositsByMember = new Map();
-  savings.forEach(record => {
-    if (!record?.member || record.is_reversed || record.type !== 'deposit' || (Number(record.amount) || 0) <= 0) return;
-    const savingDate = toDate(record.date || record.created);
-    if (!savingDate || savingDate > periodEnd) return;
-    if (!depositsByMember.has(record.member)) depositsByMember.set(record.member, []);
-    depositsByMember.get(record.member).push(savingDate);
-  });
-
   let expectedParticipations = 0;
-  let savedParticipations = 0;
   let earliestEligibleMeeting = null;
+  const memberWindows = new Map();
 
   members.forEach(member => {
     const eligibleFrom = laterDate(
       groupStart,
+      requestedPeriodStart,
       member.group_joined_at,
       member.registration_date,
       member.created
@@ -118,26 +121,40 @@ export const calculateGroupSavingsPerformance = ({
 
     const expectedForMember = Math.floor((latestMeeting - firstEligibleMeeting) / (7 * DAY_MS)) + 1;
     expectedParticipations += expectedForMember;
-
-    const completedCycles = new Set();
-    (depositsByMember.get(member.id) || []).forEach(depositDate => {
-      const cycleMeeting = meetingOnOrBefore(depositDate, meetingDayIndex);
-      if (cycleMeeting < firstEligibleMeeting || cycleMeeting > latestMeeting) return;
-      completedCycles.add(getCycleKey(cycleMeeting));
+    memberWindows.set(member.id, {
+      start: eligibleFrom,
+      end: periodEnd
     });
-    savedParticipations += Math.min(expectedForMember, completedCycles.size);
   });
 
-  const participationRate = expectedParticipations > 0
-    ? (savedParticipations / expectedParticipations) * 100
+  const expectedAmount = expectedParticipations * (Number(weeklyAmount) || 0);
+  const contributedAmount = savings.reduce((sum, record) => {
+    if (!record?.member || record.is_reversed || record.type !== 'deposit') return sum;
+    const window = memberWindows.get(record.member);
+    if (!window) return sum;
+    const amount = Number(record.amount) || 0;
+    if (amount <= 0) return sum;
+    const savingDate = toDate(record.date || record.created);
+    if (!savingDate || savingDate < window.start || savingDate > window.end) return sum;
+    return sum + amount;
+  }, 0);
+  const contributionRate = expectedAmount > 0
+    ? Math.min(100, (contributedAmount / expectedAmount) * 100)
     : 0;
   const meetingCycles = Math.floor((latestMeeting - firstGroupMeeting) / (7 * DAY_MS)) + 1;
+  const savedParticipations = Math.min(expectedParticipations, Math.floor(contributedAmount / (Number(weeklyAmount) || 1)));
 
   return {
-    rating: getRating(participationRate, expectedParticipations),
-    participationRate,
+    rating: getRating(contributionRate, expectedAmount),
+    participationRate: contributionRate,
+    contributionRate,
     expectedParticipations,
     savedParticipations,
+    expectedAmount,
+    contributedAmount,
+    shortfallAmount: Math.max(0, expectedAmount - contributedAmount),
+    surplusAmount: Math.max(0, contributedAmount - expectedAmount),
+    weeklyAmount,
     meetingCycles,
     periodStart: earliestEligibleMeeting || firstGroupMeeting,
     periodEnd: latestMeeting

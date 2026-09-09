@@ -1,11 +1,13 @@
 
 import './components/Toast.js';
 import './components/Dialog.js';
+import { initIdentityPhotoPreview } from './components/IdentityPhoto.js';
 import { initRouter, addRoute } from './core/router.js';
 import { authService } from './services/authService.js';
 import { dataCache } from './services/dataCache.js';
 
 const initApp = async () => {
+  initIdentityPhotoPreview();
   // System uses PocketBase which initializes data on server-side
   await dataCache.ensureCurrentEpoch();
 
@@ -96,6 +98,21 @@ const initApp = async () => {
     const { renderLoanApprovalQueue } = await import('./features/loans/LoanApprovalQueue.js');
     return await renderLoanApprovalQueue(params || {});
   }, { protect: true, roles: ['super_admin', 'admin'], module: 'loans' });
+
+  addRoute('#/loans/distress-unit', async () => {
+    const { renderLoanList } = await import('./features/loans/LoanList.js');
+    return await renderLoanList({ mode: 'distress' });
+  }, { protect: true, module: 'loans' });
+
+  addRoute('#/loans/debt-recovery', async () => {
+    const { renderLoanList } = await import('./features/loans/LoanList.js');
+    return await renderLoanList({ mode: 'recovery' });
+  }, { protect: true, module: 'loans' });
+
+  addRoute('#/loans/recovered', async () => {
+    const { renderLoanList } = await import('./features/loans/LoanList.js');
+    return await renderLoanList({ mode: 'recovered' });
+  }, { protect: true, module: 'loans' });
 
   addRoute('#/loans/:id', async (params) => {
     const { renderLoanDetails } = await import('./features/loans/LoanDetails.js');

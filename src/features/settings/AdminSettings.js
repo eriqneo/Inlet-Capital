@@ -357,7 +357,7 @@ export const renderAdminSettings = async () => {
               </div>
             </div>
             <form id="org-form">
-              ${isSettingsLoading ? `<div class="text-xs text-muted" style="margin-bottom: 16px;">Loading current organisation settings...</div>` : ''}
+              ${isSettingsLoading ? `<div style="margin-bottom: 16px;">${renderInlineSyncStatus()}</div>` : ''}
               <div style="display: grid; grid-template-columns: 200px 1fr; gap: 32px;">
                 <div>
                   <div class="form-label">Company Logo</div>
@@ -483,7 +483,7 @@ export const renderAdminSettings = async () => {
                   <div class="badge" style="background: rgba(27,61,114,0.08); color: var(--primary);">Super Admin</div>
                 </div>
                 ${isAssignmentsLoading ? `
-                  <div>${renderInlineSyncStatus('Loading client assignments...')}</div>
+                  <div>${renderInlineSyncStatus()}</div>
                 ` : assignmentLoadError ? `
                   <div class="text-sm text-danger">${assignmentLoadError}</div>
                 ` : `
@@ -664,7 +664,7 @@ export const renderAdminSettings = async () => {
             </div>
             <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">
               ${isVoteheadsLoading ? `
-                <div style="grid-column: 1/-1;">${renderCardSkeleton({ title: 'Loading expense categories from PocketHost...', rows: 3 })}</div>
+                <div style="grid-column: 1/-1;">${renderCardSkeleton({ title: 'Fetching records from Inlet Database', rows: 3 })}</div>
               ` : visibleVoteheads.length === 0 ? '<p class="text-muted">No voteheads found.</p>' : visibleVoteheads.map(v => `
                 <div class="card" style="background: var(--bg-light); border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: flex-start; opacity: ${v.status === 'archived' ? '0.6' : '1'};">
                   <div>
@@ -708,7 +708,7 @@ export const renderAdminSettings = async () => {
           <!-- 4. Rates & Fees -->
           <div id="rates-tab" class="tab-section" style="display: ${activeTab === 'rates' ? 'block' : 'none'};">
             <form id="rates-form">
-              ${isSettingsLoading ? `<div class="text-xs text-muted" style="margin-bottom: 16px;">Loading current financial settings...</div>` : ''}
+              ${isSettingsLoading ? `<div style="margin-bottom: 16px;">${renderInlineSyncStatus()}</div>` : ''}
               <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px;">
                 <div class="card" style="background: var(--bg-light);">
                   <h4 style="margin-bottom: 12px;">Financial Rates</h4>
@@ -770,7 +770,7 @@ export const renderAdminSettings = async () => {
             </div>
             <div class="table-responsive card" style="padding: 0;">
               ${isAuditLoading ? `
-                <div style="padding: 16px;">${renderInlineSyncStatus('Loading audit trail from PocketHost...')}</div>
+                <div style="padding: 16px;">${renderInlineSyncStatus('Fetching records from Inlet Database')}</div>
                 <table class="table" style="font-size: 0.8rem;">
                   <tbody>${renderTableSkeletonRows(5, 6)}</tbody>
                 </table>

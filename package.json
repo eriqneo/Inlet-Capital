@@ -5,7 +5,7 @@
   "main": "src/app.js",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node scripts/build_recovery_hook.mjs && vite build",
     "preview": "vite preview"
   },
   "keywords": [],

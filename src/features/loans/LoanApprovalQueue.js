@@ -1,4 +1,5 @@
 import { loanService } from '../../services/loanService.js';
+import { confirmSavingsException } from '../../components/SavingsConsistency.js';
 import { settingsService } from '../../services/settingsService.js';
 import { navigate } from '../../core/router.js';
 import { formatDate, formatMoney } from '../../core/utils.js';
@@ -43,7 +44,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
       </div>
     </div>
     <div style="display: grid; gap: 16px;">
-      ${renderCardSkeleton({ title: 'Checking approval queue from PocketHost...', rows: 4 })}
+      ${renderCardSkeleton({ title: 'Fetching records from Inlet Database', rows: 4 })}
       ${renderCardSkeleton({ title: 'Preparing disbursement windows...', rows: 3 })}
     </div>
   `;
@@ -713,7 +714,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
         const updatedLoan = await loanService.update(id, {
           status: 'disbursed',
           disbursement_date: dateInputToIso(disbursementDateInput?.value)
-        });
+        }, { confirmSavingsException });
         
         await loanService.ensureRepaymentSchedule(updatedLoan);
         if (window.notify) window.notify.success('Funds disbursed successfully! Repayment schedule generated.');
@@ -757,6 +758,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
         await refreshQueue('pending');
       }
     } catch (err) {
+      if (err.code === 'SAVINGS_REVIEW_CANCELLED') return;
       console.error(err);
       if (window.notify) window.notify.error('Operation failed: ' + err.message);
     } finally {

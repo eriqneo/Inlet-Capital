@@ -25,6 +25,14 @@ export const showDelayedLoading = (renderLoading, delay = 180) => {
   };
 };
 
+export const DATABASE_LOADING_LABEL = 'Fetching records from Inlet Database';
+
+export const renderDatabaseLoaderIcon = () => `
+  <span class="database-loader-icon" aria-hidden="true">
+    <span></span>
+  </span>
+`;
+
 export const renderTableSkeletonRows = (columns = 4, rows = 6) => (
   Array.from({ length: rows }, () => `
     <tr class="skeleton-row">
@@ -35,10 +43,10 @@ export const renderTableSkeletonRows = (columns = 4, rows = 6) => (
   `).join('')
 );
 
-export const renderCardSkeleton = ({ title = 'Loading data...', rows = 4 } = {}) => `
+export const renderCardSkeleton = ({ title = DATABASE_LOADING_LABEL, rows = 4 } = {}) => `
   <div class="card skeleton-card" aria-busy="true">
     <div class="skeleton-status">
-      <span class="sync-dot"></span>
+      ${renderDatabaseLoaderIcon()}
       <span>${title}</span>
     </div>
     ${Array.from({ length: rows }, (_, index) => `
@@ -47,9 +55,9 @@ export const renderCardSkeleton = ({ title = 'Loading data...', rows = 4 } = {})
   </div>
 `;
 
-export const renderInlineSyncStatus = (label = 'Refreshing from PocketHost...') => `
+export const renderInlineSyncStatus = (label = DATABASE_LOADING_LABEL) => `
   <span class="inline-sync-status">
-    <span class="sync-dot"></span>
+    ${renderDatabaseLoaderIcon()}
     ${label}
   </span>
 `;

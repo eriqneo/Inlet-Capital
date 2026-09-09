@@ -1,11 +1,12 @@
 const toValidDate = (value) => {
   if (!value) return null;
-  const date = new Date(value);
+  const date = new Date(typeof value === 'string' ? value.replace(' ', 'T') : value);
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
 export const getRepaymentScheduleAnchorDate = (loan) => (
-  toValidDate(loan?.disbursement_date)
+  toValidDate(loan?.renewal_date)
+  || toValidDate(loan?.disbursement_date)
   || toValidDate(loan?.application_date)
   || toValidDate(loan?.created)
   || new Date()

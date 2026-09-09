@@ -11,6 +11,7 @@ import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/member
 import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
 import { createLoanPortfolioCalculator, isCollectibleLoanRecord } from '../../core/loanPortfolio.js';
 import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
+import { renderDatabaseLoaderIcon, DATABASE_LOADING_LABEL } from '../../core/uiState.js';
 
 export const renderDashboard = async () => {
   const container = document.createElement('div');
@@ -22,8 +23,10 @@ export const renderDashboard = async () => {
       <p class="text-muted">Welcome to the Inlet Capital management system.</p>
     </div>
     <div class="card text-center" style="padding: 48px;">
-      <div class="spinner" style="margin: 0 auto 16px;"></div>
-      <p class="text-muted">Loading dashboard insights...</p>
+      <div class="database-loading-copy">
+        ${renderDatabaseLoaderIcon()}
+        <span>${DATABASE_LOADING_LABEL}</span>
+      </div>
     </div>
   `;
 

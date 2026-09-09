@@ -6,45 +6,58 @@ import { renderTableSkeletonRows, setButtonLoading, showDelayedLoading } from '.
 import { withReturnTo } from '../../core/navigation.js';
 import { authService } from '../../services/authService.js';
 import { canUseOfficerFilter, createOfficerScope, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
+import { pb } from '../../services/api.js';
+import { settingsService } from '../../services/settingsService.js';
+import { createLoanPortfolioCalculator } from '../../core/loanPortfolio.js';
+import { getLoanEndDate, isDistressUnitLoan } from '../../core/distressUnit.js';
+import { getRecoveryAgeDays, isDebtRecoveryLoan, isRecoveredLoan } from '../../core/debtRecovery.js';
+import { openDebtRecoveryRenewal } from './DebtRecoveryRenewal.js';
 
-export const renderLoanList = async () => {
+export const renderLoanList = async (options = {}) => {
   const container = document.createElement('div');
   const currentUser = authService.getUser();
   const canApproveLoans = ['super_admin', 'admin'].includes(currentUser?.role);
   const canEditLoans = ['super_admin', 'admin'].includes(currentUser?.role);
   const canDeleteLoans = currentUser?.role === 'super_admin';
+  const isDistressMode = options.mode === 'distress';
+  const isRecoveryMode = options.mode === 'recovery';
+  const isRecoveredMode = options.mode === 'recovered';
+  const isUnitMode = isDistressMode || isRecoveryMode || isRecoveredMode;
+  const currentRoute = isRecoveredMode ? '#/loans/recovered' : isRecoveryMode ? '#/loans/debt-recovery' : isDistressMode ? '#/loans/distress-unit' : '#/loans';
   
   // We will fetch the loans per page
   let currentPage = 1;
   const pageSize = 10;
   let searchTerm = '';
-  let statusFilter = 'running';
+  let statusFilter = isRecoveredMode ? 'recovered' : isRecoveryMode ? 'recovery' : isDistressMode ? 'distress' : 'running';
   let alphaSort = 'default';
   let officerFilter = 'all';
+  let dateRange = { from: '', to: '' };
   let requestId = 0;
 
   container.innerHTML = `
-    <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
+    <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;">
       <div>
-        <h1 class="text-xl">Loans Management</h1>
-        <p class="text-muted">Track all individual and group loan applications.</p>
+        <h1 class="text-xl">${isRecoveredMode ? 'Recovered Loans (RL)' : isRecoveryMode ? 'Debt Recovery Unit (D.R.U)' : isDistressMode ? 'Distress Unit (DU)' : 'Loans Management'}</h1>
+        <p class="text-muted">${isRecoveredMode ? 'D.R.U loans fully settled, including outstanding fines.' : isRecoveryMode ? 'No payments received for 90 days or more.' : isDistressMode ? 'Loans past their repayment period with outstanding balances.' : 'Track all individual and group loan applications.'}</p>
       </div>
-        ${canApproveLoans ? `<button class="btn btn-secondary" onclick="window.location.hash = '${withReturnTo('#/loans/approve', '#/loans')}'" style="background: #eab308; border-color: #eab308; color: white;">
+      <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end;">
+        ${!isUnitMode && canApproveLoans ? `<button class="btn btn-secondary" onclick="window.location.hash = '${withReturnTo('#/loans/approve', '#/loans')}'" style="background: #eab308; border-color: #eab308; color: white;">
           <span class="badge" style="background: white; color: #eab308; margin-right: 8px;">!</span>
           Review Pending
         </button>` : ''}
-        ${canApproveLoans ? `<button class="btn btn-primary" onclick="window.location.hash = '${withReturnTo('#/loans/approve', '#/loans')}'" style="background: #0d9488; border-color: #0d9488; color: white;">
+        ${!isUnitMode && canApproveLoans ? `<button class="btn btn-primary" onclick="window.location.hash = '${withReturnTo('#/loans/approve', '#/loans')}'" style="background: #0d9488; border-color: #0d9488; color: white;">
           <span class="badge" style="background: white; color: #0d9488; margin-right: 8px;">!</span>
           Disburse Approved
         </button>` : ''}
-        <button class="btn btn-primary" onclick="window.location.hash = '${withReturnTo('#/loans/new', '#/loans')}'">+ New Loan Application</button>
+        ${isUnitMode ? `<button class="btn btn-outline" onclick="window.location.hash = '#/loans'">Back to Loans</button>` : `<button class="btn btn-primary" onclick="window.location.hash = '${withReturnTo('#/loans/new', '#/loans')}'">+ New Loan Application</button>`}
       </div>
     </div>
 
     <div class="card" style="padding: 0; overflow: hidden;">
-      <div style="padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; gap: 16px; flex-wrap: wrap;">
-        <input type="text" id="loan-search" class="form-control" placeholder="Search by name, phone, or loan number..." style="max-width: 400px;" />
-        <select id="loan-status-filter" class="form-control" style="max-width: 240px;">
+      <div class="loan-filter-bar">
+        <input type="text" id="loan-search" class="form-control loan-search-input" placeholder="Search by name, phone, or loan number..." />
+        ${isUnitMode ? '' : `<select id="loan-status-filter" class="form-control" style="max-width: 240px;">
           <option value="running" selected>Running Loans</option>
           <option value="pending">Pending Approval</option>
           <option value="awaiting">Awaiting Disbursement</option>
@@ -53,7 +66,12 @@ export const renderLoanList = async () => {
           <option value="written_off">Written Off</option>
           <option value="balanced_off">Balanced Off</option>
           <option value="all">All Loans</option>
-        </select>
+        </select>`}
+        <div class="loan-date-range">
+          <label><span>From</span><input type="date" id="loan-date-from" class="form-control" /></label>
+          <label><span>To</span><input type="date" id="loan-date-to" class="form-control" /></label>
+          <button type="button" class="btn btn-outline btn-sm" id="loan-date-clear">Clear</button>
+        </div>
         <select id="loan-alpha-sort" class="form-control" style="max-width: 160px;">
           <option value="default">Latest</option>
           <option value="az">Client A-Z</option>
@@ -169,6 +187,16 @@ export const renderLoanList = async () => {
       .loan-icon-action:hover { transform: translateY(-1px); box-shadow: 0 6px 12px rgba(15, 37, 69, 0.08); border-color: var(--primary); }
       .loan-icon-action.danger { color: var(--danger); }
       .loan-icon-action.danger:hover { border-color: var(--danger); background: rgba(239, 68, 68, 0.06); }
+      .loan-filter-bar { padding: 16px; border-bottom: 1px solid var(--border-color); display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+      .loan-search-input { max-width: 400px; }
+      .loan-date-range { display: inline-flex; align-items: end; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px solid var(--border-color); border-radius: 8px; background: #fff; }
+      .loan-date-range label { display: grid; gap: 4px; font-size: 0.68rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; }
+      .loan-date-range input { width: 146px; padding: 7px 8px; font-size: 0.78rem; }
+      @media (max-width: 860px) {
+        .loan-filter-bar, .loan-search-input, .loan-date-range { width: 100%; }
+        .loan-date-range { display: grid; grid-template-columns: 1fr 1fr auto; align-items: end; }
+        .loan-date-range input { width: 100%; }
+      }
     </style>
   `;
 
@@ -188,6 +216,23 @@ export const renderLoanList = async () => {
     return date.toISOString().split('T')[0];
   };
   const toPocketDate = (dateValue) => dateValue ? new Date(`${dateValue}T12:00:00`).toISOString() : '';
+  const toPocketDateTime = (value, endOfDay = false) => value
+    ? `${value} ${endOfDay ? '23:59:59.999Z' : '00:00:00.000Z'}`
+    : '';
+  const buildLoanDateFilter = () => {
+    const parts = [];
+    if (dateRange.from) {
+      const from = toPocketDateTime(dateRange.from);
+      parts.push(`(disbursement_date>="${from}" || (disbursement_date="" && application_date>="${from}"))`);
+    }
+    if (dateRange.to) {
+      const to = toPocketDateTime(dateRange.to, true);
+      parts.push(`(disbursement_date<="${to}" || (disbursement_date="" && application_date<="${to}"))`);
+    }
+    return parts.join(' && ');
+  };
+  const hasInvalidDateRange = () => Boolean(dateRange.from && dateRange.to && dateRange.from > dateRange.to);
+  const combineFilters = (...filters) => filters.filter(Boolean).map(filter => `(${filter})`).join(' && ');
   const disbursedStatuses = ['disbursed', 'completed', 'written_off', 'closed'];
   const getLoanRemarks = (loan) => loan.purpose || loan.remarks || loan.note || '';
   const getLoanClientName = (loan) => {
@@ -237,6 +282,14 @@ export const renderLoanList = async () => {
       paginationWrapper.innerHTML = '';
     });
     try {
+      if (hasInvalidDateRange()) {
+        cancelLoading();
+        paginationWrapper.innerHTML = '';
+        tableBody.innerHTML = `
+          <tr><td colspan="9" class="text-center text-danger" style="padding: 40px;">Select a From date that is before the To date.</td></tr>
+        `;
+        return;
+      }
       // Build filter
       const filters = [];
       if (statusFilter === 'running') {
@@ -252,6 +305,8 @@ export const renderLoanList = async () => {
       } else if (statusFilter === 'written_off') {
         filters.push('status="written_off"');
       }
+      const dateFilter = buildLoanDateFilter();
+      if (dateFilter) filters.push(dateFilter);
       const pbFilter = filters.join(' && ');
 
       const renderLoanResult = (result) => {
@@ -260,7 +315,7 @@ export const renderLoanList = async () => {
         const paginatedLoans = result.items;
 
         tableBody.innerHTML = paginatedLoans.length === 0 ? `
-          <tr><td colspan="9" class="text-center text-muted" style="padding: 40px;">No loans found.</td></tr>
+          <tr><td colspan="9" class="text-center text-muted" style="padding: 40px;">${isRecoveredMode ? 'No fully recovered D.R.U loans found.' : 'No loans found.'}</td></tr>
         ` : paginatedLoans.map(l => {
           const member = l.expand?.member;
           const loanGroup = l.expand?.group;
@@ -281,7 +336,10 @@ export const renderLoanList = async () => {
             ? (loanGroup?.group_id || '')
             : (memberGroup?.group_id || '');
           const groupBadgeClass = isGroupAccountLoan || memberGroup ? 'badge-primary' : 'badge-outline';
-          const statusLabel = l.status === 'disbursed' ? 'RUNNING' :
+          const isDistressUnit = Boolean(l.__distressUnit);
+          const isRecoveryUnit = Boolean(l.__recoveryUnit);
+          const statusLabel = l.__recovered ? 'RECOVERED (RL)' : isRecoveryUnit ? 'DEBT RECOVERY (D.R.U)' : isDistressUnit ? 'DISTRESS UNIT (DU)' :
+            l.status === 'disbursed' ? 'RUNNING' :
             l.status === 'approved' ? 'AWAITING DISBURSEMENT' :
             l.status === 'partial_approved' ? 'PARTIAL AWAITING DISBURSEMENT' :
             l.status === 'rejected' ? 'DECLINED' :
@@ -292,7 +350,7 @@ export const renderLoanList = async () => {
           <tr>
             <td>
               <div class="font-semibold">${l.loan_no}</div>
-              <div class="text-xs text-muted">${formatDate(l.application_date)}</div>
+              <div class="text-xs text-muted">${l.disbursement_date ? formatDate(l.disbursement_date) : 'Not disbursed'}</div>
             </td>
             <td class="font-semibold">${clientName}</td>
             <td>
@@ -322,6 +380,7 @@ export const renderLoanList = async () => {
             </td>
             <td>
               <span class="badge ${
+                l.__recovered ? 'badge-success' : isDistressUnit || isRecoveryUnit ? 'badge-danger' :
                 l.status === 'disbursed' ? 'badge-success' :
                 l.status === 'approved' ? 'badge-primary' :
                 l.status === 'partial_approved' ? 'badge-primary' :
@@ -333,9 +392,13 @@ export const renderLoanList = async () => {
               }">
                 ${statusLabel}
               </span>
+              ${isDistressUnit ? `<div class="text-xs text-muted" style="margin-top: 4px;">Ended ${formatDate(l.__duEndDate)} · OLB ${formatMoney(l.__duOutstanding)}</div>` : ''}
+              ${isRecoveryUnit ? `<div class="text-xs text-muted" style="margin-top: 4px;">${getRecoveryAgeDays(l)} days unpaid &middot; OLB ${formatMoney(l.__duOutstanding)}</div>` : ''}
+              ${l.__recovered ? `<div class="text-xs text-muted" style="margin-top: 4px;">Fully paid &middot; OLB ${formatMoney(0)}</div>` : ''}
             </td>
             <td>
               <div class="loan-action-group">
+                ${isRecoveryUnit && canDeleteLoans ? `<button type="button" class="btn btn-outline btn-sm loan-row-action" data-action="renew" data-id="${l.id}">Renew</button>` : ''}
                 <button type="button" class="loan-icon-action loan-row-action" data-action="view" data-id="${l.id}" title="View loan" aria-label="View loan">⊙</button>
                 <button type="button" class="loan-icon-action loan-row-action" data-action="comments" data-id="${l.id}" title="View comments" aria-label="View comments">
                   <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
@@ -353,12 +416,19 @@ export const renderLoanList = async () => {
           btn.onclick = async () => {
             const loan = paginatedLoans.find(item => item.id === btn.dataset.id);
             if (!loan) return;
+            if (btn.dataset.action === 'renew') {
+              openDebtRecoveryRenewal(loan, async () => {
+                currentPage = 1;
+                await updateUI();
+              });
+              return;
+            }
             if (btn.dataset.action === 'view') {
-              window.location.hash = withReturnTo(`#/loans/${loan.loan_no}`, '#/loans');
+              window.location.hash = withReturnTo(`#/loans/${loan.loan_no}`, currentRoute);
               return;
             }
             if (btn.dataset.action === 'comments') {
-              window.location.hash = withReturnTo(`#/loans/${loan.loan_no}?tab=comments`, '#/loans');
+              window.location.hash = withReturnTo(`#/loans/${loan.loan_no}?tab=comments`, currentRoute);
               return;
             }
             if (btn.dataset.action === 'edit') {
@@ -394,6 +464,7 @@ export const renderLoanList = async () => {
       if (statusFilter === 'balanced_off') {
         const [allLoans, balanceOffs] = await Promise.all([
           loanService.getFullListCached({
+            filter: dateFilter,
             sort: '-application_date',
             cacheKey: 'loans:list:balanced-off:expanded:v1'
           }),
@@ -404,6 +475,62 @@ export const renderLoanList = async () => {
           .map(record => typeof record.loan === 'string' ? record.loan : record.loan?.id)
           .filter(Boolean));
         const matchedLoans = allLoans.filter(loan => balancedLoanIds.has(loan.id));
+        const officerLoans = filterLoansByOfficer(matchedLoans);
+        const searchedLoans = filterLoansBySearch(officerLoans);
+        const sortedLoans = alphaSort !== 'default' ? sortLoansAlphabetically(searchedLoans) : searchedLoans;
+        const start = (currentPage - 1) * pageSize;
+        renderLoanResult({
+          items: sortedLoans.slice(start, start + pageSize),
+          totalItems: sortedLoans.length
+        });
+        return;
+      }
+
+      if (isUnitMode) {
+        const [allLoans, repayments, settlements, schedules, penaltyAmount] = await Promise.all([
+          loanService.getFullListCached({
+            filter: combineFilters(isRecoveredMode
+              ? '(status="disbursed" || status="completed" || status="closed" || status="approved" || status="partial_approved") && disbursement_date!=""'
+              : 'status="disbursed"', dateFilter),
+            sort: '-application_date',
+            cacheKey: isRecoveredMode ? 'loans:list:recovered:expanded:v1' : 'loans:list:distress-unit:expanded:v1'
+          }),
+          dataCache.get('loan_repayments:loan-list:all:v1', () => pb.collection('loan_repayments').getFullList()),
+          loanService.getBalanceOffsFullList({ expand: '' }),
+          dataCache.get('loan_schedule:loan-list:all:v1', () => pb.collection('loan_schedule').getFullList()),
+          settingsService.getNumber('penalty_amount', 500)
+        ]);
+        const portfolioCalculator = createLoanPortfolioCalculator({
+          repayments,
+          settlements,
+          schedules,
+          penaltyAmount,
+          referenceDate: new Date()
+        });
+        const matchedLoans = allLoans
+          .map(loan => {
+            const outstanding = portfolioCalculator.getOutstanding(loan);
+            const endDate = getLoanEndDate(loan);
+            return {
+              ...loan,
+              __distressUnit: isDistressUnitLoan(loan, { outstandingBalance: outstanding }),
+              __recoveryUnit: isDebtRecoveryLoan(loan, {
+                repayments: portfolioCalculator.getRepayments(loan.id),
+                settlements: portfolioCalculator.getSettlements(loan.id),
+                schedules: portfolioCalculator.getSchedules(loan.id)
+              }),
+              __recovered: isRecoveredMode && isRecoveredLoan(loan, {
+                repayments: portfolioCalculator.getRepayments(loan.id),
+                settlements: portfolioCalculator.getSettlements(loan.id),
+                schedules: portfolioCalculator.getSchedules(loan.id),
+                penaltyAmount
+              }),
+              __duOutstanding: outstanding,
+              __duEndDate: endDate
+            };
+          })
+          .filter(loan => isRecoveredMode ? loan.__recovered : isRecoveryMode ? loan.__recoveryUnit : loan.__distressUnit)
+          .map(loan => ({ ...loan, __distressUnit: isDistressMode && loan.__distressUnit, __recoveryUnit: isRecoveryMode && loan.__recoveryUnit }));
         const officerLoans = filterLoansByOfficer(matchedLoans);
         const searchedLoans = filterLoansBySearch(officerLoans);
         const sortedLoans = alphaSort !== 'default' ? sortLoansAlphabetically(searchedLoans) : searchedLoans;
@@ -612,6 +739,9 @@ export const renderLoanList = async () => {
 
   const searchInput = container.querySelector('#loan-search');
   const statusSelect = container.querySelector('#loan-status-filter');
+  const dateFromInput = container.querySelector('#loan-date-from');
+  const dateToInput = container.querySelector('#loan-date-to');
+  const dateClearBtn = container.querySelector('#loan-date-clear');
   const alphaSortSelect = container.querySelector('#loan-alpha-sort');
   const officerFilterSelect = container.querySelector('#loan-officer-filter');
   const debouncedSearch = debounce(() => {
@@ -620,11 +750,28 @@ export const renderLoanList = async () => {
     updateUI();
   }, 300);
   searchInput.addEventListener('input', debouncedSearch);
-  statusSelect.onchange = () => {
-    statusFilter = statusSelect.value;
+  const applyDateFilter = () => {
+    dateRange = {
+      from: dateFromInput?.value || '',
+      to: dateToInput?.value || ''
+    };
     currentPage = 1;
     updateUI();
   };
+  dateFromInput.addEventListener('change', applyDateFilter);
+  dateToInput.addEventListener('change', applyDateFilter);
+  dateClearBtn.onclick = () => {
+    dateFromInput.value = '';
+    dateToInput.value = '';
+    applyDateFilter();
+  };
+  if (statusSelect) {
+    statusSelect.onchange = () => {
+      statusFilter = statusSelect.value;
+      currentPage = 1;
+      updateUI();
+    };
+  }
   alphaSortSelect.onchange = () => {
     alphaSort = alphaSortSelect.value;
     currentPage = 1;
@@ -642,11 +789,19 @@ export const renderLoanList = async () => {
   updateUI();
 
   // Real-time updates
-  container.__subscriptionPromise = loanService.subscribeToChanges(async () => {
+  const refreshUnit = debounce(async () => {
     await dataCache.invalidatePrefix('loans:');
+    if (isUnitMode) {
+      await dataCache.invalidatePrefix('loan_schedule');
+      await dataCache.invalidatePrefix('loan_repayments');
+    }
     updateUI();
-  })
-    .then(unsub => [unsub]);
+  }, 250);
+  container.__subscriptionPromise = Promise.all([
+    loanService.subscribeToChanges(refreshUnit),
+    ...(isUnitMode ? ['loan_repayments', 'loan_balance_offs', 'loan_schedule'].map(name =>
+      pb.collection(name).subscribe('*', refreshUnit)) : [])
+  ]);
 
   return container;
 };

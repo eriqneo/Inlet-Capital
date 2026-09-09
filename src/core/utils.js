@@ -21,6 +21,98 @@ export const formatMoney = (value) => formatNumber(value, 2);
 
 export const formatPercent = (value) => `${formatNumber(value, 2)}%`;
 
+const extractDateParts = (dateInput) => {
+  if (!dateInput) return null;
+
+  if (dateInput instanceof Date) {
+    if (Number.isNaN(dateInput.getTime())) return null;
+    return {
+      day: dateInput.getDate(),
+      month: dateInput.getMonth() + 1,
+      year: dateInput.getFullYear()
+    };
+  }
+
+  const value = String(dateInput).trim();
+  let day;
+  let month;
+  let year;
+
+  const inputMatch = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (inputMatch) {
+    day = Number(inputMatch[1]);
+    month = Number(inputMatch[2]);
+    year = Number(inputMatch[3]);
+  } else {
+    const isoMatch = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (!isoMatch) return null;
+    year = Number(isoMatch[1]);
+    month = Number(isoMatch[2]);
+    day = Number(isoMatch[3]);
+  }
+
+  if (!Number.isInteger(day) || !Number.isInteger(month) || !Number.isInteger(year)) return null;
+  if (year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  const normalizedDate = new Date(year, month - 1, day);
+  if (
+    normalizedDate.getFullYear() !== year ||
+    normalizedDate.getMonth() + 1 !== month ||
+    normalizedDate.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return { day, month, year };
+};
+
+export const calculateAge = (dateInput, referenceDate = new Date()) => {
+  const birth = extractDateParts(dateInput);
+  const reference = extractDateParts(referenceDate);
+  if (!birth || !reference) return null;
+
+  let age = reference.year - birth.year;
+  const birthdayHasPassed = reference.month > birth.month
+    || (reference.month === birth.month && reference.day >= birth.day);
+  if (!birthdayHasPassed) age -= 1;
+
+  return age >= 0 ? age : null;
+};
+
+export const initDobAgeLabel = (inputElement, labelElement) => {
+  if (!inputElement || !labelElement || inputElement.dataset.ageLabelBound === 'true') return;
+  inputElement.dataset.ageLabelBound = 'true';
+
+  const updateAgeLabel = () => {
+    const value = inputElement.value.trim();
+    const age = calculateAge(value);
+
+    labelElement.classList.remove('text-success', 'text-danger', 'text-muted');
+    if (!value) {
+      labelElement.textContent = 'Age will appear after DOB is entered.';
+      labelElement.classList.add('text-muted');
+      return;
+    }
+
+    if (age === null) {
+      labelElement.textContent = 'Enter a valid past date of birth.';
+      labelElement.classList.add('text-danger');
+      if (/^\d{2}\/\d{2}\/\d{4}$/.test(value)) {
+        inputElement.setCustomValidity('Please enter a valid past date of birth.');
+      }
+      return;
+    }
+
+    labelElement.textContent = `Age: ${age} ${age === 1 ? 'year' : 'years'} old`;
+    labelElement.classList.add('text-success');
+    inputElement.setCustomValidity('');
+  };
+
+  inputElement.addEventListener('input', updateAgeLabel);
+  inputElement.addEventListener('change', updateAgeLabel);
+  updateAgeLabel();
+};
+
 export const initDateMask = (inputElement) => {
   if (!inputElement) return;
   inputElement.placeholder = 'dd/mm/yyyy';

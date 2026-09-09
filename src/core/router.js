@@ -2,6 +2,7 @@ import { authService } from '../services/authService.js';
 import { destroyAppShell, ensureAppShell } from '../components/Layout.js';
 import { updateSidebarActiveRoute } from '../components/Sidebar.js';
 import { canAccessModule } from './permissions.js';
+import { renderDatabaseLoaderIcon, DATABASE_LOADING_LABEL } from './uiState.js';
 // Use Map to guarantee route registration order (prevents :id matching /new or /approve)
 const routes = new Map();
 let rootElement = null;
@@ -130,8 +131,10 @@ const handleRoute = async () => {
 
   pageTarget.innerHTML = `
     <div class="card text-center route-loading" style="padding: 40px; margin: 20px auto; max-width: 520px;">
-      <div class="spinner" style="margin: 0 auto 16px;"></div>
-      <p class="text-muted">Loading...</p>
+      <div class="database-loading-copy">
+        ${renderDatabaseLoaderIcon()}
+        <span>${DATABASE_LOADING_LABEL}</span>
+      </div>
     </div>
   `;
 

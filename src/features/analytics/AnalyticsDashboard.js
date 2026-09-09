@@ -17,10 +17,18 @@ import {
   getSettlementContractAmount
 } from '../../core/repaymentAllocation.js';
 import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
+import { renderDatabaseLoaderIcon, DATABASE_LOADING_LABEL } from '../../core/uiState.js';
 
 export const renderAnalyticsDashboard = async () => {
   const container = document.createElement('div');
-  container.innerHTML = `<div class="card text-center text-muted" style="padding:40px;">Loading analytics...</div>`;
+  container.innerHTML = `
+    <div class="card text-center" style="padding:40px;">
+      <div class="database-loading-copy">
+        ${renderDatabaseLoaderIcon()}
+        <span>${DATABASE_LOADING_LABEL}</span>
+      </div>
+    </div>
+  `;
   
   // Data variables
   let members = [], loans = [], repayments = [], settlements = [], groups = [], savings = [], schedules = [], users = [];
@@ -401,35 +409,35 @@ export const renderAnalyticsDashboard = async () => {
       }
       collectionOfficerMap[officerKey].collectedInWindow = collected;
     });
-    const collectionOfficerRows = Object.values(collectionOfficerMap)
-      .map(row => {
-        const thisMonthStats = thisMonthRepaymentByOfficer[row.id] || { gross: 0, paid: 0 };
-        const thisMonthRepaymentRate = thisMonthStats.gross > 0
-          ? Math.min(100, (thisMonthStats.paid / thisMonthStats.gross) * 100)
-          : 0;
-        return {
-          ...row,
-          clients: row.clients.size,
-          thisMonthGross: thisMonthStats.gross,
-          thisMonthPaid: thisMonthStats.paid,
-          thisMonthRepaymentRate
-        };
-      })
-      .sort((a, b) => b.expected - a.expected);
     const getEfficiencyRating = (rate, gross) => {
       if (gross <= 0) return { label: 'No Due', color: 'var(--text-muted)' };
       if (rate <= 50) return { label: 'Below Average', color: 'var(--danger)' };
       if (rate <= 80) return { label: 'Average', color: 'var(--warning)' };
       return { label: 'Best', color: 'var(--success)' };
     };
-    const collectionEfficiencyRows = collectionOfficerRows
+    const collectionOfficerRows = Object.values(collectionOfficerMap)
       .map(row => {
+        const thisMonthStats = thisMonthRepaymentByOfficer[row.id] || { gross: 0, paid: 0 };
+        const thisMonthRepaymentRate = thisMonthStats.gross > 0
+          ? Math.min(100, (thisMonthStats.paid / thisMonthStats.gross) * 100)
+          : 0;
         const efficiency = row.gross > 0 ? Math.min(100, (row.collectedInWindow / row.gross) * 100) : 0;
         return {
           ...row,
-          targetGap: Math.max(0, row.gross - row.collectedInWindow),
+          clients: row.clients.size,
+          thisMonthGross: thisMonthStats.gross,
+          thisMonthPaid: thisMonthStats.paid,
+          thisMonthRepaymentRate,
           efficiency,
           rating: getEfficiencyRating(efficiency, row.gross)
+        };
+      })
+      .sort((a, b) => b.expected - a.expected);
+    const collectionEfficiencyRows = collectionOfficerRows
+      .map(row => {
+        return {
+          ...row,
+          targetGap: Math.max(0, row.gross - row.collectedInWindow)
         };
       })
       .sort((a, b) => b.efficiency - a.efficiency);
@@ -748,12 +756,13 @@ export const renderAnalyticsDashboard = async () => {
                 <th>Installments</th>
                 <th class="text-right">Scheduled Due</th>
                 <th class="text-right">Already Paid</th>
-                <th class="text-right">This Month Repayment Rate</th>
                 <th class="text-right">Expected Collection</th>
+                <th class="text-right">This Month Repayment Rate</th>
+                <th>Rating</th>
               </tr>
             </thead>
             <tbody>
-              ${collectionOfficerRows.length === 0 ? '<tr><td colspan="7" class="text-center text-muted">No scheduled collections for this forecast window.</td></tr>' : collectionOfficerRows.map(row => `
+              ${collectionOfficerRows.length === 0 ? '<tr><td colspan="8" class="text-center text-muted">No scheduled collections for this forecast window.</td></tr>' : collectionOfficerRows.map(row => `
                 <tr>
                   <td>
                     <div class="font-semibold">${escapeHtml(row.name)}</div>
@@ -763,12 +772,13 @@ export const renderAnalyticsDashboard = async () => {
                   <td>${row.installments.toLocaleString()}</td>
                   <td class="text-right">${formatMoney(row.gross)}</td>
                   <td class="text-right text-success">${formatMoney(row.paid)}</td>
+                  <td class="text-right font-semibold text-danger">${formatMoney(row.expected)}</td>
                   <td class="text-right">
                     ${row.thisMonthGross > 0
                       ? `<div class="font-semibold">${formatPercent(row.thisMonthRepaymentRate)}</div><div class="text-xs text-muted">${formatMoney(row.thisMonthPaid)} / ${formatMoney(row.thisMonthGross)}</div>`
                       : '<span class="text-muted">No due</span>'}
                   </td>
-                  <td class="text-right font-semibold text-danger">${formatMoney(row.expected)}</td>
+                  <td><span class="badge" style="background: ${row.rating.color}; color: white; font-size: 0.65rem;">${row.rating.label}</span></td>
                 </tr>
               `).join('')}
             </tbody>

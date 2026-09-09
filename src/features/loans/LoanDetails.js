@@ -1,4 +1,6 @@
 import { loanService } from '../../services/loanService.js';
+import { confirmSavingsException } from '../../components/SavingsConsistency.js';
+import { renderIdentityPhoto } from '../../components/IdentityPhoto.js';
 import { authService } from '../../services/authService.js';
 import { settingsService } from '../../services/settingsService.js';
 import { savingsService } from '../../services/savingsService.js';
@@ -35,7 +37,7 @@ export const renderLoanDetails = async (params) => {
   };
   const container = document.createElement('div');
   container.innerHTML = `
-    ${renderCardSkeleton({ title: 'Loading loan file from PocketHost...', rows: 5 })}
+    ${renderCardSkeleton({ title: 'Fetching records from Inlet Database', rows: 5 })}
     <div style="height: 16px;"></div>
     ${renderCardSkeleton({ title: 'Preparing repayments and schedule...', rows: 4 })}
   `;
@@ -54,7 +56,7 @@ export const renderLoanDetails = async (params) => {
   }
 
   // Keep optional features from blanking financial records when one request fails.
-  let schedule = [], repayments = [], balanceOffs = [], writeOffs = [], memberComments = [];
+  let schedule = [], repayments = [], balanceOffs = [], writeOffs = [], memberComments = [], renewals = [];
   let availableSavings = 0;
   let scheduleLoadError = null;
   let repaymentLoadError = null;
@@ -62,17 +64,19 @@ export const renderLoanDetails = async (params) => {
   let commentsLoadError = null;
   let writeOffLoadError = null;
   let savingsLoadError = null;
-  const [scheduleResult, repaymentResult, balanceOffResult, writeOffResult, savingsResult, commentsResult] = await Promise.allSettled([
+  const [scheduleResult, repaymentResult, balanceOffResult, writeOffResult, savingsResult, commentsResult, renewalsResult] = await Promise.allSettled([
     loanService.getScheduleForLoan(loan.id),
     loanService.getRepaymentsForLoan(loan.id),
     loanService.getBalanceOffsForLoan(loan.id),
     loanService.getWriteOffsForLoan(loan.id),
     loan.member ? savingsService.getMemberBalance(loan.member) : Promise.resolve(0),
-    loan.member ? memberCommentService.getByMember(loan.member) : Promise.resolve([])
+    loan.member ? memberCommentService.getByMember(loan.member) : Promise.resolve([]),
+    loan.renewal_date ? loanService.getRenewalsForLoan(loan.id) : Promise.resolve([])
   ]);
 
   if (scheduleResult.status === 'fulfilled') schedule = scheduleResult.value;
   else scheduleLoadError = scheduleResult.reason;
+  if (renewalsResult.status === 'fulfilled') renewals = renewalsResult.value;
   if (repaymentResult.status === 'fulfilled') repayments = repaymentResult.value;
   else repaymentLoadError = repaymentResult.reason;
   if (balanceOffResult.status === 'fulfilled') balanceOffs = balanceOffResult.value;
@@ -135,13 +139,15 @@ export const renderLoanDetails = async (params) => {
     return `
       <div class="security-card-actions" data-security-actions="${index}">
         ${hasPhoto ? `
-          <button type="button" class="btn btn-primary btn-xs security-view-btn" data-index="${index}" title="View security picture" aria-label="View security picture">
-            View
+          <button type="button" class="security-action-button security-view-btn" data-index="${index}" title="View security picture" aria-label="View security picture">
+            <span aria-hidden="true">⊙</span>
+            <span>View</span>
           </button>
         ` : ''}
         ${canEditSecurities ? `
-          <button type="button" class="btn btn-outline btn-xs security-photo-btn" data-index="${index}" title="${hasPhoto ? 'Update security picture' : 'Add security picture'}" aria-label="${hasPhoto ? 'Update security picture' : 'Add security picture'}">
-            ${hasPhoto ? 'Update Picture' : 'Add Picture'}
+          <button type="button" class="security-action-button muted security-photo-btn" data-index="${index}" title="${hasPhoto ? 'Update security picture' : 'Add security picture'}" aria-label="${hasPhoto ? 'Update security picture' : 'Add security picture'}">
+            <span aria-hidden="true">${hasPhoto ? '↻' : '+'}</span>
+            <span>${hasPhoto ? 'Update' : 'Add Picture'}</span>
           </button>
         ` : ''}
       </div>
@@ -161,10 +167,17 @@ export const renderLoanDetails = async (params) => {
         ${collaterals.map((item, index) => {
           const itemName = getCollateralItemName(item, index);
           const value = Number(item?.value) || 0;
+          const hasPhoto = Boolean(resolveImageSource(item?.photo));
           return `
             <div data-security-card="${index}" style="border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; background: white;">
-              <div data-security-preview="${index}" style="height: 128px; background: var(--bg-light); display: flex; align-items: center; justify-content: center; overflow: hidden; border-bottom: 1px solid var(--border-color);">
+              <div class="security-preview-frame" data-security-preview="${index}">
                 ${renderSecurityPhoto(item?.photo, itemName)}
+                ${hasPhoto ? `
+                  <button type="button" class="security-preview-view security-view-btn" data-index="${index}" title="View security picture" aria-label="View ${escapeHtml(itemName)} security picture">
+                    <span aria-hidden="true">⊙</span>
+                    <span>View</span>
+                  </button>
+                ` : ''}
               </div>
               <div style="padding: 14px;">
                 <div class="font-semibold" style="margin-bottom: 6px;">${escapeHtml(itemName)}</div>
@@ -338,6 +351,25 @@ export const renderLoanDetails = async (params) => {
 
       <div id="tab-content" style="padding: 24px;">
         <div id="overview-tab">
+          ${loan.renewal_date ? `<section style="padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid var(--border-color);">
+            <h3 class="text-sm">Debt recovery renewal</h3>
+            <p class="text-sm">Restarted ${formatDate(loan.renewal_date)} &middot; ${Number(loan.period)} months &middot; Carried fines: KES ${formatMoney(loan.renewal_summary?.fines)}</p>
+            <p class="text-sm" style="white-space: pre-wrap; overflow-wrap: anywhere;">${escapeHtml(loan.renewal_summary?.reason || '')}</p>
+            ${renewalsResult.status === 'rejected' ? '<p class="text-danger">Renewal history could not be loaded.</p>' : renewals.map(record => `<details style="margin-top: 12px;">
+              <summary>Renewal ${formatDate(record.renewal_date)} &middot; ${Number(record.new_terms?.period)} months</summary>
+              <p class="text-sm" style="white-space: pre-wrap; overflow-wrap: anywhere;">${escapeHtml(record.reason)}</p>
+              <p class="text-sm">Previous liability: ${formatMoney(record.previous_terms?.total_liability)} &middot; Renewed liability: ${formatMoney(record.new_terms?.liability)} &middot; Carried fines: ${formatMoney(record.new_terms?.fines)}</p>
+              <div class="table-responsive"><table class="table"><thead><tr><th>Previous due date</th><th>Amount</th><th>Paid</th></tr></thead>
+              <tbody>${(record.previous_schedule || []).map(row => `<tr><td>${formatDate(row.due_date)}</td><td>${formatMoney(row.amount)}</td><td>${formatMoney(row.paid)}</td></tr>`).join('')}</tbody></table></div>
+            </details>`).join('')}
+          </section>` : ''}
+          ${loan.savings_disbursement_review?.overridden ? `
+          <section class="savings-consistency-section">
+            <h3 class="text-sm">Savings exception at disbursement</h3>
+            <p class="text-sm">Approved by ${escapeHtml(loan.savings_disbursement_review.reviewer_name)} on ${formatDate(loan.savings_disbursement_review.reviewed_at)}</p>
+            <p class="text-sm">Shortfall: KES ${formatMoney(loan.savings_disbursement_review.assessment?.shortfall || 0)} &middot; On-time weeks: ${loan.savings_disbursement_review.assessment?.onTimeWeeks || 0} / ${loan.savings_disbursement_review.assessment?.expectedWeeks || 0}</p>
+            <p class="text-sm" style="white-space: pre-wrap; overflow-wrap: anywhere;">${escapeHtml(loan.savings_disbursement_review.reason)}</p>
+          </section>` : ''}
           ${['approved', 'partial_approved'].includes(loan.status) ? `
           <div style="background: rgba(13, 148, 136, 0.08); border: 1px solid rgba(13, 148, 136, 0.3); border-radius: 12px; padding: 24px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px;">
             <div>
@@ -473,7 +505,7 @@ export const renderLoanDetails = async (params) => {
             <div style="padding: 18px; display: grid; grid-template-columns: auto 1fr; gap: 18px; align-items: center;">
               <div style="width: 72px; height: 72px; border-radius: 50%; background: var(--bg-light); border: 1px solid var(--border-color); overflow: hidden; display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow-sm);">
                 ${guarantorPhoto
-                  ? `<img src="${guarantorPhoto}" alt="Guarantor photo" style="width: 100%; height: 100%; object-fit: cover;" />`
+                  ? renderIdentityPhoto(guarantorPhoto, guarantorName === '-' ? 'Guarantor' : guarantorName)
                   : '<span style="font-size: 1.6rem;">👤</span>'}
               </div>
               <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px;">
@@ -548,7 +580,7 @@ export const renderLoanDetails = async (params) => {
               <div class="form-group" style="background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.22); border-radius: 8px; padding: 12px;">
                 <label class="form-label">Automatic Late Fine Due</label>
                 <div class="font-semibold" style="color: ${penaltyState.outstandingFine > 0 ? 'var(--warning)' : 'var(--text-muted)'};">KES ${formatMoney(penaltyState.outstandingFine)}</div>
-                <p class="text-xs text-muted" style="margin-top: 4px;">Applied automatically when a scheduled installment is overdue.</p>
+                <p class="text-xs text-muted" style="margin-top: 4px;">Outstanding automatic and carried renewal fines.</p>
               </div>
               <div class="form-group">
                 <label class="form-label">Manual Fine (Optional)</label>
@@ -933,6 +965,75 @@ export const renderLoanDetails = async (params) => {
         gap: 8px;
         margin-top: 10px;
       }
+      .security-preview-frame {
+        height: 128px;
+        position: relative;
+        background: var(--bg-light);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        border-bottom: 1px solid var(--border-color);
+      }
+      .security-preview-frame img {
+        transition: transform 0.24s ease, filter 0.24s ease;
+      }
+      .security-preview-frame:hover img {
+        transform: scale(1.05);
+        filter: saturate(1.06);
+      }
+      .security-preview-view {
+        position: absolute;
+        right: 10px;
+        bottom: 10px;
+        height: 32px;
+        padding: 0 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.65);
+        background: rgba(15, 37, 69, 0.84);
+        color: #fff;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: 700;
+        font-size: 0.78rem;
+        cursor: pointer;
+        box-shadow: 0 10px 24px rgba(8, 18, 35, 0.24);
+        backdrop-filter: blur(6px);
+        transition: transform 0.18s ease, background 0.18s ease;
+      }
+      .security-preview-view:hover {
+        transform: translateY(-1px);
+        background: rgba(15, 37, 69, 0.94);
+      }
+      .security-action-button {
+        min-height: 34px;
+        border-radius: 8px;
+        border: 1px solid var(--primary);
+        background: var(--primary);
+        color: #fff;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        font-weight: 700;
+        font-size: 0.78rem;
+        cursor: pointer;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+      }
+      .security-action-button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 18px rgba(15, 37, 69, 0.12);
+      }
+      .security-action-button.muted {
+        background: #fff;
+        color: var(--primary);
+        border-color: var(--border-color);
+      }
+      .security-action-button.muted:hover {
+        border-color: var(--primary);
+        background: rgba(27, 61, 114, 0.04);
+      }
       .security-viewer-modal {
         display: none;
         position: fixed;
@@ -953,6 +1054,7 @@ export const renderLoanDetails = async (params) => {
         box-shadow: 0 24px 60px rgba(8, 18, 35, 0.32);
         display: flex;
         flex-direction: column;
+        animation: securityViewerPop 0.2s ease-out;
       }
       .security-viewer-header {
         padding: 18px 22px;
@@ -985,7 +1087,7 @@ export const renderLoanDetails = async (params) => {
         display: flex;
         align-items: center;
         justify-content: center;
-        overflow: hidden;
+        overflow: auto;
       }
       .security-viewer-image-wrap img {
         width: 100%;
@@ -993,6 +1095,21 @@ export const renderLoanDetails = async (params) => {
         max-height: calc(100vh - 180px);
         object-fit: contain;
         display: block;
+        cursor: zoom-in;
+        transition: transform 0.22s ease, max-height 0.22s ease;
+      }
+      .security-viewer-image-wrap.is-zoomed {
+        align-items: flex-start;
+      }
+      .security-viewer-image-wrap.is-zoomed img {
+        width: auto;
+        height: auto;
+        max-width: none;
+        max-height: none;
+        transform: scale(1.35);
+        transform-origin: top center;
+        padding: 32px;
+        cursor: zoom-out;
       }
       .security-viewer-details {
         padding: 22px;
@@ -1022,6 +1139,16 @@ export const renderLoanDetails = async (params) => {
       .security-viewer-nav:disabled {
         display: none;
       }
+      @keyframes securityViewerPop {
+        from {
+          transform: scale(0.96) translateY(10px);
+          opacity: 0;
+        }
+        to {
+          transform: scale(1) translateY(0);
+          opacity: 1;
+        }
+      }
       @media (max-width: 760px) {
         .security-viewer-body {
           grid-template-columns: 1fr;
@@ -1045,6 +1172,7 @@ export const renderLoanDetails = async (params) => {
     .map((item, index) => ({ item, index, src: resolveImageSource(item?.photo) }))
     .filter(entry => entry.src);
   const securityViewerModal = container.querySelector('#security-viewer-modal');
+  const securityViewerImageWrap = container.querySelector('.security-viewer-image-wrap');
   const securityViewerImage = container.querySelector('#security-viewer-image');
   const securityViewerTitle = container.querySelector('#security-viewer-title');
   const securityViewerItem = container.querySelector('#security-viewer-item');
@@ -1122,6 +1250,9 @@ export const renderLoanDetails = async (params) => {
     const itemName = getCollateralItemName(collateral, index);
     activeSecurityIndex = index;
     activeSecuritySource = src;
+    securityViewerImageWrap.classList.remove('is-zoomed');
+    securityViewerImageWrap.scrollTop = 0;
+    securityViewerImageWrap.scrollLeft = 0;
     securityViewerTitle.textContent = itemName;
     securityViewerImage.src = src;
     securityViewerImage.alt = `${itemName} security picture`;
@@ -1144,6 +1275,7 @@ export const renderLoanDetails = async (params) => {
 
   const closeSecurityViewer = () => {
     securityViewerModal.style.display = 'none';
+    securityViewerImageWrap.classList.remove('is-zoomed');
     securityViewerImage.removeAttribute('src');
     activeSecurityIndex = null;
     activeSecuritySource = '';
@@ -1206,6 +1338,10 @@ export const renderLoanDetails = async (params) => {
   };
   securityViewerPrev.onclick = () => moveSecurityViewer(-1);
   securityViewerNext.onclick = () => moveSecurityViewer(1);
+  securityViewerImage.onclick = () => {
+    if (!activeSecuritySource) return;
+    securityViewerImageWrap.classList.toggle('is-zoomed');
+  };
   securityViewerModal.onclick = (event) => {
     if (event.target === securityViewerModal) closeSecurityViewer();
   };
@@ -2155,13 +2291,13 @@ export const renderLoanDetails = async (params) => {
         const updatedLoan = await loanService.update(loan.id, {
           status: 'disbursed',
           disbursement_date: disbursementDate
-        });
+        }, { confirmSavingsException });
         
         await loanService.ensureRepaymentSchedule(updatedLoan);
         if (window.notify) window.notify.success('Funds disbursed successfully! Repayment schedule generated.');
         window.location.reload();
       } catch (err) {
-        if (window.notify) window.notify.error('Disbursement failed: ' + err.message);
+        if (err.code !== 'SAVINGS_REVIEW_CANCELLED' && window.notify) window.notify.error('Disbursement failed: ' + err.message);
         restoreButton();
       }
     };

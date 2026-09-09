@@ -4,7 +4,8 @@ import { authService } from '../../services/authService.js';
 import { generateRegNo } from '../../core/numberGen.js';
 import { navigate } from '../../core/router.js';
 import { openCamera } from '../../components/Camera.js';
-import { formatMoney, initDateMask, parseInputDate } from '../../core/utils.js';
+import { renderIdentityPhoto } from '../../components/IdentityPhoto.js';
+import { formatMoney, initDateMask, initDobAgeLabel, parseInputDate } from '../../core/utils.js';
 import { setButtonLoading } from '../../core/uiState.js';
 
 export const renderMemberRegistration = async () => {
@@ -42,6 +43,7 @@ export const renderMemberRegistration = async () => {
             </div>
              <div class="form-group">
                <label class="form-label">Date of Birth</label>
+               <div id="dob-age-label" class="dob-age-label text-xs text-muted">Age will appear after DOB is entered.</div>
                <input type="text" id="dob-input" name="dob" class="form-control" placeholder="dd/mm/yyyy" required />
              </div>
           </div>
@@ -146,6 +148,7 @@ export const renderMemberRegistration = async () => {
 
   // Date of Birth input mask
   initDateMask(container.querySelector('#dob-input'));
+  initDobAgeLabel(container.querySelector('#dob-input'), container.querySelector('#dob-age-label'));
 
   settingsService.getNumber('individual_reg_fee', regFee).then(value => {
     regFee = Math.max(0, value);
@@ -161,7 +164,7 @@ export const renderMemberRegistration = async () => {
 
   takePhotoBtn.onclick = () => {
     openCamera((dataUrl, file, meta) => {
-      preview.innerHTML = `<img src="${dataUrl}" style="width: 100%; height: 100%; object-fit: cover;" />`;
+      preview.innerHTML = renderIdentityPhoto(dataUrl, 'Member');
       photoInput.value = '';
       passportPhotoFile = file || null;
       if (window.notify && meta?.sizeKb) window.notify.success(`Photo compressed to ${meta.sizeKb} KB.`);

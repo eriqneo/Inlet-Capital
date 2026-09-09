@@ -1,12 +1,14 @@
+const toDate = value => new Date(typeof value === 'string' ? value.replace(' ', 'T') : value);
+
 const startOfLocalDay = (date = new Date()) => {
-  const value = new Date(date);
+  const value = toDate(date);
   if (Number.isNaN(value.getTime())) return null;
   value.setHours(0, 0, 0, 0);
   return value;
 };
 
 const endOfLocalDay = (date = new Date()) => {
-  const value = new Date(date);
+  const value = toDate(date);
   if (Number.isNaN(value.getTime())) return null;
   value.setHours(23, 59, 59, 999);
   return value;
@@ -15,11 +17,11 @@ const endOfLocalDay = (date = new Date()) => {
 const sortSchedules = (schedules = []) => schedules.slice().sort((a, b) => {
   const installmentDiff = (Number(a.installment_no) || 0) - (Number(b.installment_no) || 0);
   if (installmentDiff !== 0) return installmentDiff;
-  return new Date(a.due_date || 0) - new Date(b.due_date || 0);
+  return toDate(a.due_date || 0) - toDate(b.due_date || 0);
 });
 
 const sortRepayments = (repayments = []) => repayments.slice().sort((a, b) => (
-  new Date(a.date || a.created || 0) - new Date(b.date || b.created || 0)
+  toDate(a.date || a.created || 0) - toDate(b.date || b.created || 0)
 ));
 
 const getContractPaymentDate = (record) => record?.date || record?.effective_date || record?.created || new Date();
@@ -60,7 +62,7 @@ export const calculateLoanPenaltyState = ({
       }))
   ]).forEach(repayment => {
     let remainingPayment = getContractSettlementAmount(repayment);
-    const paidAt = new Date(getContractPaymentDate(repayment));
+    const paidAt = toDate(getContractPaymentDate(repayment));
 
     for (const item of orderedSchedules) {
       if (remainingPayment <= 0) break;
@@ -100,7 +102,7 @@ export const calculateLoanPenaltyState = ({
       remainingPrincipal: Math.max(0, item.amount - item.paid),
       completedAt: item.completedAt,
       penaltyGenerated,
-      penaltyAmount: penaltyGenerated ? penaltyAmount : 0
+      penaltyAmount: (penaltyGenerated ? penaltyAmount : 0) + Math.max(0, Number(item.schedule.carried_fine) || 0)
     };
   });
 

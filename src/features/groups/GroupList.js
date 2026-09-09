@@ -2,7 +2,7 @@ import { groupService } from '../../services/groupService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { debounce } from '../../services/dataCache.js';
 import { pb } from '../../services/api.js';
-import { setButtonLoading, showDelayedLoading } from '../../core/uiState.js';
+import { setButtonLoading, showDelayedLoading, renderDatabaseLoaderIcon, DATABASE_LOADING_LABEL } from '../../core/uiState.js';
 import { authService } from '../../services/authService.js';
 import { formatMoney } from '../../core/utils.js';
 import { canUseOfficerFilter, loadOfficerOptions, populateOfficerSelect } from '../../core/officerScope.js';
@@ -28,7 +28,10 @@ export const renderGroupList = async () => {
     </div>
     <div id="groups-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px;">
       <div class="card text-center" style="grid-column: 1/-1; padding: 60px;">
-        <p class="text-muted">Loading groups…</p>
+        <div class="database-loading-copy">
+          ${renderDatabaseLoaderIcon()}
+          <span>${DATABASE_LOADING_LABEL}</span>
+        </div>
       </div>
     </div>
     <style>
@@ -338,8 +341,10 @@ export const renderGroupList = async () => {
       if (thisRequest !== requestId) return;
       grid.innerHTML = `
         <div class="card text-center" style="grid-column: 1/-1; padding: 60px;">
-          <div class="spinner" style="margin: 0 auto 16px;"></div>
-          <p class="text-muted">Loading groups...</p>
+          <div class="database-loading-copy">
+            ${renderDatabaseLoaderIcon()}
+            <span>${DATABASE_LOADING_LABEL}</span>
+          </div>
         </div>
       `;
     });

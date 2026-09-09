@@ -9,7 +9,7 @@ import { formatDate, formatMoney, formatPercent } from '../../core/utils.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { pb } from '../../services/api.js';
 import { dataCache } from '../../services/dataCache.js';
-import { setButtonLoading } from '../../core/uiState.js';
+import { setButtonLoading, renderDatabaseLoaderIcon, DATABASE_LOADING_LABEL } from '../../core/uiState.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { getArrearsTotal, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
 import { getOfficerScopeCacheKey } from '../../core/officerScope.js';
@@ -23,8 +23,10 @@ export const renderGroupProfile = async (params) => {
   // Loading state
   container.innerHTML = `
     <div class="card text-center" style="padding:60px;">
-      <div class="spinner" style="margin: 0 auto 16px;"></div>
-      <p class="text-muted">Loading group profile...</p>
+      <div class="database-loading-copy">
+        ${renderDatabaseLoaderIcon()}
+        <span>${DATABASE_LOADING_LABEL}</span>
+      </div>
     </div>
   `;
 
@@ -429,11 +431,11 @@ export const renderGroupProfile = async (params) => {
     4: 'Very Good',
     5: 'Excellent'
   };
-  const performanceColor = autoPerformanceRating === 5
+  const getPerformanceColor = (rating) => rating === 5
     ? 'var(--success)'
-    : autoPerformanceRating >= 3
+    : rating >= 3
       ? 'var(--warning)'
-      : autoPerformanceRating > 0
+      : rating > 0
         ? 'var(--danger)'
         : 'var(--text-muted)';
   const computedSummarySnapshot = {
@@ -707,7 +709,14 @@ export const renderGroupProfile = async (params) => {
     const query = normalizeSearch(addMemberSearch.value);
     const selectedId = memberSelectInput.value;
     if (!unassignedMembersLoaded) {
-      memberSearchResults.innerHTML = `<div class="member-picker-empty">Loading available members...</div>`;
+      memberSearchResults.innerHTML = `
+        <div class="member-picker-empty">
+          <span class="database-loading-copy">
+            ${renderDatabaseLoaderIcon()}
+            <span>${DATABASE_LOADING_LABEL}</span>
+          </span>
+        </div>
+      `;
       return;
     }
     const matches = unassignedMembers
@@ -845,6 +854,20 @@ export const renderGroupProfile = async (params) => {
         .some(value => String(value).toLowerCase().includes(query));
     });
   };
+  const getPerformanceMembers = () => {
+    const query = (memberSearchInput?.value || '').trim().toLowerCase();
+    const scope = accountScopeSelect?.value || 'all';
+    if (scope === 'groups') return [];
+    return enrichedMembers.filter(m => {
+      if (isSuspendedMember(m)) return false;
+      if (currentMemberStatusFilter === 'arrears' && getMemberArrears(m) <= 0) return false;
+      if (currentMemberStatusFilter === 'inactive' && m.isActive) return false;
+      if (!query) return true;
+      return [m.full_name, m.reg_no, m.phone_number, m.phone]
+        .filter(Boolean)
+        .some(value => String(value).toLowerCase().includes(query));
+    });
+  };
   const getFeeKpiMembers = () => {
     const query = (memberSearchInput?.value || '').trim().toLowerCase();
     const scope = accountScopeSelect?.value || 'all';
@@ -918,9 +941,34 @@ export const renderGroupProfile = async (params) => {
       'date'
     );
   };
+  const renderSavingsPerformanceRating = (performance) => {
+    const ratingContainer = container.querySelector('#group-rating-container');
+    if (!ratingContainer) return;
+    const rating = performance.rating;
+    const performanceColor = getPerformanceColor(rating);
+    const periodLabel = performance.periodStart && performance.periodEnd
+      ? `${formatDate(performance.periodStart)} to ${formatDate(performance.periodEnd)}`
+      : 'selected period';
+    ratingContainer.innerHTML = `
+      <div style="display: flex; gap: 4px; font-size: 1.25rem; color: ${performanceColor};">
+        ${[1, 2, 3, 4, 5].map(i => `<span>${i <= rating ? '★' : '☆'}</span>`).join('')}
+      </div>
+      <div class="text-xs" style="margin-top: 4px; color: ${performanceColor}; font-weight: 700;">
+        ${rating}/5 — ${performanceLabels[rating]}
+      </div>
+      <div class="text-xs text-muted" style="margin-top: 4px; line-height: 1.45;">
+        Expected ${formatMoney(performance.expectedAmount)}; collected ${formatMoney(performance.contributedAmount)} across ${performance.meetingCycles} meeting ${performance.meetingCycles === 1 ? 'cycle' : 'cycles'}.
+        <br>${formatPercent(performance.contributionRate)} amount coverage, ${periodLabel}.
+        ${performance.shortfallAmount > 0 ? `<br><span style="color: var(--danger); font-weight: 700;">Shortfall ${formatMoney(performance.shortfallAmount)}</span>` : ''}
+        ${performance.surplusAmount > 0 ? `<br><span style="color: var(--success); font-weight: 700;">Surplus ${formatMoney(performance.surplusAmount)}</span>` : ''}
+        <br>Excellent requires the group to meet 100% of the expected savings amount.
+      </div>
+    `;
+  };
 
   const updateFilteredKpis = () => {
     const filteredMembers = getFilteredMembers().filter(member => !isSuspendedMember(member));
+    const performanceMembers = getPerformanceMembers();
     const filteredLoans = getFilteredLoans();
     const filteredSavings = getFilteredSavings();
     const filteredRepayments = getFilteredRepayments();
@@ -939,6 +987,14 @@ export const renderGroupProfile = async (params) => {
     const repaymentsTotal = calculateRepaymentsTotal(filteredRepayments);
     const feesTotal = calculateFeesTotal(feeKpiMembers, groupLoans);
     const thisMonthExpected = calculateThisMonthCollectionsExpected(scopedLoansForCurrentMonthCollections, allSchedules, allRepayments, allBalanceOffs);
+    const scopedSavingsPerformance = calculateGroupSavingsPerformance({
+      group,
+      members: performanceMembers,
+      savings: financialGroupSavings,
+      referenceDate: currentEndDate || new Date(),
+      periodStartDate: currentStartDate
+    });
+    renderSavingsPerformanceRating(scopedSavingsPerformance);
 
     container.querySelector('#group-total-savings-kpi').textContent = `KES ${formatMoney(savingsTotal)}`;
     const savingsMovementKpi = container.querySelector('#group-savings-movement-kpi');
@@ -1050,21 +1106,6 @@ export const renderGroupProfile = async (params) => {
     filterBtns.inactive.onclick = () => { currentMemberStatusFilter = 'inactive'; updateActiveFilterBtn('inactive'); refreshFilteredViews(); };
   }
 
-  // Historical savings attendance: one completed saving per member per eligible meeting cycle.
-  const ratingContainer = container.querySelector('#group-rating-container');
-  ratingContainer.innerHTML = `
-    <div style="display: flex; gap: 4px; font-size: 1.25rem; color: ${performanceColor};">
-      ${[1, 2, 3, 4, 5].map(i => `<span>${i <= autoPerformanceRating ? '★' : '☆'}</span>`).join('')}
-    </div>
-    <div class="text-xs" style="margin-top: 4px; color: ${performanceColor}; font-weight: 700;">
-      ${autoPerformanceRating}/5 — ${performanceLabels[autoPerformanceRating]}
-    </div>
-    <div class="text-xs text-muted" style="margin-top: 4px; line-height: 1.45;">
-      ${savingsPerformance.savedParticipations}/${savingsPerformance.expectedParticipations} expected member savings completed across ${savingsPerformance.meetingCycles} meeting ${savingsPerformance.meetingCycles === 1 ? 'cycle' : 'cycles'}.
-      <br>${formatPercent(savingsPerformance.participationRate)} historical participation${savingsPerformance.periodStart && savingsPerformance.periodEnd ? `, ${formatDate(savingsPerformance.periodStart)} to ${formatDate(savingsPerformance.periodEnd)}` : ''}.
-      Excellent requires every eligible member to have saved in every meeting cycle.
-    </div>
-  `;
   if (canManageRecords && group.performance_rating !== autoPerformanceRating) {
     groupService.update(group.id, { performance_rating: autoPerformanceRating })
       .catch(err => console.warn('[GroupProfile] Auto performance rating save failed:', err.message));

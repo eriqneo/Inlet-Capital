@@ -67,6 +67,21 @@ Inlet Capital is a high-fidelity, "Premium Standard" Progressive Web Application
    ```
 4. Open your browser to the URL provided by Vite (typically `http://localhost:3000` or `http://localhost:5173`).
 
+## Weekly Savings Consistency
+
+Member Profile > Savings History shows weekly contribution coverage and on-time payment history for group members. The requirement is KES 200 per group meeting day; individual members are exempt.
+
+- Assessment starts at `group_joined_at`, falling back to registration date or creation date, and never before the group's registration/creation date. Imported membership dates must reflect the actual start of membership.
+- Only completed meeting days count as due. Dates are assessed in Africa/Nairobi time, and today's meeting remains payable until the end of the day.
+- Deposits cover the oldest unpaid weeks first. KES 400 covers two weeks and KES 600 covers three. Catch-up payments clear the shortfall but retain their late-payment history. Advance deposits cover future weeks.
+- Withdrawals do not undo contribution credit. Reversed deposits and transactions after the assessment date are excluded.
+- Both loan disbursement screens check fresh savings records as of the selected disbursement date. Any outstanding contributions or historically late weeks require a superadmin decision and a reason. Missing records or invalid meeting/start dates stop the check.
+- Exception decisions are stored in `loans.savings_disbursement_review` with the reviewer, timestamp, reason and assessment, and displayed in Loan Management > Overview. PocketBase restricts writes to this field to superadmins. The consistency calculation itself runs in the application.
+
+For a new PocketHost instance, run `node scripts/setup_savings_consistency.mjs` to install the review field and field-write rule; `--check` verifies them without schema changes. The script accepts `PB_URL`, `ADMIN_EMAIL` and `ADMIN_PASS` environment variables, or uses the existing maintenance configuration. It does not change loan or savings records.
+
+Run the calculation and review tests with `node --test tests/savingsConsistency.test.mjs`.
+
 ## ☁️ Deployment
 This system is optimized for **Cloudflare Pages**. 
 *   **Build Command**: Set to `npm run build` in the Cloudflare settings.
@@ -75,3 +90,6 @@ This system is optimized for **Cloudflare Pages**.
 
 ---
 *Built with Precision for Inlet Capital Limited.*
+# Debt Recovery Unit
+
+The expandable Loans menu includes DU and D.R.U. D.R.U identifies loans with no payments for at least 90 days and provides a superadmin renewal workflow with a new period, 20% interest, carried fines, and an agreement reason. See [Debt Recovery Setup](DEBT_RECOVERY_SETUP.md) for the calculation policy and required PocketHost deployment steps.

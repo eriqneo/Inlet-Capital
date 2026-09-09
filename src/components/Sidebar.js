@@ -16,6 +16,9 @@ const pathModules = {
   '#/members': 'members',
   '#/groups': 'groups',
   '#/loans': 'loans',
+  '#/loans/distress-unit': 'loans',
+  '#/loans/debt-recovery': 'loans',
+  '#/loans/recovered': 'loans',
   '#/savings': 'savings',
   '#/expenses': 'expenses',
   '#/reports': 'reports',
@@ -36,9 +39,14 @@ export const updateSidebarActiveRoute = (currentHash = window.location.hash || '
   links.forEach(link => {
     const href = link.getAttribute('href');
     const isDashboard = href === '#/' && hash === '#/';
-    const isSection = href !== '#/' && (hash === href || hash.startsWith(`${href}/`));
+    const isLoansRoot = href === '#/loans';
+    const isSection = href !== '#/'
+      && (hash === href || hash.startsWith(`${href}/`))
+      && !(isLoansRoot && ['#/loans/distress-unit', '#/loans/debt-recovery', '#/loans/recovered'].some(path => hash.startsWith(path)));
     link.classList.toggle('active', isDashboard || isSection);
   });
+  const loanMenu = document.querySelector('.sidebar .loan-nav-menu');
+  if (loanMenu && hash.startsWith('#/loans')) loanMenu.open = true;
 };
 
 const getCachedPendingLoanCount = () => {
@@ -132,10 +140,32 @@ export const renderSidebar = async () => {
       ${canView('#/members', session) ? `<li><a href="#/members" class="nav-item" data-nav-path="#/members" data-tooltip="Members"><span class="nav-icon">👥</span> <span class="nav-label">Members</span></a></li>` : ''}
       ${canView('#/groups', session) ? `<li><a href="#/groups" class="nav-item" data-nav-path="#/groups" data-tooltip="Groups"><span class="nav-icon">🏘️</span> <span class="nav-label">Groups</span></a></li>` : ''}
       ${canView('#/loans', session) ? `<li>
-        <a href="#/loans" class="nav-item" data-nav-path="#/loans" data-tooltip="Loans">
+        <details class="loan-nav-menu">
+        <summary class="loan-nav-toggle" title="Loan modules">
           <span class="nav-icon">💰</span> <span class="nav-label">Loans</span>
-          ${pendingCount > 0 ? `<span class="badge-counter">${pendingCount}</span>` : ''}
-        </a>
+          <span class="loan-nav-chevron" aria-hidden="true">&#9662;</span>
+        </summary>
+        <ul class="nav-sub-links">
+          <li><a href="#/loans" class="nav-item nav-sub-item" data-nav-path="#/loans" data-tooltip="Loan Management">
+            <span class="nav-sub-dot"></span><span class="nav-label">Loan Management</span>
+            ${pendingCount > 0 ? `<span class="badge-counter">${pendingCount}</span>` : ''}
+          </a></li>
+          <li>
+            <a href="#/loans/distress-unit" class="nav-item nav-sub-item" data-nav-path="#/loans/distress-unit" data-tooltip="Distress Unit">
+              <span class="nav-sub-dot"></span> <span class="nav-label">Distress Unit</span>
+              <span class="nav-sub-code">DU</span>
+            </a>
+          </li>
+          <li><a href="#/loans/debt-recovery" class="nav-item nav-sub-item" data-nav-path="#/loans/debt-recovery" data-tooltip="Debt Recovery Unit (D.R.U)">
+            <span class="nav-sub-dot"></span><span class="nav-label">Debt Recovery Unit</span>
+            <span class="nav-sub-code">DRU</span>
+          </a></li>
+          <li><a href="#/loans/recovered" class="nav-item nav-sub-item" data-nav-path="#/loans/recovered" data-tooltip="Recovered Loans (RL)">
+            <span class="nav-sub-dot"></span><span class="nav-label">Recovered Loans</span>
+            <span class="nav-sub-code">RL</span>
+          </a></li>
+        </ul>
+        </details>
       </li>` : ''}
       ${canView('#/savings', session) ? `<li><a href="#/savings" class="nav-item" data-nav-path="#/savings" data-tooltip="Savings"><span class="nav-icon">🏦</span> <span class="nav-label">Savings</span></a></li>` : ''}
       ${canView('#/expenses', session) ? `<li><a href="#/expenses" class="nav-item" data-nav-path="#/expenses" data-tooltip="Expenses"><span class="nav-icon">📉</span> <span class="nav-label">Expenses</span></a></li>` : ''}
