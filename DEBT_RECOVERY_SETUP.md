@@ -1,6 +1,18 @@
 # Debt Recovery Unit
 
-Loans now has an expandable menu containing Loan Management, Distress Unit (DU), and Debt Recovery Unit (D.R.U).
+Loans now has an expandable menu containing Loan Management, Distress Unit (DU), Debt Recovery Unit (D.R.U), and Recovered Loans (RL).
+
+## Recovered Loans and Debt Management Report
+
+RL includes loans fully settled after D.R.U: either renewed through D.R.U, or with their first recorded payment at least 90 days after disbursement. Principal, interest and outstanding fines must all be cleared. A completed status alone is insufficient. Written-off loans, partial payments and unverifiable payment/schedule records do not qualify. Valid savings balance-offs can contribute to settlement; reversed entries cannot.
+
+Reports > Debt Management uses the same loan classifications. Filters include All Debt Units, D.R.U, DU and RL, with date range and sorting controls. Existing portfolio/officer access applies.
+
+The default date basis is entry/last-payment date: day 90 for D.R.U, the day after maturity for DU, and the last payment date for RL. Disbursement date is also selectable. Balances show the current position for that date-filtered set of loans, not a historical balance reconstruction. In All Debt Units, a loan that belongs to both DU and D.R.U is shown once, using its earlier entry date. Individual unit counts can overlap; overall loan and financial totals do not.
+
+KPIs cover unique loans, DU/D.R.U/RL counts, outstanding OLB, arrears excluding fines, outstanding fines, and recovered amounts on RL loans. Collected/recovered amounts include contractual payments and collected fines, but exclude contract overpayments. Printing and Excel export include the complete filtered report across all pages.
+
+RL and the report need no additional schema beyond the existing recovery setup.
 
 ## Entry rule
 

@@ -8,7 +8,8 @@ import { openCamera } from '../../components/Camera.js';
 import { renderIdentityPhoto } from '../../components/IdentityPhoto.js';
 import { setButtonLoading } from '../../core/uiState.js';
 import { getReturnTo, navigateToReturn } from '../../core/navigation.js';
-import { formatMoney } from '../../core/utils.js';
+import { addMonthsPreservingDay } from '../../core/repaymentSchedule.js';
+import { formatDate, formatMoney } from '../../core/utils.js';
 import Fuse from 'fuse.js';
 
 export const renderLoanApplicationForm = async (params = {}) => {
@@ -97,20 +98,49 @@ export const renderLoanApplicationForm = async (params = {}) => {
 
           <div class="form-group">
             <label class="form-label">Loan Period (Months)</label>
-            <select name="period" class="form-control">
-              <option value="1">1 Month</option>
-              <option value="2">2 Months</option>
-              <option value="3">3 Months</option>
-              <option value="4">4 Months</option>
-              <option value="5">5 Months</option>
-              <option value="6">6 Months</option>
-              <option value="7">7 Months</option>
-              <option value="8">8 Months</option>
-              <option value="9">9 Months</option>
-              <option value="10">10 Months</option>
-              <option value="11">11 Months</option>
-              <option value="12">12 Months</option>
-            </select>
+            <div class="loan-period-grid">
+              <select id="loan-period-preset" class="form-control" aria-label="Loan period preset">
+                <option value="1">1 Month</option>
+                <option value="3">3 Months</option>
+                <option value="6" selected>6 Months</option>
+                <option value="9">9 Months</option>
+                <option value="12">12 Months</option>
+                <option value="18">18 Months</option>
+                <option value="24">24 Months</option>
+                <option value="36">36 Months</option>
+                <option value="48">48 Months</option>
+                <option value="custom">Custom</option>
+              </select>
+              <input
+                type="number"
+                id="loan-period-custom"
+                class="form-control"
+                min="1"
+                max="120"
+                step="1"
+                inputmode="numeric"
+                placeholder="Months"
+                style="display: none;"
+                aria-label="Custom loan period in months"
+              />
+            </div>
+            <input type="hidden" name="period" id="loan-period" value="6" />
+            <div id="loan-period-helper" class="text-xs text-muted" style="margin-top: 6px;">Repayment runs for 6 months. Use Custom for terms up to 120 months.</div>
+          </div>
+
+          <div class="loan-term-preview" id="loan-term-preview">
+            <div>
+              <span class="text-xs text-muted">Monthly Installment</span>
+              <strong id="summary-monthly">KES 0</strong>
+            </div>
+            <div>
+              <span class="text-xs text-muted">Expected Final Due Date</span>
+              <strong id="summary-final-date">—</strong>
+            </div>
+          </div>
+
+          <div class="loan-term-note text-xs text-muted">
+            The first installment starts one month after disbursement. The final due date preview uses the application date until the loan is disbursed.
           </div>
 
           <div class="form-group">
@@ -224,6 +254,23 @@ export const renderLoanApplicationForm = async (params = {}) => {
       .loan-picker-option:hover, .loan-picker-option.selected { background: rgba(27, 61, 114, 0.06); }
       .loan-picker-option[disabled] { cursor: not-allowed; opacity: 0.72; }
       .loan-picker-empty { padding: 18px; text-align: center; color: var(--text-muted); font-size: 0.875rem; }
+      .loan-period-grid { display: grid; grid-template-columns: minmax(0, 1fr) 120px; gap: 10px; }
+      .loan-term-preview {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        padding: 12px;
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        background: rgba(27, 61, 114, 0.04);
+      }
+      .loan-term-preview > div { display: grid; gap: 4px; min-width: 0; }
+      .loan-term-preview strong { color: var(--primary); font-size: 0.95rem; }
+      .loan-term-note { margin-top: 8px; line-height: 1.45; }
+      @media (max-width: 520px) {
+        .loan-period-grid,
+        .loan-term-preview { grid-template-columns: 1fr; }
+      }
     </style>
   `;
 
@@ -493,22 +540,63 @@ export const renderLoanApplicationForm = async (params = {}) => {
   const sProcessingLabel = container.querySelector('#summary-processing-label');
   const interestRateInput = container.querySelector('#interest-rate-input');
   const processingFeeRateInput = container.querySelector('#processing-fee-rate-input');
+  const applicationDateInput = container.querySelector('[name="application_date"]');
+  const periodPreset = container.querySelector('#loan-period-preset');
+  const periodCustom = container.querySelector('#loan-period-custom');
+  const periodInput = container.querySelector('#loan-period');
+  const periodHelper = container.querySelector('#loan-period-helper');
+  const sMonthly = container.querySelector('#summary-monthly');
+  const sFinalDate = container.querySelector('#summary-final-date');
+
+  const getSelectedPeriod = () => {
+    const value = Number.parseInt(periodInput.value, 10);
+    return Number.isInteger(value) && value >= 1 && value <= 120 ? value : 0;
+  };
+
+  const setPeriodValue = () => {
+    let nextPeriod;
+    if (periodPreset.value === 'custom') {
+      periodCustom.style.display = 'block';
+      nextPeriod = Number.parseInt(periodCustom.value, 10);
+    } else {
+      periodCustom.style.display = 'none';
+      nextPeriod = Number.parseInt(periodPreset.value, 10);
+    }
+
+    const validPeriod = Number.isInteger(nextPeriod) && nextPeriod >= 1 && nextPeriod <= 120 ? nextPeriod : 0;
+    periodInput.value = validPeriod ? String(validPeriod) : '';
+    periodHelper.textContent = validPeriod
+      ? `Repayment runs for ${validPeriod} ${validPeriod === 1 ? 'month' : 'months'}. Use Custom for terms up to 120 months.`
+      : 'Enter a whole loan period between 1 and 120 months.';
+    updateCalculations();
+  };
 
   const updateCalculations = () => {
     const amount = parseFloat(amountInput.value) || 0;
+    const period = getSelectedPeriod();
     const interest = amount * (settings.interestRate / 100);
     const total = amount + interest;
     const processing = amount * (settings.processingFeeRate / 100);
+    const monthly = period > 0 ? total / period : 0;
+    const previewStartDate = applicationDateInput?.value
+      ? new Date(`${applicationDateInput.value}T12:00:00`)
+      : new Date(`${todayInputValue}T12:00:00`);
+    const finalDueDate = period > 0 ? addMonthsPreservingDay(previewStartDate, period) : null;
 
     sApplied.textContent = `KES ${formatMoney(amount)}`;
     sInterest.textContent = `KES ${formatMoney(interest)}`;
     sTotal.textContent = `KES ${formatMoney(total)}`;
     sProcessing.textContent = `KES ${formatMoney(processing)}`;
+    sMonthly.textContent = `KES ${formatMoney(monthly)}`;
+    sFinalDate.textContent = finalDueDate ? formatDate(finalDueDate) : '—';
     sInterestLabel.textContent = `Interest (${settings.interestRate}%):`;
     sProcessingLabel.textContent = `Processing Fee (${settings.processingFeeRate}%):`;
   };
 
   amountInput.oninput = updateCalculations;
+  applicationDateInput.oninput = updateCalculations;
+  periodPreset.onchange = setPeriodValue;
+  periodCustom.oninput = setPeriodValue;
   if (interestRateInput) {
     interestRateInput.oninput = () => {
       const nextRate = Number(interestRateInput.value);
@@ -649,6 +737,12 @@ export const renderLoanApplicationForm = async (params = {}) => {
       : settings.processingFeeRate;
     const interest = amount * (interestRate / 100);
     const processingFee = amount * (processingFeeRate / 100);
+    const period = Number.parseInt(rawData.period, 10);
+
+    if (!Number.isInteger(period) || period < 1 || period > 120) {
+      window.notify?.error('Enter a valid loan period between 1 and 120 months.');
+      return;
+    }
 
     const loan = {
       loan_no: loanNo,
@@ -661,7 +755,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
       processing_fee_rate: processingFeeRate,
       processing_fee: processingFee,
       processing_fee_paid: false,
-      period: parseInt(rawData.period),
+      period,
       purpose: rawData.purpose,
       status: 'pending',
       application_date: new Date(`${selectedApplicationDate}T12:00:00`).toISOString(),

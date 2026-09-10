@@ -39,7 +39,8 @@ var debtRecovery_exports = {};
 __export(debtRecovery_exports, {
   buildDebtRecoveryRenewal: () => buildDebtRecoveryRenewal,
   getRecoveryAgeDays: () => getRecoveryAgeDays,
-  isDebtRecoveryLoan: () => isDebtRecoveryLoan
+  isDebtRecoveryLoan: () => isDebtRecoveryLoan,
+  isRecoveredLoan: () => isRecoveredLoan
 });
 module.exports = __toCommonJS(debtRecovery_exports);
 
@@ -145,8 +146,75 @@ var calculateLoanPenaltyState = ({
   };
 };
 
+// src/core/repaymentAllocation.js
+var asAmount = (value) => Math.max(0, Number(value) || 0);
+var getLoanPrincipalAmount = (loan) => {
+  const approved = asAmount(loan == null ? void 0 : loan.approved_amount);
+  if (approved > 0) return approved;
+  const applied = asAmount(loan == null ? void 0 : loan.amount_applied);
+  if (applied > 0) return applied;
+  const liability = asAmount(loan == null ? void 0 : loan.total_liability);
+  const interest = asAmount(loan == null ? void 0 : loan.interest_amount);
+  return Math.max(0, liability - interest);
+};
+var getLoanInterestAmount = (loan) => {
+  const storedInterest = asAmount(loan == null ? void 0 : loan.interest_amount);
+  if (storedInterest > 0) return storedInterest;
+  const principal = getLoanPrincipalAmount(loan);
+  const liability = asAmount(loan == null ? void 0 : loan.total_liability);
+  if (liability > principal) return liability - principal;
+  const interestRate = asAmount(loan == null ? void 0 : loan.interest_rate);
+  return principal > 0 && interestRate > 0 ? principal * (interestRate / 100) : 0;
+};
+var getLoanLiabilityAmount = (loan) => {
+  const principal = getLoanPrincipalAmount(loan);
+  const interest = getLoanInterestAmount(loan);
+  const storedLiability = asAmount(loan == null ? void 0 : loan.total_liability);
+  return Math.max(storedLiability, principal + interest);
+};
+var getRepaymentContractAmount = (repayment) => {
+  const amount = asAmount(repayment == null ? void 0 : repayment.amount);
+  const fine = Math.min(amount, asAmount(repayment == null ? void 0 : repayment.fine_amount));
+  return amount - fine;
+};
+var getSettlementContractAmount = (settlement) => {
+  if (!settlement || settlement.status === "reversed") return 0;
+  return asAmount(settlement.amount);
+};
+
 // src/core/loanPortfolio.js
+var isDisbursedLoanRecord = (loan) => Boolean(loan == null ? void 0 : loan.disbursement_date) && ["disbursed", "approved", "partial_approved", "completed", "closed"].includes(loan == null ? void 0 : loan.status);
 var isCollectibleLoanRecord = (loan) => Boolean(loan == null ? void 0 : loan.disbursement_date) && ["disbursed", "approved", "partial_approved"].includes(loan == null ? void 0 : loan.status);
+var isWrittenOffLoanRecord = (loan) => (loan == null ? void 0 : loan.status) === "written_off";
+var calculateLoanOutstandingBalance = ({
+  loan,
+  repayments = [],
+  settlements = [],
+  schedules = [],
+  penaltyAmount = 0,
+  includeOutstandingFines = true,
+  referenceDate = /* @__PURE__ */ new Date(),
+  useRecordedSchedulePaid = true
+} = {}) => {
+  if (!loan || !isDisbursedLoanRecord(loan)) return 0;
+  if (isWrittenOffLoanRecord(loan)) return 0;
+  const liability = getLoanLiabilityAmount(loan);
+  const contractPaid = repayments.reduce(
+    (sum, repayment) => sum + getRepaymentContractAmount(repayment),
+    0
+  ) + settlements.reduce((sum, settlement) => sum + getSettlementContractAmount(settlement), 0);
+  const contractBalance = Math.max(0, liability - contractPaid);
+  if (!includeOutstandingFines) return contractBalance;
+  const penaltyState = calculateLoanPenaltyState({
+    schedules,
+    repayments,
+    settlements,
+    penaltyAmount,
+    referenceDate,
+    useRecordedSchedulePaid
+  });
+  return Math.max(0, contractBalance + penaltyState.outstandingFine);
+};
 
 // src/core/repaymentSchedule.js
 var toValidDate = (value) => {
@@ -188,6 +256,43 @@ var isDebtRecoveryLoan = (loan, {
   if (repayments.some((record) => !record.is_reversed && Number(record.amount) > 0)) return false;
   if (settlements.some((record) => record.status !== "reversed" && Number(record.amount) > 0)) return false;
   return !schedules.some((record) => Number(record.paid) > 0);
+};
+var isRecoveredLoan = (loan, {
+  repayments = [],
+  settlements = [],
+  schedules = [],
+  penaltyAmount = 500,
+  referenceDate = /* @__PURE__ */ new Date()
+} = {}) => {
+  var _a;
+  if (!isDisbursedLoanRecord(loan) || loan.written_off_at) return false;
+  const liability = getLoanLiabilityAmount(loan);
+  if (!(liability > 0) || !Number.isFinite(businessDay(loan.disbursement_date))) return false;
+  const payments = repayments.filter((row) => !row.is_reversed && Number(row.amount) > 0);
+  const balanceOffs = settlements.filter((row) => row.status !== "reversed" && Number(row.amount) > 0);
+  const paymentDays = [
+    ...payments.map((row) => businessDay(row.date || row.created)),
+    ...balanceOffs.map((row) => businessDay(row.effective_date || row.date || row.created))
+  ];
+  if (!paymentDays.length || paymentDays.some((day) => !Number.isFinite(day) || day > businessDay(referenceDate))) return false;
+  const renewedFromRecovery = Boolean((_a = loan.renewal_summary) == null ? void 0 : _a.renewal_id) && Number.isFinite(businessDay(loan.renewal_date));
+  const firstPaymentDay = Math.min(...paymentDays);
+  const paidDirectlyFromRecovery = firstPaymentDay - businessDay(loan.disbursement_date) >= 90;
+  if (!renewedFromRecovery && !paidDirectlyFromRecovery) return false;
+  const contractPaid = payments.reduce((sum, row) => sum + getRepaymentContractAmount(row), 0) + balanceOffs.reduce((sum, row) => sum + getSettlementContractAmount(row), 0);
+  if (money(contractPaid) < money(liability)) return false;
+  const period = Number(loan.period);
+  if (!Number.isInteger(period) || period < 1) return false;
+  const installmentNumbers = new Set(schedules.map((row) => Number(row.installment_no)));
+  if (schedules.length !== period || schedules.some((row) => !Number.isFinite(businessDay(row.due_date))) || !Array.from({ length: period }, (_, index) => index + 1).every((number) => installmentNumbers.has(number))) return false;
+  return money(calculateLoanOutstandingBalance({
+    loan,
+    repayments: payments,
+    settlements: balanceOffs,
+    schedules,
+    penaltyAmount,
+    referenceDate
+  })) === 0;
 };
 var buildDebtRecoveryRenewal = ({
   loan,

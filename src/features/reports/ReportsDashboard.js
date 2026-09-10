@@ -22,6 +22,7 @@ import {
 import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, getOfficerScopeCacheKey, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
 import { createLoanPortfolioCalculator, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
 import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
+import { buildDebtManagementRows, getDebtReportDate, summarizeDebtManagement } from '../../core/debtManagement.js';
 
 export const renderReportsDashboard = async () => {
   const container = document.createElement('div');
@@ -32,6 +33,9 @@ export const renderReportsDashboard = async () => {
   let officerFilter = 'all';
   let repaymentsLoaded = false;
   let repaymentLoadError = null;
+  let debtDataReady = false;
+  let debtDataError = null;
+  let debtDateBasis = 'activity';
   let orgSettings = {};
   try {
     orgSettings = await settingsService.getAll();
@@ -58,6 +62,7 @@ export const renderReportsDashboard = async () => {
     withdrawals: 1,
     repayments: 1,
     arrears: 1,
+    debt: 1,
     lifecycle: 1,
     alerts: 1
   };
@@ -71,6 +76,7 @@ export const renderReportsDashboard = async () => {
     withdrawals: 'all',
     repayments: 'all',
     arrears: 'all',
+    debt: 'all',
     lifecycle: 'all'
   };
   let dateRange = {
@@ -86,6 +92,7 @@ export const renderReportsDashboard = async () => {
     withdrawals: 'date_desc',
     repayments: 'date_asc',
     arrears: 'days_desc',
+    debt: 'date_desc',
     lifecycle: 'date_desc'
   };
   let isFullReportRender = false;
@@ -113,6 +120,7 @@ export const renderReportsDashboard = async () => {
         <button class="tab-btn" data-tab="withdrawals">Withdrawals</button>
         <button class="tab-btn" data-tab="repayments">Repayments</button>
         <button class="tab-btn" data-tab="arrears">Arrears Aging</button>
+        <button class="tab-btn" data-tab="debt">Debt Management</button>
         <button class="tab-btn" data-tab="lifecycle">Lifecycle</button>
         <button class="tab-btn" data-tab="alerts">Alerts & Reminders</button>
       </div>
@@ -129,10 +137,12 @@ export const renderReportsDashboard = async () => {
           <!-- Sort control injected here -->
         </div>
         <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border-left: 1px solid var(--border-color); padding-left: 12px;">
-          <label class="text-xs text-muted" for="report-date-from">From</label>
-          <input type="date" id="report-date-from" class="form-control" style="width: 145px; padding: 6px 8px; font-size: 0.75rem;" />
-          <label class="text-xs text-muted" for="report-date-to">To</label>
-          <input type="date" id="report-date-to" class="form-control" style="width: 145px; padding: 6px 8px; font-size: 0.75rem;" />
+          <label class="text-xs text-muted" for="report-date-from" style="display: grid; gap: 4px;">From
+            <input type="date" id="report-date-from" class="form-control" style="width: 145px; padding: 6px 8px; font-size: 0.75rem;" />
+          </label>
+          <label class="text-xs text-muted" for="report-date-to" style="display: grid; gap: 4px;">To
+            <input type="date" id="report-date-to" class="form-control" style="width: 145px; padding: 6px 8px; font-size: 0.75rem;" />
+          </label>
           <button type="button" class="btn btn-outline btn-sm" id="report-date-clear" style="font-size: 0.7rem; padding: 5px 10px;">Clear</button>
         </div>
       </div>
@@ -498,6 +508,32 @@ export const renderReportsDashboard = async () => {
       </div>
 
       <!-- 10. Lifecycle -->
+      <div id="debt-tab" class="report-section" style="display: none;">
+        <h2 style="margin-bottom: 8px;">Debt Management</h2>
+        <p id="debt-position-label" class="text-sm text-muted" style="margin-bottom: 16px;"></p>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 20px;">
+          ${[
+            ['count', 'Unique Loans', 'var(--primary)'],
+            ['dru', 'D.R.U Loans', 'var(--danger)'],
+            ['du', 'DU Loans', 'var(--warning)'],
+            ['rl', 'Recovered Loans', 'var(--success)'],
+            ['olb', 'Outstanding OLB', 'var(--primary)'],
+            ['arrears', 'Arrears (Excl. Fines)', 'var(--danger)'],
+            ['fines', 'Outstanding Fines', 'var(--warning)'],
+            ['recovered', 'Recovered Amount (RL)', 'var(--success)']
+          ].map(([key, label, color]) => `<div style="border-left: 3px solid ${color}; padding: 8px 12px;">
+            <div class="text-xs text-muted">${label}</div>
+            <div id="debt-${key}" class="font-semibold" style="font-size: 18px; margin-top: 6px; overflow-wrap: anywhere;">-</div>
+          </div>`).join('')}
+        </div>
+        <div class="table-responsive"><table class="table"><thead><tr>
+          <th>Loan No.</th><th>Client</th><th>Phone</th><th>Group</th><th>Officer</th><th>Unit</th>
+          <th id="debt-date-heading">Entry / Last Payment</th><th>End Date</th>
+          <th>OLB</th><th>Arrears</th><th>Fines</th><th>Collected</th><th class="no-print">Actions</th>
+        </tr></thead><tbody id="debt-table-body"></tbody></table></div>
+        <div id="debt-pagination"></div>
+      </div>
+
       <div id="lifecycle-tab" class="report-section" style="display: none;">
         <h2 style="margin-bottom: 16px;">Lifecycle Report</h2>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px;">
@@ -567,8 +603,10 @@ export const renderReportsDashboard = async () => {
         border-bottom-color: var(--secondary);
         background: rgba(27, 61, 114, 0.02);
       }
+      #debt-tab th, #debt-tab td { white-space: nowrap; }
       .print-only { display: none; }
       @media print {
+        #debt-tab th, #debt-tab td { white-space: normal; font-size: 9px; padding: 4px; overflow-wrap: anywhere; }
         .no-print { display: none !important; }
         #report-content > .report-section { display: none !important; }
         #report-content > .report-section.print-active { display: block !important; margin-bottom: 0; page-break-after: auto; }
@@ -623,7 +661,7 @@ export const renderReportsDashboard = async () => {
   `;
 
   const setReportLoadingRows = () => {
-    ['individuals', 'groups', 'disbursements', 'registrations', 'cashflow', 'withdrawals', 'repayments', 'arrears', 'lifecycle'].forEach(tab => {
+    ['individuals', 'groups', 'disbursements', 'registrations', 'cashflow', 'withdrawals', 'repayments', 'arrears', 'debt', 'lifecycle'].forEach(tab => {
       const tbody = container.querySelector(`#${tab}-table-body`);
       if (tbody) tbody.innerHTML = renderTableSkeletonRows(tab === 'cashflow' ? 7 : 9, 6);
     });
@@ -792,7 +830,7 @@ export const renderReportsDashboard = async () => {
     if (tab === 'registrations') return row.full_name;
     if (tab === 'cashflow') return row.clientName;
     if (tab === 'withdrawals') return row.name;
-    if (tab === 'repayments' || tab === 'arrears') return row.clientName;
+    if (tab === 'repayments' || tab === 'arrears' || tab === 'debt') return row.clientName;
     if (tab === 'lifecycle') return row.name;
     return '';
   };
@@ -804,6 +842,7 @@ export const renderReportsDashboard = async () => {
     if (tab === 'cashflow' || tab === 'withdrawals') return row.date;
     if (tab === 'repayments' || tab === 'arrears') return row.dueDate;
     if (tab === 'lifecycle') return row.updated;
+    if (tab === 'debt') return row.reportDate;
     return '';
   };
   const getSortAmount = (tab, row) => {
@@ -814,6 +853,7 @@ export const renderReportsDashboard = async () => {
     if (tab === 'cashflow' || tab === 'withdrawals') return Number(row.amount) || 0;
     if (tab === 'repayments') return Number(row.paid || row.olb) || 0;
     if (tab === 'arrears') return Number(row.arrearsAmount) || 0;
+    if (tab === 'debt') return row.olb;
     return 0;
   };
   const sortReportRows = (tab, rows) => {
@@ -1729,6 +1769,65 @@ export const renderReportsDashboard = async () => {
     renderReportPagination('#arrears-pagination', arrearsRows.length, pageSize, (p) => { pages.arrears = p; updateArrears(); });
   };
 
+  const updateDebtManagement = () => {
+    const tbody = container.querySelector('#debt-table-body');
+    const summaryKeys = ['count', 'dru', 'du', 'rl', 'olb', 'arrears', 'fines', 'recovered'];
+    const invalidRange = dateRange.from && dateRange.to && dateRange.from > dateRange.to;
+    container.querySelector('#debt-position-label').textContent = `Current balances as at ${formatDate(new Date())}. DU and D.R.U can overlap; overall totals count each loan once.`;
+    container.querySelector('#debt-date-heading').textContent = debtDateBasis === 'disbursement' ? 'Disbursed Date' : 'Entry / Last Payment';
+    if (!debtDataReady || debtDataError || invalidRange) {
+      summaryKeys.forEach(key => { container.querySelector(`#debt-${key}`).textContent = '-'; });
+      tbody.innerHTML = invalidRange
+        ? '<tr><td colspan="13" class="text-danger">From date must be on or before To date.</td></tr>'
+        : debtDataError
+          ? '<tr><td colspan="13" class="text-danger">Debt records could not be verified. Refresh to retry.</td></tr>'
+          : renderTableSkeletonRows(13, 6);
+      container.querySelector('#debt-pagination').replaceChildren();
+      container.querySelector('#filter-count').textContent = invalidRange ? 'Invalid date range' : debtDataError ? 'Records unavailable' : 'Fetching debt records';
+      return;
+    }
+    const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+    const scope = createOfficerScope({ members, groups });
+    const allRows = buildDebtManagementRows({ loans, repayments, settlements, schedules, penaltyAmount: automaticPenaltyAmount });
+    const rows = allRows.filter(row => activeFilters.debt === 'all' || row.categories.includes(activeFilters.debt))
+      .map(row => {
+        const member = row.loan.expand?.member || scope.membersById.get(getLoanMemberId(row.loan));
+        const group = row.loan.expand?.group || scope.groupsById.get(getLoanGroupId(row.loan))
+          || member?.expand?.group || scope.groupsById.get(getRelationId(member?.group));
+        const officerId = scope.getLoanOfficerId(row.loan);
+        const officer = [member?.expand?.assigned_officer, member?.expand?.registered_by,
+          group?.expand?.assigned_officer, group?.expand?.created_by, row.loan.expand?.processed_by, pb.authStore.model]
+          .find(person => person?.id === officerId);
+        return { ...row, clientName: member?.full_name || group?.name || 'Unknown',
+          phone: member ? getMemberPhone(member) : getGroupPhone(group), groupName: group?.name || 'Individual',
+          officerName: officer?.name || officer?.email || (officerId ? `Officer ${officerId}` : 'Unassigned'),
+          reportDate: getDebtReportDate(row, { category: activeFilters.debt, basis: debtDateBasis }) };
+      }).filter(row => isWithinDateRange(row.reportDate));
+    const totals = summarizeDebtManagement(rows);
+    summaryKeys.forEach(key => {
+      container.querySelector(`#debt-${key}`).textContent = ['count', 'du', 'dru', 'rl'].includes(key)
+        ? totals[key].toLocaleString() : `KES ${formatMoney(totals[key])}`;
+    });
+    const paginated = getReportRowsForView('debt', sortReportRows('debt', rows));
+    const badges = { dru: ['D.R.U', 'badge-danger'], du: ['DU', 'badge-warning'], rl: ['RL', 'badge-success'] };
+    tbody.innerHTML = paginated.length ? paginated.map(row => `<tr>
+      <td>${escape(row.loan.loan_no)}</td><td>${escape(row.clientName)}</td><td>${escape(row.phone)}</td>
+      <td>${escape(row.groupName)}</td><td>${escape(row.officerName)}</td>
+      <td>${row.categories.map(key => `<span class="badge ${badges[key][1]}">${badges[key][0]}</span>`).join(' ')}</td>
+      <td>${formatDate(row.reportDate)}</td><td>${formatDate(row.endDate)}</td>
+      <td>${formatMoney(row.olb)}</td><td>${formatMoney(row.arrears)}</td><td>${formatMoney(row.fines)}</td><td>${formatMoney(row.collected)}</td>
+      <td class="no-print"><button type="button" class="btn btn-outline btn-sm debt-view-loan" data-id="${escape(row.loan.id)}">View</button></td>
+    </tr>`).join('') : '<tr><td colspan="13" class="text-center text-muted">No debt records match these filters.</td></tr>';
+    tbody.querySelectorAll('.debt-view-loan').forEach(button => {
+      button.onclick = () => {
+        const row = rows.find(item => item.loan.id === button.dataset.id);
+        if (row) window.location.hash = withReturnTo(`#/loans/${encodeURIComponent(row.loan.loan_no)}`, '#/reports?tab=debt');
+      };
+    });
+    container.querySelector('#filter-count').textContent = `${rows.length} of ${allRows.length} unique loans`;
+    renderReportPagination('#debt-pagination', rows.length, pageSize, page => { pages.debt = page; updateDebtManagement(); });
+  };
+
   const updateLifecycle = () => {
     const canRevive = pb.authStore.model?.role === 'super_admin';
     const groupRows = lifecycleGroups
@@ -2022,6 +2121,7 @@ export const renderReportsDashboard = async () => {
     withdrawals: 'Withdrawals',
     repayments: 'Repayments',
     arrears: 'Arrears Aging',
+    debt: 'Debt Management',
     lifecycle: 'Lifecycle',
     alerts: 'Alerts & Reminders'
   };
@@ -2038,7 +2138,7 @@ export const renderReportsDashboard = async () => {
     const activeTab = getActiveTab();
     const reportName = reportLabels[activeTab] || activeTab;
     const filterLabel = activeTab === 'pl' || activeTab === 'alerts' ? 'All Records' : getActiveFilterLabel(activeTab);
-    const dateLabel = getDateRangeLabel();
+    const dateLabel = `${activeTab === 'debt' ? (debtDateBasis === 'disbursement' ? 'Disbursed date: ' : 'Entry / last payment: ') : ''}${getDateRangeLabel()}`;
     const officerLabel = reportOfficerSelect?.selectedOptions?.[0]?.textContent || 'All Loan Officers';
     const reportNameEl = container.querySelector('#print-report-name');
     const reportMetaEl = container.querySelector('#print-report-meta');
@@ -2057,8 +2157,12 @@ export const renderReportsDashboard = async () => {
     if (tab === 'withdrawals') updateWithdrawals();
     if (tab === 'repayments') updateRepayments();
     if (tab === 'arrears') updateArrears();
+    if (tab === 'debt') updateDebtManagement();
     if (tab === 'lifecycle') updateLifecycle();
     if (tab === 'alerts') updateAlerts();
+    const debtUnavailable = tab === 'debt' && (!debtDataReady || Boolean(debtDataError) || Boolean(dateRange.from && dateRange.to && dateRange.from > dateRange.to));
+    container.querySelector('#export-excel-btn').disabled = debtUnavailable;
+    container.querySelector('#print-report-btn').disabled = debtUnavailable;
     updatePrintHeader();
   };
   const applyOfficerScope = () => {
@@ -2213,6 +2317,24 @@ export const renderReportsDashboard = async () => {
         { id: 'amount_desc', label: 'Arrears High-Low' },
         { id: 'amount_asc', label: 'Arrears Low-High' }
       ];
+    } else if (tab === 'debt') {
+      filters = [
+        { id: 'all', label: 'All Debt Units' }, { id: 'dru', label: 'D.R.U' },
+        { id: 'du', label: 'DU' }, { id: 'rl', label: 'Recovered Loans (RL)' }
+      ];
+      sortOptions = [
+        { id: 'date_desc', label: 'Newest Date' }, { id: 'date_asc', label: 'Oldest Date' },
+        { id: 'name_asc', label: 'Client A-Z' }, { id: 'name_desc', label: 'Client Z-A' },
+        { id: 'amount_desc', label: 'OLB High-Low' }, { id: 'amount_asc', label: 'OLB Low-High' }
+      ];
+      const basis = document.createElement('select');
+      basis.className = 'form-control';
+      basis.style.cssText = 'width: 205px; font-size: 0.75rem; padding: 6px 8px;';
+      basis.setAttribute('aria-label', 'Debt date basis');
+      basis.innerHTML = '<option value="activity">Entry / Last Payment Date</option><option value="disbursement">Disbursement Date</option>';
+      basis.value = debtDateBasis;
+      basis.onchange = () => { debtDateBasis = basis.value; pages.debt = 1; refreshActiveReport(); };
+      sortControls.appendChild(basis);
     } else if (tab === 'lifecycle') {
       filters = [
         { id: 'all', label: 'All Lifecycle' },
@@ -2324,9 +2446,18 @@ export const renderReportsDashboard = async () => {
     const reportName = reportLabels[activeTab] || activeTab;
     const filterLabel = activeTab === 'pl' || activeTab === 'alerts' ? 'All Records' : getActiveFilterLabel(activeTab);
     let tsv = `${orgName}\n${reportName}\n${filterLabel}\n${getDateRangeLabel()}\nGenerated ${new Date().toLocaleString()}\n\n`;
+    if (activeTab === 'debt') {
+      tsv += `Date basis: ${debtDateBasis === 'disbursement' ? 'Disbursement' : 'Entry / last payment'}\n${container.querySelector('#debt-position-label').textContent}\n`;
+      container.querySelectorAll('#debt-tab [id^="debt-"]').forEach(element => {
+        if (['debt-count', 'debt-du', 'debt-dru', 'debt-rl', 'debt-olb', 'debt-arrears', 'debt-fines', 'debt-recovered'].includes(element.id)) {
+          tsv += `${element.previousElementSibling.textContent}\t${element.textContent}\n`;
+        }
+      });
+      tsv += '\n';
+    }
     const rows = table.querySelectorAll('tr');
     rows.forEach(row => {
-      const cols = row.querySelectorAll('th, td');
+      const cols = row.querySelectorAll(activeTab === 'debt' ? 'th:not(.no-print), td:not(.no-print)' : 'th, td');
       const rowData = Array.from(cols).map(col => {
         let text = col.innerText.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
         return text;
@@ -2368,7 +2499,7 @@ export const renderReportsDashboard = async () => {
         groupService.getAll(),
         groupService.getAllIncludingLifecycle(),
         memberService.getAllIncludingLifecycle(),
-        loanService.getFullListFresh({ expand: 'member,member.group,group,processed_by', cacheKey: 'loans:financial:expanded:v1' }),
+        loanService.getFullListFresh({ expand: 'member,member.group,member.assigned_officer,member.registered_by,group,group.assigned_officer,group.created_by,processed_by', cacheKey: 'loans:financial:expanded:v1' }),
         dataCache.get(`expenses:reports:${getOfficerScopeCacheKey()}`, () => expenseService.getFullList())
       ]);
 
@@ -2403,6 +2534,8 @@ export const renderReportsDashboard = async () => {
       }
       if (settlementResult.status === 'fulfilled') sourceSettlements = settlementResult.value.filter(item => item.status !== 'reversed');
       else console.warn('[Reports] Loan balance-offs unavailable:', settlementResult.reason?.message);
+      debtDataError = [scheduleResult, repaymentResult, settlementResult].find(result => result.status === 'rejected')?.reason || null;
+      debtDataReady = true;
 
       applyOfficerScope();
 
@@ -2416,6 +2549,7 @@ export const renderReportsDashboard = async () => {
       if (activeTab === 'withdrawals') updateWithdrawals();
       if (activeTab === 'repayments') updateRepayments();
       if (activeTab === 'arrears') updateArrears();
+      if (activeTab === 'debt') refreshActiveReport();
       if (activeTab === 'lifecycle') updateLifecycle();
       if (activeTab === 'alerts') updateAlerts();
     } catch (err) {
