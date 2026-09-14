@@ -398,7 +398,7 @@ export const renderLoanList = async (options = {}) => {
             </td>
             <td>
               <div class="loan-action-group">
-                ${isRecoveryUnit && canDeleteLoans ? `<button type="button" class="btn btn-outline btn-sm loan-row-action" data-action="renew" data-id="${l.id}">Renew</button>` : ''}
+                ${(isRecoveryUnit || isDistressUnit) && canDeleteLoans ? `<button type="button" class="btn btn-outline btn-sm loan-row-action" data-action="renew" data-id="${l.id}">Renew</button>` : ''}
                 <button type="button" class="loan-icon-action loan-row-action" data-action="view" data-id="${l.id}" title="View loan" aria-label="View loan">⊙</button>
                 <button type="button" class="loan-icon-action loan-row-action" data-action="comments" data-id="${l.id}" title="View comments" aria-label="View comments">
                   <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">

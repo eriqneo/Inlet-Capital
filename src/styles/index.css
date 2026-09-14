@@ -1168,6 +1168,7 @@ h1, h2, h3, h4, h5, h6 {
 
 .identity-photo {
   display: block;
+  position: relative;
   width: 100%;
   height: 100%;
   padding: 0;
@@ -1175,6 +1176,7 @@ h1, h2, h3, h4, h5, h6 {
   border-radius: inherit;
   background: transparent;
   cursor: zoom-in;
+  overflow: hidden;
 }
 
 .savings-consistency-section {
@@ -1286,6 +1288,57 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 @media (pointer: coarse) {
+  .identity-photo::after {
+    content: "⌕";
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    width: 22px;
+    height: 22px;
+    display: grid;
+    place-items: center;
+    border-radius: 999px;
+    background: rgba(15, 37, 69, 0.78);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 800;
+    box-shadow: 0 6px 14px rgba(8, 18, 35, 0.22);
+  }
+  .identity-photo:active img { transform: scale(1.04); }
+  .identity-photo-preview {
+    inset: 0 !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: auto;
+    min-height: 100dvh;
+    padding: 18px;
+    border: 0;
+    border-radius: 0;
+    background: rgba(8, 18, 35, 0.78);
+    box-shadow: none;
+    backdrop-filter: blur(8px);
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 12px;
+  }
+  .identity-photo-preview__image {
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    border-radius: 10px;
+    background: #081223;
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.32);
+  }
+  .identity-photo-preview__image img {
+    max-width: 100%;
+    max-height: calc(100dvh - 96px);
+  }
+  .identity-photo-preview__footer {
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+  }
   .identity-photo-preview__footer button { width: 44px; height: 44px; }
 }
 

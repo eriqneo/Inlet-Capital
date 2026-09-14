@@ -1,7 +1,7 @@
 import { pb } from './api.js';
 import { reviewSavingsBeforeDisbursement } from './savingsDisbursementReview.js';
 import { dataCache } from './dataCache.js';
-import { addMonthsPreservingDay, getRepaymentScheduleAnchorDate } from '../core/repaymentSchedule.js';
+import { getRepaymentScheduleDueDate } from '../core/repaymentSchedule.js';
 import {
   filterLoansForCurrentOfficer,
   getCurrentOfficerId,
@@ -127,7 +127,9 @@ export const loanService = {
       }
       return result;
     } catch (error) {
-      if (error?.status === 404) throw new Error('Loan renewal is not available on the server yet. Ask your administrator to enable Debt Recovery Unit.');
+      if (error?.status === 404) {
+        throw new Error('Loan renewal backend is not enabled on PocketHost yet. Upload the updated recovery hook files to enable D.U and D.R.U renewal.');
+      }
       throw new Error(formatPocketBaseError(error, 'Unable to renew this loan.'));
     }
   },
@@ -473,12 +475,11 @@ export const loanService = {
     const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
     const liability = Number(loan.total_liability) || (principal + (Number(loan.interest_amount) || 0));
     const installmentAmount = liability / period;
-    const startDate = getRepaymentScheduleAnchorDate(loan);
     const created = [];
 
     for (let installmentNo = 1; installmentNo <= period; installmentNo += 1) {
       if (existingInstallments.has(installmentNo)) continue;
-      const dueDate = addMonthsPreservingDay(startDate, installmentNo);
+      const dueDate = getRepaymentScheduleDueDate(loan, installmentNo);
       created.push(await this.createScheduleInstallment({
         loan: loan.id,
         installment_no: installmentNo,

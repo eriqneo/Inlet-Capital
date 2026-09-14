@@ -1,4 +1,4 @@
-import { addMonthsPreservingDay } from './repaymentSchedule.js';
+import { getLoanFinalDueDate } from './repaymentSchedule.js';
 import { isCollectibleLoanRecord } from './loanPortfolio.js';
 
 const toValidDate = (value) => {
@@ -15,10 +15,7 @@ const startOfDay = (value) => {
 };
 
 export const getLoanEndDate = (loan) => {
-  const disbursementDate = toValidDate(loan?.renewal_date || loan?.disbursement_date);
-  const period = Number(loan?.period) || 0;
-  if (!disbursementDate || period <= 0) return null;
-  return addMonthsPreservingDay(disbursementDate, period);
+  return getLoanFinalDueDate(loan);
 };
 
 export const isDistressUnitLoan = (loan, {

@@ -181,6 +181,33 @@ var getSettlementContractAmount = (settlement) => {
   if (!settlement || settlement.status === "reversed") return 0;
   return asAmount(settlement.amount);
 };
+var allocateRepayment = ({ loan, repaymentAmount, fineAmount = 0, priorContractPaid = 0 }) => {
+  const principal = getLoanPrincipalAmount(loan);
+  const interest = getLoanInterestAmount(loan);
+  const liability = getLoanLiabilityAmount(loan);
+  const amount = asAmount(repaymentAmount);
+  const fine = Math.min(amount, asAmount(fineAmount));
+  const netPayment = amount - fine;
+  const paidBefore = Math.min(liability, asAmount(priorContractPaid));
+  const allocatedToContract = Math.min(netPayment, Math.max(0, liability - paidBefore));
+  const interestRatio = liability > 0 ? interest / liability : 0;
+  const interestPaidBefore = Math.min(interest, paidBefore * interestRatio);
+  const interestAmount = Math.min(
+    Math.max(0, interest - interestPaidBefore),
+    allocatedToContract * interestRatio
+  );
+  return {
+    amount,
+    fineAmount: fine,
+    contractAmount: allocatedToContract,
+    principalAmount: Math.max(0, allocatedToContract - interestAmount),
+    interestAmount: Math.max(0, interestAmount),
+    excessAmount: Math.max(0, netPayment - allocatedToContract),
+    principal,
+    interest,
+    liability
+  };
+};
 
 // src/core/loanPortfolio.js
 var isDisbursedLoanRecord = (loan) => Boolean(loan == null ? void 0 : loan.disbursement_date) && ["disbursed", "approved", "partial_approved", "completed", "closed"].includes(loan == null ? void 0 : loan.status);
@@ -222,6 +249,12 @@ var toValidDate = (value) => {
   const date = new Date(typeof value === "string" ? value.replace(" ", "T") : value);
   return Number.isNaN(date.getTime()) ? null : date;
 };
+var getRepaymentScheduleAnchorDate = (loan) => toValidDate(loan == null ? void 0 : loan.renewal_date) || toValidDate(loan == null ? void 0 : loan.disbursement_date) || toValidDate(loan == null ? void 0 : loan.application_date) || toValidDate(loan == null ? void 0 : loan.created) || /* @__PURE__ */ new Date();
+var getLoanGracePeriodMonths = (loan) => {
+  if ((loan == null ? void 0 : loan.type) !== "farming") return 0;
+  const gracePeriod = Number.parseInt(loan == null ? void 0 : loan.grace_period_months, 10);
+  return Number.isInteger(gracePeriod) && gracePeriod > 0 ? gracePeriod : 0;
+};
 var addMonthsPreservingDay = (dateInput, monthsToAdd) => {
   const source = toValidDate(dateInput) || /* @__PURE__ */ new Date();
   const targetDay = source.getDate();
@@ -236,6 +269,46 @@ var addMonthsPreservingDay = (dateInput, monthsToAdd) => {
   dueDate.setDate(Math.min(targetDay, lastDayOfTargetMonth));
   return dueDate;
 };
+var getRepaymentScheduleDueDate = (loan, installmentNo) => {
+  const installment = Number.parseInt(installmentNo, 10);
+  if (!Number.isInteger(installment) || installment < 1) return null;
+  const gracePeriod = getLoanGracePeriodMonths(loan);
+  const firstDueMonth = gracePeriod || 1;
+  return addMonthsPreservingDay(
+    getRepaymentScheduleAnchorDate(loan),
+    firstDueMonth + installment - 1
+  );
+};
+var getLoanFinalDueDate = (loan) => {
+  const period = Number.parseInt(loan == null ? void 0 : loan.period, 10);
+  return Number.isInteger(period) && period > 0 ? getRepaymentScheduleDueDate(loan, period) : null;
+};
+
+// src/core/distressUnit.js
+var toValidDate2 = (value) => {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(String(value).replace(" ", "T"));
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+var startOfDay = (value) => {
+  const date = toValidDate2(value);
+  if (!date) return null;
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+var getLoanEndDate = (loan) => {
+  return getLoanFinalDueDate(loan);
+};
+var isDistressUnitLoan = (loan, {
+  outstandingBalance = 0,
+  referenceDate = /* @__PURE__ */ new Date()
+} = {}) => {
+  if (!isCollectibleLoanRecord(loan)) return false;
+  const endDate = startOfDay(getLoanEndDate(loan));
+  const today = startOfDay(referenceDate);
+  if (!endDate || !today) return false;
+  return endDate < today && Number(outstandingBalance) > 0.01;
+};
 
 // src/core/debtRecovery.js
 var money = (value) => Math.round((Number(value) || 0) * 100) / 100;
@@ -243,7 +316,10 @@ var businessDay = (value) => {
   const date = new Date(typeof value === "string" ? value.replace(" ", "T") : value);
   return Number.isNaN(date.getTime()) ? NaN : Math.floor((date.getTime() + 3 * 36e5) / 864e5);
 };
-var getRecoveryAgeDays = (loan, referenceDate = /* @__PURE__ */ new Date()) => businessDay(referenceDate) - businessDay((loan == null ? void 0 : loan.renewal_date) || (loan == null ? void 0 : loan.disbursement_date));
+var getRecoveryAgeDays = (loan, referenceDate = /* @__PURE__ */ new Date()) => {
+  const recoveryStart = getLoanGracePeriodMonths(loan) > 0 ? getRepaymentScheduleDueDate(loan, 1) : (loan == null ? void 0 : loan.renewal_date) || (loan == null ? void 0 : loan.disbursement_date);
+  return businessDay(referenceDate) - businessDay(recoveryStart);
+};
 var isDebtRecoveryLoan = (loan, {
   repayments = [],
   settlements = [],
@@ -303,8 +379,18 @@ var buildDebtRecoveryRenewal = ({
   period,
   referenceDate = /* @__PURE__ */ new Date()
 }) => {
-  if (!isDebtRecoveryLoan(loan, { repayments, settlements, schedules, referenceDate })) {
-    throw new Error("Only loans with no payments for at least 90 days can be renewed through D.R.U.");
+  const outstandingBalance = calculateLoanOutstandingBalance({
+    loan,
+    repayments,
+    settlements,
+    schedules,
+    penaltyAmount,
+    referenceDate
+  });
+  const isDebtRecovery = isDebtRecoveryLoan(loan, { repayments, settlements, schedules, referenceDate });
+  const isDistress = isDistressUnitLoan(loan, { outstandingBalance, referenceDate });
+  if (!isDebtRecovery && !isDistress) {
+    throw new Error("Only D.R.U or D.U loans can be renewed.");
   }
   if (!Number.isInteger(period) || period < 1 || period > 120) {
     throw new Error("Enter a loan period between 1 and 120 whole months.");
@@ -316,9 +402,33 @@ var buildDebtRecoveryRenewal = ({
   if (schedules.some((row) => !Number.isFinite(businessDay(row.due_date)) || !(Number(row.amount) > 0)) || !Array.from({ length: schedules.length }, (_, index) => index + 1).every((number) => installmentNumbers.has(number))) {
     throw new Error("Repair invalid or duplicate installments before renewing this loan.");
   }
-  const principal = money(loan.approved_amount || loan.amount_applied);
-  if (principal <= 0) throw new Error("This loan has no valid principal to renew.");
-  const interestRate = 20;
+  let priorContractPaid = 0;
+  let principalPaid = 0;
+  [
+    ...repayments.filter((row) => !row.is_reversed).map((row) => ({
+      date: row.date || row.created,
+      amount: row.amount,
+      fine_amount: row.fine_amount
+    })),
+    ...settlements.filter((row) => row.status !== "reversed").map((row) => ({
+      date: row.effective_date || row.date || row.created,
+      amount: getSettlementContractAmount(row),
+      fine_amount: 0
+    }))
+  ].sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0)).forEach((row) => {
+    const allocation = allocateRepayment({
+      loan,
+      repaymentAmount: row.amount,
+      fineAmount: row.fine_amount,
+      priorContractPaid
+    });
+    priorContractPaid += allocation.contractAmount;
+    principalPaid += allocation.principalAmount;
+  });
+  const principal = money(Math.max(0, getLoanPrincipalAmount(loan) - principalPaid));
+  if (principal <= 0) throw new Error("This loan has no valid outstanding principal to renew.");
+  const configuredRate = Number(loan.interest_rate);
+  const interestRate = Number.isFinite(configuredRate) && configuredRate >= 0 ? configuredRate : 20;
   const interest = money(principal * interestRate / 100);
   const calendarDate = (value) => new Date(businessDay(value) * 864e5 + 12 * 36e5).toISOString();
   const fines = money(calculateLoanPenaltyState({
@@ -328,15 +438,15 @@ var buildDebtRecoveryRenewal = ({
     penaltyAmount,
     referenceDate: calendarDate(referenceDate)
   }).outstandingFine);
-  const liability = money(principal + interest);
+  const renewedLiability = money(principal + interest);
   const renewalDate = new Date(businessDay(referenceDate) * 864e5 - 3 * 36e5).toISOString();
   const renewalDay = new Date(businessDay(referenceDate) * 864e5).toISOString().slice(0, 10);
-  const monthlyCents = Math.floor(Math.round(liability * 100) / period);
+  const monthlyCents = Math.floor(Math.round(renewedLiability * 100) / period);
   const installments = Array.from({ length: period }, (_, index) => ({
     loan: loan.id,
     installment_no: index + 1,
     due_date: addMonthsPreservingDay(`${renewalDay}T12:00:00Z`, index + 1).toISOString(),
-    amount: (index === period - 1 ? Math.round(liability * 100) - monthlyCents * (period - 1) : monthlyCents) / 100,
+    amount: (index === period - 1 ? Math.round(renewedLiability * 100) - monthlyCents * (period - 1) : monthlyCents) / 100,
     paid: 0,
     status: "pending",
     penalty_waived: false,
@@ -356,8 +466,9 @@ var buildDebtRecoveryRenewal = ({
     interestRate,
     interest,
     fines,
-    liability,
-    totalPayable: money(liability + fines),
+    liability: renewedLiability,
+    totalPayable: money(renewedLiability + fines),
+    sourceUnit: isDebtRecovery ? "dru" : "du",
     period,
     renewalDate,
     installments,

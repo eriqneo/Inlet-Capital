@@ -73,7 +73,8 @@ try {
     total_liability: 18000, application_date: start.toISOString(), disbursement_date: start.toISOString() });
   for (let i = 1; i <= 6; i++) await root.collection('loan_schedule').create({ loan: loan.id,
     installment_no: i, amount: 3000, paid: 0, due_date: addMonthsPreservingDay(start, i).toISOString(), status: 'pending' });
-  const action = (client, body) => client.send(`/api/inlet/loans/${loan.id}/recovery`, { method: 'POST', body });
+  const actionFor = (loanId, client, body) => client.send(`/api/inlet/loans/${loanId}/recovery`, { method: 'POST', body });
+  const action = (client, body) => actionFor(loan.id, client, body);
   for (const role of ['admin', 'loan_officer']) await assert.rejects(action(clients[role], { action: 'preview', period: 6 }), error => error.status === 403);
   const client = clients.super_admin;
   await assert.rejects(client.collection('loans').update(loan.id, { renewal_date: new Date().toISOString() }), error => error.status === 403);
@@ -95,6 +96,20 @@ try {
   assert.equal((await root.collection('loan_schedule').getFullList()).length, 6);
   await root.collections.update(schema.id, { fields: schema.fields });
 
+  const duStart = new Date();
+  duStart.setMonth(duStart.getMonth() - 8);
+  const duLoan = await root.collection('loans').create({ member: member.id, status: 'disbursed', loan_no: 'DU-TEST',
+    period: 3, amount_applied: 12000, approved_amount: 12000, interest_rate: 20, interest_amount: 2400,
+    total_liability: 14400, application_date: duStart.toISOString(), disbursement_date: duStart.toISOString() });
+  for (let i = 1; i <= 3; i++) await root.collection('loan_schedule').create({ loan: duLoan.id,
+    installment_no: i, amount: 4800, paid: 0, due_date: addMonthsPreservingDay(duStart, i).toISOString(), status: 'pending' });
+  await root.collection('loan_repayments').create({ loan: duLoan.id, amount: 4800, fine_amount: 0, date: addMonthsPreservingDay(duStart, 1).toISOString() });
+  const duQuote = await actionFor(duLoan.id, client, { action: 'preview', period: 5 });
+  assert.equal(duQuote.sourceUnit, 'du');
+  assert.equal(duQuote.principal, 8000);
+  assert.equal(duQuote.interest, 1600);
+  assert.equal(duQuote.liability, 9600);
+
   const finalQuote = await action(client, { action: 'preview', period: 7 });
   const body = { action: 'renew', period: 7, fingerprint: finalQuote.fingerprint, reason: 'Client has agreed to restart payments.' };
   const concurrent = await Promise.allSettled([action(client, body), action(client, body)]);
@@ -107,11 +122,11 @@ try {
   assert.equal(archive.length, 1);
   assert.equal(archive[0].previous_schedule.length, 6);
   assert.equal(archive[0].previous_terms.period, 6);
-  const installments = await root.collection('loan_schedule').getFullList();
+  const installments = await root.collection('loan_schedule').getFullList({ filter: `loan="${loan.id}"` });
   assert.equal(installments.length, 7);
   assert.equal(installments.reduce((sum, row) => sum + Math.round(row.amount * 100), 0), 1800000);
   assert.equal(installments.reduce((sum, row) => sum + row.carried_fine, 0), finalQuote.fines);
-  assert.equal((await root.collection('loan_repayments').getFullList()).length, 0);
+  assert.equal((await root.collection('loan_repayments').getFullList({ filter: `loan="${loan.id}"` })).length, 0);
   await assert.rejects(client.collection('loan_renewals').delete(archive[0].id), error => error.status === 403);
   console.log('Recovery integration passed: roles, protected fields, quotes, payment race, rollback, concurrent renewal, archive and exact schedule totals.');
 } catch (error) {

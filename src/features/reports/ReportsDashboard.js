@@ -10,14 +10,14 @@ import { dataCache } from '../../services/dataCache.js';
 import { renderCardSkeleton, renderInlineSyncStatus, renderTableSkeletonRows, setButtonLoading } from '../../core/uiState.js';
 import { settingsService } from '../../services/settingsService.js';
 import { getArrearsTotal, getDaysInArrears, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
-import { getRepaymentPrincipalAmount } from '../../core/loanPenalty.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
 import {
   calculateCollectedInterest,
   getLoanInterestAmount as getContractInterestAmount,
   getLoanLiabilityAmount as getContractLiabilityAmount,
-  getLoanPrincipalAmount as getContractPrincipalAmount
+  getLoanPrincipalAmount as getContractPrincipalAmount,
+  getRepaymentContractAmount
 } from '../../core/repaymentAllocation.js';
 import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, getOfficerScopeCacheKey, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
 import { createLoanPortfolioCalculator, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
@@ -252,7 +252,7 @@ export const renderReportsDashboard = async () => {
                 <th>Phone</th>
                 <th>A.Savings <span title="Accumulated Savings Net — deposits minus withdrawals by this member" style="cursor:help; opacity:0.6;">ⓘ</span></th>
                 <th>OL Balance</th>
-                <th>Total Repaid</th>
+                <th>Loan Repaid</th>
                 <th style="color: var(--danger);">Arrears</th>
                 <th>Progress</th>
                 <th>Status</th>
@@ -428,7 +428,7 @@ export const renderReportsDashboard = async () => {
         <h2 style="margin-bottom: 16px;">Repayments Report</h2>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px;">
           <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--success);">
-            <div class="text-xs text-muted">Amount Paid</div>
+            <div class="text-xs text-muted">Loan Repayments</div>
             <div class="text-xl font-semibold text-success" id="repayments-total-paid">KES 0</div>
           </div>
           <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--danger);">
@@ -450,7 +450,7 @@ export const renderReportsDashboard = async () => {
                 <th>OLB</th>
                 <th>Status</th>
                 <th>Due Date</th>
-                <th>Amount Paid</th>
+                <th>Loan Repaid</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -757,9 +757,9 @@ export const renderReportsDashboard = async () => {
   const getSchedulesForLoan = (loan) => schedules.filter(schedule => getScheduleLoanId(schedule) === loan?.id);
   const getRepaymentsForLoan = (loan) => repayments.filter(repayment => getRepaymentLoanId(repayment) === loan?.id);
   const getLoanPrincipalPaidAmount = (loan) => getRepaymentsForLoan(loan)
-    .reduce((sum, repayment) => sum + getRepaymentPrincipalAmount(repayment), 0);
+    .reduce((sum, repayment) => sum + getRepaymentContractAmount(repayment), 0);
   const getLoanCashPaidAmount = (loan) => getRepaymentsForLoan(loan)
-    .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
+    .reduce((sum, repayment) => sum + getRepaymentContractAmount(repayment), 0);
   let portfolioCalculatorCache = null;
   let portfolioRepaymentsRef = null;
   let portfolioSettlementsRef = null;
@@ -1132,7 +1132,7 @@ export const renderReportsDashboard = async () => {
         const liability = Number(loan.total_liability) || (principal + (Number(loan.interest_amount) || 0));
         const paid = repayments
           .filter(r => r.loan === loan.id)
-          .reduce((repaymentSum, r) => repaymentSum + (Number(r.amount) || 0), 0);
+          .reduce((repaymentSum, r) => repaymentSum + getRepaymentContractAmount(r), 0);
         return sum + Math.max(0, liability - paid);
       }, 0);
 
@@ -1419,7 +1419,7 @@ export const renderReportsDashboard = async () => {
           type: 'Loan Repayment',
           ...owner,
           ref: loan?.loan_no || r.loan || 'LOAN',
-          amount: getRepaymentPrincipalAmount(r),
+          amount: getRepaymentContractAmount(r),
           direction: 'in',
           method: r.method || r.payment_method || 'M-Pesa'
         };
@@ -1670,7 +1670,7 @@ export const renderReportsDashboard = async () => {
     };
     const repaymentsByLoan = repayments.reduce((map, repayment) => {
       if (!repayment.loan) return map;
-      map.set(repayment.loan, (map.get(repayment.loan) || 0) + (Number(repayment.amount) || 0));
+      map.set(repayment.loan, (map.get(repayment.loan) || 0) + getRepaymentContractAmount(repayment));
       return map;
     }, new Map());
     const isCollectibleLoan = (loan) => loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);

@@ -3,13 +3,16 @@ import { memberService } from '../../services/memberService.js';
 import { groupService } from '../../services/groupService.js';
 import { authService } from '../../services/authService.js';
 import { settingsService } from '../../services/settingsService.js';
+import { savingsService } from '../../services/savingsService.js';
 import { generateLoanNo } from '../../core/numberGen.js';
 import { openCamera } from '../../components/Camera.js';
 import { renderIdentityPhoto } from '../../components/IdentityPhoto.js';
 import { setButtonLoading } from '../../core/uiState.js';
 import { getReturnTo, navigateToReturn } from '../../core/navigation.js';
-import { addMonthsPreservingDay } from '../../core/repaymentSchedule.js';
+import { getLoanFinalDueDate, getRepaymentScheduleDueDate } from '../../core/repaymentSchedule.js';
 import { formatDate, formatMoney } from '../../core/utils.js';
+import { calculateSavingsConsistency } from '../../core/savingsConsistency.js';
+import { getSavingsConsistencySummary, renderSavingsConsistency } from '../../components/SavingsConsistency.js';
 import Fuse from 'fuse.js';
 
 export const renderLoanApplicationForm = async (params = {}) => {
@@ -69,6 +72,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
             <div id="selected-group-summary" class="text-xs text-muted" style="margin-top: 10px;"></div>
             <div id="group-autofill-status" style="display: none; margin-top: 8px; font-size: 0.75rem; padding: 6px 10px; border-radius: 4px; transition: all 0.3s ease;"></div>
           </div>
+          <div id="loan-savings-consistency-alert" class="loan-savings-consistency-alert" style="display: none;"></div>
         </div>
 
         <!-- Section 2: Loan Parameters -->
@@ -81,7 +85,8 @@ export const renderLoanApplicationForm = async (params = {}) => {
               <option value="business">Business Loan</option>
               <option value="emergency">Emergency Loan</option>
               <option value="school_fees">School Fees</option>
-              <option value="development">Development Loan</option>
+              <option value="development">Table Banking Loan</option>
+              <option value="farming">Farming Loan</option>
             </select>
             <div class="text-xs text-muted" style="margin-top: 6px;">Members with an active unpaid loan can only apply for Emergency or School Fees loans.</div>
           </div>
@@ -128,10 +133,20 @@ export const renderLoanApplicationForm = async (params = {}) => {
             <div id="loan-period-helper" class="text-xs text-muted" style="margin-top: 6px;">Repayment runs for 6 months. Use Custom for terms up to 120 months.</div>
           </div>
 
+          <div class="form-group" id="farming-grace-period-group" style="display: none;">
+            <label class="form-label" for="farming-grace-period">Grace Period Before First Repayment (Months)</label>
+            <input type="number" name="grace_period_months" id="farming-grace-period" class="form-control" min="3" max="12" step="1" inputmode="numeric" value="3" disabled />
+            <div class="text-xs text-muted" style="margin-top: 6px;">Enter the agreed grace period. Farming loans commonly start repayment after 3 or 4 months.</div>
+          </div>
+
           <div class="loan-term-preview" id="loan-term-preview">
             <div>
               <span class="text-xs text-muted">Monthly Installment</span>
               <strong id="summary-monthly">KES 0</strong>
+            </div>
+            <div>
+              <span class="text-xs text-muted">First Repayment Due</span>
+              <strong id="summary-first-due-date">—</strong>
             </div>
             <div>
               <span class="text-xs text-muted">Expected Final Due Date</span>
@@ -140,7 +155,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
           </div>
 
           <div class="loan-term-note text-xs text-muted">
-            The first installment starts one month after disbursement. The final due date preview uses the application date until the loan is disbursed.
+            The schedule preview uses the application date until the loan is disbursed.
           </div>
 
           <div class="form-group">
@@ -267,6 +282,21 @@ export const renderLoanApplicationForm = async (params = {}) => {
       .loan-term-preview > div { display: grid; gap: 4px; min-width: 0; }
       .loan-term-preview strong { color: var(--primary); font-size: 0.95rem; }
       .loan-term-note { margin-top: 8px; line-height: 1.45; }
+      .loan-savings-consistency-alert {
+        margin-top: 14px;
+        border-radius: 10px;
+        border: 1px solid rgba(245, 158, 11, 0.28);
+        border-left: 4px solid var(--warning);
+        background: rgba(245, 158, 11, 0.08);
+        padding: 14px;
+      }
+      .loan-savings-consistency-alert.healthy {
+        border-color: rgba(16, 185, 129, 0.28);
+        border-left-color: var(--success);
+        background: rgba(16, 185, 129, 0.08);
+      }
+      .loan-savings-consistency-alert .savings-consistency-heading h3 { margin: 0; }
+      .loan-savings-consistency-alert .savings-consistency-metrics { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
       @media (max-width: 520px) {
         .loan-period-grid,
         .loan-term-preview { grid-template-columns: 1fr; }
@@ -290,9 +320,12 @@ export const renderLoanApplicationForm = async (params = {}) => {
   const selectedMemberSummary = container.querySelector('#selected-member-summary');
   const selectedGroupSummary = container.querySelector('#selected-group-summary');
   const autofillStatus = container.querySelector('#group-autofill-status');
+  const savingsConsistencyAlert = container.querySelector('#loan-savings-consistency-alert');
   let memberFuse = null;
   let groupFuse = null;
   let groupSelectionLocked = false;
+  let savingsAssessmentRequestId = 0;
+  let refreshSavingsConsistencyNotice = () => {};
 
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
     '&': '&amp;',
@@ -424,6 +457,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
     selectedGroupSummary.textContent = group ? `Selected: ${getGroupLabel(group)}` : '';
     if (syncSearch) groupSearch.value = group ? getGroupLabel(group) : '';
     renderGroupSearchResults();
+    refreshSavingsConsistencyNotice();
   };
 
   const clearGroupSelection = () => {
@@ -431,6 +465,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
     groupSearch.value = '';
     selectedGroupSummary.textContent = '';
     renderGroupSearchResults();
+    refreshSavingsConsistencyNotice();
   };
 
   const updateGroupAutofill = () => {
@@ -472,6 +507,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
     if (syncSearch) memberSearch.value = member ? getMemberLabel(member) : '';
     renderMemberSearchResults();
     updateGroupAutofill();
+    refreshSavingsConsistencyNotice();
   };
 
   const clearMemberSelection = () => {
@@ -480,6 +516,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
     selectedMemberSummary.textContent = '';
     renderMemberSearchResults();
     updateGroupAutofill();
+    refreshSavingsConsistencyNotice();
   };
 
   applicantTypeSelect.onchange = () => {
@@ -545,8 +582,63 @@ export const renderLoanApplicationForm = async (params = {}) => {
   const periodCustom = container.querySelector('#loan-period-custom');
   const periodInput = container.querySelector('#loan-period');
   const periodHelper = container.querySelector('#loan-period-helper');
+  const loanTypeSelect = container.querySelector('#loan-type-select');
+  const farmingGracePeriodGroup = container.querySelector('#farming-grace-period-group');
+  const farmingGracePeriodInput = container.querySelector('#farming-grace-period');
   const sMonthly = container.querySelector('#summary-monthly');
+  const sFirstDueDate = container.querySelector('#summary-first-due-date');
   const sFinalDate = container.querySelector('#summary-final-date');
+  const termNote = container.querySelector('.loan-term-note');
+
+  refreshSavingsConsistencyNotice = async () => {
+    const requestId = ++savingsAssessmentRequestId;
+    const selectedMember = members.find(member => member.id === memberSelect.value);
+    const groupId = selectedMember?.group || selectedMember?.expand?.group?.id || groupSelect.value;
+    const selectedGroup = groups.find(group => group.id === groupId) || selectedMember?.expand?.group;
+
+    if (!selectedMember || !groupId) {
+      savingsConsistencyAlert.style.display = 'none';
+      savingsConsistencyAlert.innerHTML = '';
+      return;
+    }
+    if (!selectedGroup) {
+      savingsConsistencyAlert.className = 'loan-savings-consistency-alert';
+      savingsConsistencyAlert.style.display = 'block';
+      savingsConsistencyAlert.innerHTML = '<div class="font-semibold text-warning">Savings consistency cannot be verified because this member group is not loaded.</div>';
+      return;
+    }
+
+    savingsConsistencyAlert.className = 'loan-savings-consistency-alert';
+    savingsConsistencyAlert.style.display = 'block';
+    savingsConsistencyAlert.innerHTML = '<div class="text-sm text-muted">Checking savings consistency...</div>';
+
+    try {
+      const memberSavings = await savingsService.getByMember(selectedMember.id);
+      if (requestId !== savingsAssessmentRequestId) return;
+      const assessment = calculateSavingsConsistency({
+        member: selectedMember,
+        group: selectedGroup,
+        savings: memberSavings,
+        referenceDate: applicationDateInput?.value || todayInputValue
+      });
+      const summary = getSavingsConsistencySummary(assessment);
+      const isHealthy = summary.tone === 'success' && assessment.status !== 'unavailable';
+      savingsConsistencyAlert.className = `loan-savings-consistency-alert ${isHealthy ? 'healthy' : ''}`;
+      savingsConsistencyAlert.innerHTML = `
+        <div class="font-semibold" style="color: ${isHealthy ? 'var(--success)' : 'var(--warning)'};">${escapeHtml(summary.headline)}</div>
+        <div class="text-xs text-muted" style="margin-top: 4px;">${escapeHtml(summary.detail)}</div>
+        <div style="margin-top: 12px;">${renderSavingsConsistency(assessment)}</div>
+      `;
+    } catch (error) {
+      if (requestId !== savingsAssessmentRequestId) return;
+      savingsConsistencyAlert.className = 'loan-savings-consistency-alert';
+      savingsConsistencyAlert.style.display = 'block';
+      savingsConsistencyAlert.innerHTML = `
+        <div class="font-semibold text-warning">Savings consistency could not be verified</div>
+        <div class="text-xs text-muted" style="margin-top: 4px;">${escapeHtml(error.message || 'Check savings records and try again.')}</div>
+      `;
+    }
+  };
 
   const getSelectedPeriod = () => {
     const value = Number.parseInt(periodInput.value, 10);
@@ -578,25 +670,47 @@ export const renderLoanApplicationForm = async (params = {}) => {
     const total = amount + interest;
     const processing = amount * (settings.processingFeeRate / 100);
     const monthly = period > 0 ? total / period : 0;
-    const previewStartDate = applicationDateInput?.value
-      ? new Date(`${applicationDateInput.value}T12:00:00`)
-      : new Date(`${todayInputValue}T12:00:00`);
-    const finalDueDate = period > 0 ? addMonthsPreservingDay(previewStartDate, period) : null;
+    const previewLoan = {
+      type: loanTypeSelect.value,
+      grace_period_months: farmingGracePeriodInput.value,
+      period,
+      application_date: applicationDateInput?.value || todayInputValue
+    };
+    const firstDueDate = period > 0 ? getRepaymentScheduleDueDate(previewLoan, 1) : null;
+    const finalDueDate = getLoanFinalDueDate(previewLoan);
 
     sApplied.textContent = `KES ${formatMoney(amount)}`;
     sInterest.textContent = `KES ${formatMoney(interest)}`;
     sTotal.textContent = `KES ${formatMoney(total)}`;
     sProcessing.textContent = `KES ${formatMoney(processing)}`;
     sMonthly.textContent = `KES ${formatMoney(monthly)}`;
+    sFirstDueDate.textContent = firstDueDate ? formatDate(firstDueDate) : '—';
     sFinalDate.textContent = finalDueDate ? formatDate(finalDueDate) : '—';
     sInterestLabel.textContent = `Interest (${settings.interestRate}%):`;
     sProcessingLabel.textContent = `Processing Fee (${settings.processingFeeRate}%):`;
+    termNote.textContent = loanTypeSelect.value === 'farming'
+      ? `Farming repayments begin after the agreed ${Number(farmingGracePeriodInput.value) || 0}-month grace period. The preview uses the application date until the loan is disbursed.`
+      : 'The first installment starts one month after disbursement. The preview uses the application date until the loan is disbursed.';
+  };
+
+  const syncFarmingGracePeriod = () => {
+    const isFarmingLoan = loanTypeSelect.value === 'farming';
+    farmingGracePeriodGroup.style.display = isFarmingLoan ? 'block' : 'none';
+    farmingGracePeriodInput.disabled = !isFarmingLoan;
+    farmingGracePeriodInput.required = isFarmingLoan;
+    if (isFarmingLoan && !farmingGracePeriodInput.value) farmingGracePeriodInput.value = '3';
+    updateCalculations();
   };
 
   amountInput.oninput = updateCalculations;
-  applicationDateInput.oninput = updateCalculations;
+  applicationDateInput.oninput = () => {
+    updateCalculations();
+    refreshSavingsConsistencyNotice();
+  };
   periodPreset.onchange = setPeriodValue;
   periodCustom.oninput = setPeriodValue;
+  loanTypeSelect.onchange = syncFarmingGracePeriod;
+  farmingGracePeriodInput.oninput = updateCalculations;
   if (interestRateInput) {
     interestRateInput.oninput = () => {
       const nextRate = Number(interestRateInput.value);
@@ -628,7 +742,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
     groups = groupsData || [];
     populateApplicantOptions();
     applyRoutePrefill();
-    updateCalculations();
+    syncFarmingGracePeriod();
   }).catch(err => {
     console.warn('[LoanApplicationForm] Applicant/settings preload failed:', err);
     populateApplicantOptions();
@@ -738,9 +852,16 @@ export const renderLoanApplicationForm = async (params = {}) => {
     const interest = amount * (interestRate / 100);
     const processingFee = amount * (processingFeeRate / 100);
     const period = Number.parseInt(rawData.period, 10);
+    const gracePeriod = rawData.type === 'farming'
+      ? Number.parseInt(rawData.grace_period_months, 10)
+      : 0;
 
     if (!Number.isInteger(period) || period < 1 || period > 120) {
       window.notify?.error('Enter a valid loan period between 1 and 120 months.');
+      return;
+    }
+    if (rawData.type === 'farming' && (!Number.isInteger(gracePeriod) || gracePeriod < 3 || gracePeriod > 12)) {
+      window.notify?.error('Enter an agreed farming-loan grace period between 3 and 12 months.');
       return;
     }
 
@@ -756,6 +877,7 @@ export const renderLoanApplicationForm = async (params = {}) => {
       processing_fee: processingFee,
       processing_fee_paid: false,
       period,
+      grace_period_months: gracePeriod,
       purpose: rawData.purpose,
       status: 'pending',
       application_date: new Date(`${selectedApplicationDate}T12:00:00`).toISOString(),

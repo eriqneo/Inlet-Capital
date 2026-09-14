@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   calculateCollectedInterest,
-  getLoanInterestAmount
+  getLoanInterestAmount,
+  getRepaymentContractAmount
 } from '../src/core/repaymentAllocation.js';
 
 const loan = {
@@ -34,4 +35,9 @@ test('excludes fine amounts from interest allocation', () => {
   ];
 
   assert.equal(calculateCollectedInterest({ loan, repayments }), 500);
+});
+
+test('keeps collected fines out of loan repayment totals', () => {
+  assert.equal(getRepaymentContractAmount({ amount: 2500, fine_amount: 500 }), 2000);
+  assert.equal(getRepaymentContractAmount({ amount: 500, fine_amount: 500 }), 0);
 });

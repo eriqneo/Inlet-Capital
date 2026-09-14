@@ -51,14 +51,15 @@ export const openDebtRecoveryRenewal = (loan, onRenewed) => {
         quote = await loanService.recoveryAction(loan.id, { action: 'preview', period: Number(periodInput.value) });
         quoteArea.innerHTML = `
           <dl class="recovery-totals">
-            <dt>Unpaid principal</dt><dd>${formatMoney(quote.principal)}</dd>
+            <dt>Renewal unit</dt><dd>${quote.sourceUnit === 'du' ? 'D.U' : 'D.R.U'}</dd>
+            <dt>Renewal base</dt><dd>${formatMoney(quote.principal)}</dd>
             <dt>Interest (${quote.interestRate}%)</dt><dd>${formatMoney(quote.interest)}</dd>
             <dt>Carried fines</dt><dd>${formatMoney(quote.fines)}</dd>
             <dt><strong>Total payable (KES)</strong></dt><dd><strong>${formatMoney(quote.totalPayable)}</strong></dd>
             <dt>Restart date</dt><dd>${formatDate(quote.renewalDate)}</dd>
             <dt>Final due date</dt><dd>${formatDate(quote.installments.at(-1).due_date)}</dd>
           </dl>
-          <p class="text-sm text-muted">Interest replaces the previous unpaid interest. Fines are carried separately and do not attract interest.</p>
+          <p class="text-sm text-muted">The renewed loan uses this loan's interest rate. Fines are carried into the renewed loan and do not attract interest.</p>
           <details><summary>New repayment schedule</summary>
             <div class="table-responsive"><table class="table"><thead><tr><th>Due date</th><th>Installment</th><th>Carried fines</th></tr></thead>
             <tbody>${quote.installments.map(row => `<tr><td>${formatDate(row.due_date)}</td><td>${formatMoney(row.amount)}</td><td>${formatMoney(row.carried_fine)}</td></tr>`).join('')}</tbody></table></div>

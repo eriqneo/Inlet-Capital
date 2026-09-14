@@ -1,8 +1,51 @@
-import { formatMoney, formatDate } from '../core/utils.js';
+import { formatMoney, formatDate, formatPercent } from '../core/utils.js';
 
 const labels = { consistent: 'Consistent', caught_up: 'Caught up after late savings', behind: 'Savings behind', not_due: 'No completed weeks yet' };
 const statuses = { on_time: 'On time', late: 'Covered late', partial: 'Partly covered', missed: 'Missed' };
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+const getInconsistencyRate = (assessment) => assessment?.onTimeRate === null || assessment?.onTimeRate === undefined
+  ? null
+  : Math.max(0, 100 - (Number(assessment.onTimeRate) || 0));
+
+export const getSavingsConsistencySummary = (assessment) => {
+  if (!assessment || assessment.status === 'unavailable') {
+    return {
+      headline: 'Savings consistency could not be verified',
+      detail: 'Check the savings records, group meeting day and membership start date.',
+      tone: 'warning',
+      inconsistencyRate: null
+    };
+  }
+  if (!assessment.applicable) {
+    return {
+      headline: 'Savings consistency does not apply',
+      detail: 'This is an individual member outside group weekly savings rules.',
+      tone: 'success',
+      inconsistencyRate: null
+    };
+  }
+
+  const inconsistencyRate = getInconsistencyRate(assessment);
+  if (!assessment.requiresReview) {
+    return {
+      headline: 'Savings consistency is healthy',
+      detail: `On-time savings rate is ${assessment.onTimeRate === null ? '-' : formatPercent(assessment.onTimeRate)} with no shortfall.`,
+      tone: 'success',
+      inconsistencyRate
+    };
+  }
+
+  const parts = [];
+  if (inconsistencyRate !== null) parts.push(`inconsistent savings of ${formatPercent(inconsistencyRate)}`);
+  if (assessment.shortfall > 0) parts.push(`shortfall of KES ${formatMoney(assessment.shortfall)}`);
+  if (assessment.lateWeeks > 0) parts.push(`${assessment.lateWeeks} late week${assessment.lateWeeks === 1 ? '' : 's'}`);
+  return {
+    headline: `Note: this member has ${parts.join(', ') || 'inconsistent savings'}`,
+    detail: `${assessment.onTimeWeeks} of ${assessment.expectedWeeks} expected weeks were paid on time.`,
+    tone: 'warning',
+    inconsistencyRate
+  };
+};
 
 export const renderSavingsConsistency = (assessment, { history = false } = {}) => {
   if (!assessment || assessment.status === 'unavailable') return '<p role="status" class="text-muted">Savings consistency unavailable. Check the savings records, group meeting day and membership start date.</p>';
@@ -16,6 +59,7 @@ export const renderSavingsConsistency = (assessment, { history = false } = {}) =
       <div><dt>Deposits received</dt><dd>KES ${formatMoney(assessment.deposited)}</dd></div>
       <div><dt>Savings shortfall</dt><dd class="${assessment.shortfall ? 'text-danger' : 'text-success'}">KES ${formatMoney(assessment.shortfall)}</dd></div>
       <div><dt>Paid on time</dt><dd>${assessment.onTimeRate === null ? '-' : `${formatMoney(assessment.onTimeRate)}%`}</dd></div>
+      <div><dt>Inconsistent</dt><dd class="${assessment.requiresReview ? 'text-warning' : 'text-success'}">${getInconsistencyRate(assessment) === null ? '-' : formatPercent(getInconsistencyRate(assessment))}</dd></div>
     </dl>
     <p class="text-sm">${assessment.coveredWeeks} of ${assessment.expectedWeeks} weeks covered · ${assessment.lateWeeks} covered late · ${assessment.outstandingWeeks} outstanding</p>
     ${assessment.advance > 0 ? `<p class="text-xs text-muted">Credit towards future weeks: KES ${formatMoney(assessment.advance)}</p>` : ''}
@@ -24,12 +68,13 @@ export const renderSavingsConsistency = (assessment, { history = false } = {}) =
 };
 
 export const confirmSavingsException = ({ assessment, member }) => new Promise(resolve => {
+  const summary = getSavingsConsistencySummary(assessment);
   const dialog = document.createElement('dialog');
   dialog.className = 'savings-review-dialog';
   dialog.setAttribute('aria-labelledby', 'savings-review-title');
   dialog.innerHTML = `
     <form><h2 id="savings-review-title" class="text-lg">Savings consistency warning</h2>
-    <p><strong>${escapeHtml(member.full_name || member.reg_no)}</strong> has not saved consistently. ${assessment.shortfall ? 'Some weekly contributions are still outstanding.' : 'The missed contributions have been caught up, but some were paid late.'}</p>
+    <p><strong>${escapeHtml(member.full_name || member.reg_no)}</strong>: ${escapeHtml(summary.headline)}. ${assessment.shortfall ? 'Some weekly contributions are still outstanding.' : 'The missed contributions have been caught up, but some were paid late.'}</p>
     ${renderSavingsConsistency(assessment)}
     <label class="form-label" for="savings-exception-reason">Reason for proceeding</label>
     <textarea id="savings-exception-reason" class="form-control" rows="3" required maxlength="1000"></textarea>
@@ -60,6 +105,52 @@ export const confirmSavingsException = ({ assessment, member }) => new Promise(r
     finish(reason);
   };
   dialog.querySelector('textarea').oninput = event => event.target.setCustomValidity('');
+  document.body.appendChild(dialog);
+  dialog.showModal();
+});
+
+export const confirmSavingsProceed = ({
+  assessment,
+  member,
+  title = 'Savings consistency warning',
+  confirmText = 'Proceed anyway',
+  cancelText = 'Cancel'
+}) => new Promise(resolve => {
+  const summary = getSavingsConsistencySummary(assessment);
+  const dialog = document.createElement('dialog');
+  dialog.className = 'savings-review-dialog';
+  dialog.setAttribute('aria-labelledby', 'savings-proceed-title');
+  dialog.innerHTML = `
+    <form>
+      <h2 id="savings-proceed-title" class="text-lg">${escapeHtml(title)}</h2>
+      <p><strong>${escapeHtml(member?.full_name || member?.reg_no || 'This member')}</strong>: ${escapeHtml(summary.headline)}.</p>
+      <p class="text-sm text-muted">${escapeHtml(summary.detail)}</p>
+      ${renderSavingsConsistency(assessment, { history: true })}
+      <div class="savings-review-actions">
+        <button type="button" class="btn btn-outline" data-cancel autofocus>${escapeHtml(cancelText)}</button>
+        <button type="submit" class="btn btn-primary">${escapeHtml(confirmText)}</button>
+      </div>
+    </form>`;
+  const previousFocus = document.activeElement;
+  let settled = false;
+  const finish = value => {
+    if (settled) return;
+    settled = true;
+    window.removeEventListener('hashchange', onNavigation);
+    dialog.close();
+    dialog.remove();
+    if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    resolve(value);
+  };
+  const onNavigation = () => finish(false);
+  window.addEventListener('hashchange', onNavigation);
+  dialog.querySelector('[data-cancel]').onclick = () => finish(false);
+  dialog.oncancel = event => { event.preventDefault(); finish(false); };
+  dialog.onclick = event => { if (event.target === dialog) finish(false); };
+  dialog.querySelector('form').onsubmit = event => {
+    event.preventDefault();
+    finish(true);
+  };
   document.body.appendChild(dialog);
   dialog.showModal();
 });

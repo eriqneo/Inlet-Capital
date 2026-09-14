@@ -18,6 +18,19 @@ test('DRU starts at 90 Nairobi calendar days, including loans whose term has not
   assert.equal(isDebtRecoveryLoan(loan, { referenceDate: '2026-03-31T21:00:00Z' }), true);
 });
 
+test('farming-loan DRU timing starts after the agreed first repayment date', () => {
+  const farmingLoan = {
+    ...loan,
+    type: 'farming',
+    grace_period_months: 3,
+    disbursement_date: '2026-01-12T12:00:00+03:00'
+  };
+
+  assert.equal(getRecoveryAgeDays(farmingLoan, '2026-04-12T12:00:00+03:00'), 0);
+  assert.equal(isDebtRecoveryLoan(farmingLoan, { referenceDate: '2026-07-10T12:00:00+03:00' }), false);
+  assert.equal(isDebtRecoveryLoan(farmingLoan, { referenceDate: '2026-07-11T12:00:00+03:00' }), true);
+});
+
 test('any positive receipt, savings settlement, or recorded schedule payment excludes DRU', () => {
   for (const payments of [
     { repayments: [{ amount: 1 }] },
@@ -35,8 +48,9 @@ test('non-disbursed, settled and invalid-date loans cannot enter DRU', () => {
   }
 });
 
-test('renewal replaces interest at 20 percent, carries fines once, and resets eligibility', () => {
+test('DRU renewal replaces interest at 20 percent, carries fines once, and resets eligibility', () => {
   const quote = buildDebtRecoveryRenewal(options);
+  assert.equal(quote.sourceUnit, 'dru');
   assert.equal(quote.principal, 15000);
   assert.equal(quote.interest, 3000);
   assert.equal(quote.fines, 1000);
@@ -50,6 +64,42 @@ test('renewal replaces interest at 20 percent, carries fines once, and resets el
   const repayments = [{ amount: 2000, fine_amount: 1000, date: referenceDate.toISOString() }];
   assert.equal(calculateLoanOutstandingBalance({ loan: renewed, schedules: quote.installments, referenceDate, repayments, penaltyAmount: 500 }), 17000);
   assert.equal(calculateLoanPenaltyState({ schedules: quote.installments, referenceDate, repayments, penaltyAmount: 500 }).outstandingFine, 0);
+});
+
+test('DU renewal starts from unpaid principal after partial payments', () => {
+  const quote = buildDebtRecoveryRenewal({
+    loan,
+    schedules,
+    repayments: [
+      { amount: 3000, fine_amount: 0, date: '2026-02-01T09:00:00+03:00' },
+      { amount: 3000, fine_amount: 0, date: '2026-03-01T09:00:00+03:00' }
+    ],
+    referenceDate: '2026-07-02T09:00:00+03:00',
+    period: 8,
+    penaltyAmount: 500
+  });
+
+  assert.equal(quote.sourceUnit, 'du');
+  assert.equal(quote.principal, 10000);
+  assert.equal(quote.interest, 2000);
+  assert.equal(quote.liability, 12000);
+  assert.equal(quote.installments.length, 8);
+  assert.equal(quote.installments.reduce((sum, s) => sum + Math.round(s.amount * 100), 0), 1200000);
+});
+
+test('renewal uses the loan interest rate, including special offers', () => {
+  const quote = buildDebtRecoveryRenewal({
+    loan: { ...loan, interest_rate: 10, interest_amount: 1500, total_liability: 16500 },
+    schedules: schedules.map(row => ({ ...row, amount: 2750 })),
+    referenceDate,
+    period: 6,
+    penaltyAmount: 500
+  });
+
+  assert.equal(quote.principal, 15000);
+  assert.equal(quote.interestRate, 10);
+  assert.equal(quote.interest, 1500);
+  assert.equal(quote.liability, 16500);
 });
 
 test('renewal validates period, payment eligibility and complete source schedule', () => {

@@ -7,6 +7,7 @@ import { pb } from '../../services/api.js';
 import { getMemberActivityStatus, getValidActivityDate } from '../../core/memberActivity.js';
 import { authService } from '../../services/authService.js';
 import { canUseOfficerFilter, loadOfficerOptions, populateOfficerSelect } from '../../core/officerScope.js';
+import { calculateAge } from '../../core/utils.js';
 
 export const renderMemberList = async () => {
   const container = document.createElement('div');
@@ -180,6 +181,8 @@ export const renderMemberList = async () => {
       const isSuspended = String(m.status || '').toLowerCase() === 'suspended';
       const groupName = m.expand?.group?.name || (m.group ? 'Group member' : 'Individual');
       const groupCode = m.expand?.group?.group_id || '';
+      const memberDob = m.dob || m.date_of_birth || m.dateOfBirth || m.birth_date || '';
+      const memberAge = calculateAge(memberDob);
       return `
       <tr class="${isSuspended ? 'member-row-suspended' : ''}">
         <td>
@@ -190,6 +193,7 @@ export const renderMemberList = async () => {
             <div class="${isSuspended ? 'member-suspended-identity' : ''}">
               <div class="font-semibold">${m.full_name || m.fullName}</div>
               <div class="text-xs text-muted">${m.reg_no || m.regNo}</div>
+              <div class="text-xs text-muted">${memberAge === null ? 'Age: —' : `Age: ${memberAge} yrs`}</div>
             </div>
           </div>
         </td>

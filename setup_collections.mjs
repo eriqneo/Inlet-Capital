@@ -601,6 +601,12 @@ async function run() {
         console.log('Loans collection delete rule restricted to super admins.');
       }
       const loanWorkflowStatuses = ['pending', 'approved', 'partial_approved', 'disbursed', 'completed', 'written_off', 'closed', 'rejected', 'expired'];
+      const loanTypeField = loansColl.fields.find(field => field.name === 'type');
+      if (loanTypeField?.type === 'select' && !(loanTypeField.values || []).includes('farming')) {
+        loanTypeField.values = [...(loanTypeField.values || []), 'farming'];
+        changed = true;
+        console.log('Loans collection updated with farming loan product.');
+      }
       const loanStatusField = loansColl.fields.find(field => field.name === 'status');
       if (loanStatusField) {
         const currentValues = loanStatusField.values || [];
@@ -630,6 +636,7 @@ async function run() {
         { name: 'processing_fee_rate', type: 'number', required: false },
         { name: 'processing_fee_paid', type: 'bool', required: false },
         { name: 'processing_fee_details', type: 'json', required: false },
+        { name: 'grace_period_months', type: 'number', required: false },
         { name: 'application_date', type: 'date', required: false },
         { name: 'approved_date', type: 'date', required: false },
         { name: 'disbursement_date', type: 'date', required: false },

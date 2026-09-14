@@ -1,6 +1,7 @@
 import { loanService } from '../../services/loanService.js';
-import { confirmSavingsException } from '../../components/SavingsConsistency.js';
+import { confirmSavingsException, confirmSavingsProceed } from '../../components/SavingsConsistency.js';
 import { settingsService } from '../../services/settingsService.js';
+import { loadSavingsConsistencyAssessment } from '../../services/savingsDisbursementReview.js';
 import { navigate } from '../../core/router.js';
 import { formatDate, formatMoney } from '../../core/utils.js';
 import { pb } from '../../services/api.js'; // We'll use pb to get all loans for the queue
@@ -112,6 +113,37 @@ export const renderLoanApprovalQueue = async (params = {}) => {
     '"': '&quot;',
     "'": '&#039;'
   }[char]));
+  const normalizeSecurityItems = (loan) => {
+    const source = Array.isArray(loan?.collaterals)
+      ? loan.collaterals
+      : Array.isArray(loan?.securities)
+        ? loan.securities
+        : [];
+
+    return source
+      .map(item => {
+        if (typeof item === 'string') return item.trim();
+        return String(item?.item || item?.name || item?.description || '').trim();
+      })
+      .filter(Boolean);
+  };
+  const needsSavingsWarning = (assessment) => assessment?.status === 'unavailable' || Boolean(assessment?.requiresReview);
+  const confirmSavingsBeforeApproval = async (loan, approvalDateValue, actionLabel) => {
+    if (!loan?.member) return true;
+    const { member, assessment } = await loadSavingsConsistencyAssessment({
+      api: pb,
+      loan,
+      referenceDate: dateInputToIso(approvalDateValue)
+    });
+    if (!needsSavingsWarning(assessment)) return true;
+    return confirmSavingsProceed({
+      member,
+      assessment,
+      title: 'Savings warning before approval',
+      confirmText: `${actionLabel} anyway`,
+      cancelText: 'Stop approval'
+    });
+  };
 
   container.innerHTML = `
     <div style="margin-bottom: 24px; display: flex; align-items: center; gap: 16px;">
@@ -148,6 +180,7 @@ export const renderLoanApprovalQueue = async (params = {}) => {
         ` : pendingLoans.map(l => {
             const feePaid = !!l.processing_fee_paid;
             const clientName = l.expand?.member?.full_name || l.expand?.group?.name || 'Unknown Client';
+            const securityItems = normalizeSecurityItems(l);
             return `
           <div class="card" style="border-left: 4px solid ${feePaid ? 'var(--success)' : 'var(--warning)'}; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.02);">
             <!-- Header Row -->
@@ -205,15 +238,23 @@ export const renderLoanApprovalQueue = async (params = {}) => {
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; background: var(--bg-light); padding: 16px; border-radius: 8px;">
               <div>
                 <div class="text-xs text-muted">Securities</div>
-                <div class="text-sm font-semibold">${l.collaterals?.length || 0} Items provided</div>
+                <div class="text-sm font-semibold">${securityItems.length ? escapeHtml(securityItems.join(', ')) : 'None provided'}</div>
               </div>
               <div>
                 <div class="text-xs text-muted">Guarantor</div>
-                <div class="text-sm font-semibold">${l.guarantor?.name || 'None'}</div>
+                <div class="text-sm font-semibold">${escapeHtml(l.guarantor?.name || 'None')}</div>
+              </div>
+              <div>
+                <div class="text-xs text-muted">Guarantor Phone</div>
+                <div class="text-sm font-semibold">${escapeHtml(l.guarantor?.phone || '—')}</div>
+              </div>
+              <div>
+                <div class="text-xs text-muted">Guarantor ID No.</div>
+                <div class="text-sm font-semibold">${escapeHtml(l.guarantor?.id_number || '—')}</div>
               </div>
               <div>
                 <div class="text-xs text-muted">Purpose</div>
-                <div class="text-sm">${l.purpose}</div>
+                <div class="text-sm">${escapeHtml(l.purpose || '—')}</div>
               </div>
               <div>
                 <div class="text-xs text-muted">Total Liability</div>
@@ -578,6 +619,11 @@ export const renderLoanApprovalQueue = async (params = {}) => {
         restoreButton();
         return;
       }
+      const savingsConfirmed = await confirmSavingsBeforeApproval(loan, fullApprovalDate.value, 'Approve');
+      if (!savingsConfirmed) {
+        restoreButton();
+        return;
+      }
 
       await loanService.update(activeFullApprovalLoanId, {
         status: 'approved',
@@ -615,6 +661,11 @@ export const renderLoanApprovalQueue = async (params = {}) => {
       const interestAmount = amount * (interestRate / 100);
       if (isInputDateBeforeRecordDate(partialApprovalDate.value, loan.application_date)) {
         if (window.notify) window.notify.error('Approval date cannot be before the application date.');
+        restoreButton();
+        return;
+      }
+      const savingsConfirmed = await confirmSavingsBeforeApproval(loan, partialApprovalDate.value, 'Partially approve');
+      if (!savingsConfirmed) {
         restoreButton();
         return;
       }

@@ -8,7 +8,8 @@ import { renderPagination } from '../../components/Pagination.js';
 import { formatDate, formatMoney, formatPercent } from '../../core/utils.js';
 import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
 import { getScheduleRemaining, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
-import { calculateLoanPenaltyState, getRepaymentPrincipalAmount } from '../../core/loanPenalty.js';
+import { calculateLoanPenaltyState } from '../../core/loanPenalty.js';
+import { calculateLoanRepaymentBehavior } from '../../core/loanRepaymentBehavior.js';
 import { getReturnTo } from '../../core/navigation.js';
 import { memberCommentService } from '../../services/memberCommentService.js';
 import { allocateRepayment, getRepaymentContractAmount, getSettlementContractAmount } from '../../core/repaymentAllocation.js';
@@ -128,25 +129,31 @@ export const renderLoanDetails = async (params) => {
   const totalCollateralValue = collaterals.reduce((sum, item) => sum + (Number(item?.value) || 0), 0);
   const canEditSecurities = authService.hasRole('super_admin', 'admin');
   const getCollateralItemName = (item, index) => item?.item || item?.name || item?.description || `Security ${index + 1}`;
-  const renderSecurityPhoto = (photo, itemName) => {
-    const src = resolveImageSource(photo);
-    return src
-      ? `<img src="${src}" alt="${escapeHtml(itemName)}" style="width: 100%; height: 100%; object-fit: cover;" />`
-      : '<span style="font-size: 1.8rem; color: var(--text-muted);">▣</span>';
-  };
+  const renderEyeIcon = () => `
+    <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"></path>
+      <circle cx="12" cy="12" r="3"></circle>
+    </svg>
+  `;
+  const renderCameraIcon = () => `
+    <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M14.5 4 16 7h3a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h3l1.5-3h5Z"></path>
+      <circle cx="12" cy="13" r="3"></circle>
+    </svg>
+  `;
   const renderSecurityActions = (item, index) => {
     const hasPhoto = Boolean(resolveImageSource(item?.photo));
     return `
       <div class="security-card-actions" data-security-actions="${index}">
         ${hasPhoto ? `
           <button type="button" class="security-action-button security-view-btn" data-index="${index}" title="View security picture" aria-label="View security picture">
-            <span aria-hidden="true">⊙</span>
+            ${renderEyeIcon()}
             <span>View</span>
           </button>
         ` : ''}
         ${canEditSecurities ? `
           <button type="button" class="security-action-button muted security-photo-btn" data-index="${index}" title="${hasPhoto ? 'Update security picture' : 'Add security picture'}" aria-label="${hasPhoto ? 'Update security picture' : 'Add security picture'}">
-            <span aria-hidden="true">${hasPhoto ? '↻' : '+'}</span>
+            ${renderCameraIcon()}
             <span>${hasPhoto ? 'Update' : 'Add Picture'}</span>
           </button>
         ` : ''}
@@ -163,32 +170,40 @@ export const renderLoanDetails = async (params) => {
     }
 
     return `
-      <div style="padding: 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px;">
-        ${collaterals.map((item, index) => {
+      <div class="security-list-wrap">
+        <table class="security-list-table">
+          <thead>
+            <tr>
+              <th>Security Item</th>
+              <th class="text-right">Estimated Value</th>
+              <th>Picture</th>
+              <th class="text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${collaterals.map((item, index) => {
           const itemName = getCollateralItemName(item, index);
           const value = Number(item?.value) || 0;
           const hasPhoto = Boolean(resolveImageSource(item?.photo));
           return `
-            <div data-security-card="${index}" style="border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; background: white;">
-              <div class="security-preview-frame" data-security-preview="${index}">
-                ${renderSecurityPhoto(item?.photo, itemName)}
-                ${hasPhoto ? `
-                  <button type="button" class="security-preview-view security-view-btn" data-index="${index}" title="View security picture" aria-label="View ${escapeHtml(itemName)} security picture">
-                    <span aria-hidden="true">⊙</span>
-                    <span>View</span>
-                  </button>
-                ` : ''}
-              </div>
-              <div style="padding: 14px;">
-                <div class="font-semibold" style="margin-bottom: 6px;">${escapeHtml(itemName)}</div>
-                <div class="text-xs text-muted">Estimated Value</div>
-                <div class="font-semibold" style="color: var(--primary);">KES ${formatMoney(value)}</div>
-                <div data-security-meta="${index}" class="text-xs text-muted" style="margin-top: 6px;">${item?.photo_size_kb ? `Photo: ${formatMoney(item.photo_size_kb)} KB` : 'No photo attached'}</div>
-                ${renderSecurityActions(item, index)}
-              </div>
-            </div>
+            <tr data-security-row="${index}">
+              <td>
+                <div class="font-semibold">${escapeHtml(itemName)}</div>
+                ${item?.added_at ? `<div class="text-xs text-muted" style="margin-top: 3px;">Added ${formatDate(item.added_at)}</div>` : ''}
+              </td>
+              <td class="text-right font-semibold" style="color: var(--primary);">KES ${formatMoney(value)}</td>
+              <td data-security-meta="${index}">
+                <span class="security-photo-status ${hasPhoto ? 'ready' : ''}">
+                  ${hasPhoto ? `${renderEyeIcon()} Picture attached` : 'No picture attached'}
+                </span>
+                ${item?.photo_size_kb ? `<div class="text-xs text-muted" style="margin-top: 4px;">${formatMoney(item.photo_size_kb)} KB</div>` : ''}
+              </td>
+              <td class="text-right">${renderSecurityActions(item, index)}</td>
+            </tr>
           `;
-        }).join('')}
+            }).join('')}
+          </tbody>
+        </table>
       </div>
     `;
   };
@@ -209,11 +224,11 @@ export const renderLoanDetails = async (params) => {
     settlements: balanceOffs,
     penaltyAmount: settings.penalty_amount
   });
-  const totalPaid = repayments.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+  const totalPaid = repayments.reduce((sum, r) => sum + getRepaymentContractAmount(r), 0);
   const totalBalancedOff = balanceOffs.reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
   const activeWriteOffs = writeOffs.filter(item => item.status !== 'reversed');
   const totalWrittenOff = activeWriteOffs.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-  const principalPaid = repayments.reduce((sum, r) => sum + getRepaymentPrincipalAmount(r), 0)
+  const principalPaid = repayments.reduce((sum, r) => sum + getRepaymentContractAmount(r), 0)
     + balanceOffs.reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
   const contractualBalanceBeforeWriteOff = Math.max(0, totalLiability - principalPaid);
   const balanceBeforeWriteOff = Math.max(0, contractualBalanceBeforeWriteOff + penaltyState.outstandingFine);
@@ -225,6 +240,12 @@ export const renderLoanDetails = async (params) => {
   const percentRepaid = totalLiability > 0
     ? Math.min(100, (principalPaid / totalLiability) * 100)
     : (['completed', 'written_off', 'closed'].includes(loan.status) ? 100 : 0);
+  const repaymentBehavior = calculateLoanRepaymentBehavior({
+    schedules: schedule,
+    repayments,
+    settlements: balanceOffs,
+    penaltyAmount: settings.penalty_amount
+  });
 
   let historyPage = 1;
   let balanceOffPage = 1;
@@ -432,7 +453,7 @@ export const renderLoanDetails = async (params) => {
           </div>
           ` : ''}
 
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px;">
+	          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px;">
             <div>
               <div class="text-sm text-muted" style="margin-bottom: 8px;">Outstanding Balance</div>
               <div style="font-size: 2.5rem; font-weight: 700; color: ${outstandingBalance > 0 ? 'var(--danger)' : 'var(--success)'};">
@@ -460,7 +481,7 @@ export const renderLoanDetails = async (params) => {
                 <div class="font-semibold">KES ${formatMoney(totalLiability)}</div>
               </div>
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
-                <div class="text-xs text-muted">Total Repaid</div>
+                <div class="text-xs text-muted">Loan Repayments</div>
                 <div class="font-semibold text-success">KES ${formatMoney(totalPaid)}</div>
               </div>
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
@@ -475,6 +496,12 @@ export const renderLoanDetails = async (params) => {
                 <div class="text-xs text-muted">Period</div>
                 <div class="font-semibold">${loan.period} Months</div>
               </div>
+              ${loan.type === 'farming' ? `
+                <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
+                  <div class="text-xs text-muted">Farming Grace Period</div>
+                  <div class="font-semibold">${Number(loan.grace_period_months) || 0} Months</div>
+                </div>
+              ` : ''}
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
                 <div class="text-xs text-muted">Application Date</div>
                 <div class="font-semibold">${formatDate(loan.application_date)}</div>
@@ -491,10 +518,53 @@ export const renderLoanDetails = async (params) => {
                 <div class="text-xs text-muted">Applicant Reference</div>
                 <div class="font-semibold">${loan.member || loan.group || 'N/A'}</div>
               </div>
-            </div>
-          </div>
+	            </div>
+	          </div>
 
-          <div style="margin-top: 24px; border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden;">
+	          <div style="margin-top: 24px; border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden;">
+	            <div style="padding: 14px 18px; background: var(--bg-light); border-bottom: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+	              <div>
+	                <div class="text-xs text-muted" style="font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;">Repayment Discipline</div>
+	                <div class="text-sm text-muted">Monthly schedule performance by amount and payment timing</div>
+	              </div>
+	              <span class="badge" style="font-size: 0.65rem; background: ${repaymentBehavior.ratingColor}; color: white;">${repaymentBehavior.rating}</span>
+	            </div>
+	            <div style="padding: 18px;">
+	              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;">
+	                <div style="padding: 14px; background: var(--bg-light); border-radius: 8px;">
+	                  <div class="text-xs text-muted">Behaviour Score</div>
+	                  <div class="font-semibold" style="color: ${repaymentBehavior.ratingColor};">${repaymentBehavior.score === null ? 'New' : formatPercent(repaymentBehavior.score)}</div>
+	                </div>
+	                <div style="padding: 14px; background: var(--bg-light); border-radius: 8px;">
+	                  <div class="text-xs text-muted">On-time Months</div>
+	                  <div class="font-semibold">${repaymentBehavior.onTimeMonths}/${repaymentBehavior.dueMonths}</div>
+	                </div>
+	                <div style="padding: 14px; background: var(--bg-light); border-radius: 8px;">
+	                  <div class="text-xs text-muted">Late Months</div>
+	                  <div class="font-semibold" style="color: ${repaymentBehavior.lateMonths > 0 ? 'var(--warning)' : 'var(--text-main)'};">${repaymentBehavior.lateMonths}</div>
+	                </div>
+	                <div style="padding: 14px; background: var(--bg-light); border-radius: 8px;">
+	                  <div class="text-xs text-muted">Missed Months</div>
+	                  <div class="font-semibold" style="color: ${repaymentBehavior.missedMonths > 0 ? 'var(--danger)' : 'var(--text-main)'};">${repaymentBehavior.missedMonths}</div>
+	                </div>
+	                <div style="padding: 14px; background: var(--bg-light); border-radius: 8px;">
+	                  <div class="text-xs text-muted">Due Collection</div>
+	                  <div class="font-semibold">${formatPercent(repaymentBehavior.paidRate)}</div>
+	                  <div class="text-xs text-muted" style="margin-top: 2px;">KES ${formatMoney(repaymentBehavior.paidAgainstDue)} / ${formatMoney(repaymentBehavior.expectedDue)}</div>
+	                </div>
+	              </div>
+	              <div style="margin-top: 16px;">
+	                <div style="height: 8px; background: var(--bg-light); border-radius: 999px; overflow: hidden; border: 1px solid var(--border-color);">
+	                  <div style="height: 100%; width: ${repaymentBehavior.score === null ? 0 : Math.max(0, Math.min(100, repaymentBehavior.score))}%; background: ${repaymentBehavior.ratingColor}; transition: width 0.3s ease;"></div>
+	                </div>
+	                <div class="text-sm text-muted" style="margin-top: 8px;">
+	                  ${repaymentBehavior.summary}${repaymentBehavior.unverifiedPaidMonths > 0 ? ` ${repaymentBehavior.unverifiedPaidMonths} paid month${repaymentBehavior.unverifiedPaidMonths === 1 ? '' : 's'} need repayment-date verification.` : ''}
+	                </div>
+	              </div>
+	            </div>
+	          </div>
+
+	          <div style="margin-top: 24px; border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden;">
             <div style="padding: 14px 18px; background: var(--bg-light); border-bottom: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between; gap: 12px;">
               <div>
                 <div class="text-xs text-muted" style="font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;">Guarantor Details</div>
@@ -536,11 +606,19 @@ export const renderLoanDetails = async (params) => {
                 <div class="text-sm text-muted">Items pledged against this loan file</div>
               </div>
               <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                <span class="badge badge-outline" style="font-size: 0.65rem;">${collaterals.length} ITEM${collaterals.length === 1 ? '' : 'S'}</span>
-                <span class="badge badge-primary" style="font-size: 0.65rem;">KES ${formatMoney(totalCollateralValue)}</span>
+                <span class="badge badge-outline" id="security-count-badge" style="font-size: 0.65rem;">${collaterals.length} ITEM${collaterals.length === 1 ? '' : 'S'}</span>
+                <span class="badge badge-primary" id="security-value-badge" style="font-size: 0.65rem;">KES ${formatMoney(totalCollateralValue)}</span>
+                ${canEditSecurities ? `
+                  <button type="button" class="btn btn-outline btn-xs" id="add-security-btn" style="display: inline-flex; align-items: center; gap: 6px;">
+                    <span aria-hidden="true">+</span>
+                    Add Security
+                  </button>
+                ` : ''}
               </div>
             </div>
-            ${renderSecuritiesOverview()}
+            <div id="securities-overview">
+              ${renderSecuritiesOverview()}
+            </div>
           </div>
         </div>
 
@@ -554,7 +632,7 @@ export const renderLoanDetails = async (params) => {
                   <th>Notes</th>
                   <th>Recorded By</th>
                   <th class="text-right">Fine</th>
-                  <th class="text-right">Amount</th>
+                  <th class="text-right">Repayment</th>
                   ${(canEditRepayments || canDeleteRepayments) ? '<th class="text-right">Actions</th>' : ''}
                 </tr>
               </thead>
@@ -572,9 +650,9 @@ export const renderLoanDetails = async (params) => {
           ` : ''}
           <form id="payment-form" style="max-width: 500px;">
             <div class="form-group">
-              <label class="form-label">Payment Amount (KES)</label>
+              <label class="form-label">Total Amount Received (KES)</label>
               <input type="number" name="amount" class="form-control" required min="1" step="1" placeholder="Enter total amount received" />
-              <p class="text-xs text-muted" style="margin-top: 4px;">Loan balance due: KES ${formatMoney(outstandingBalance)}. Include any fine collected in the total amount.</p>
+              <p class="text-xs text-muted" style="margin-top: 4px;">Loan balance due: KES ${formatMoney(outstandingBalance)}. Any fine collected will be split away from the loan repayment.</p>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
               <div class="form-group" style="background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.22); border-radius: 8px; padding: 12px;">
@@ -771,11 +849,11 @@ export const renderLoanDetails = async (params) => {
           <input type="hidden" name="repayment_id" />
           <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px;">
             <div class="form-group">
-              <label class="form-label">Payment Amount (KES)</label>
+              <label class="form-label">Total Amount Received (KES)</label>
               <input type="number" name="amount" class="form-control" min="1" step="1" required />
             </div>
             <div class="form-group">
-              <label class="form-label">Fine (Optional)</label>
+              <label class="form-label">Fine Collected (Optional)</label>
               <input type="number" name="fine_amount" class="form-control" min="0" step="1" />
             </div>
             <div class="form-group">
@@ -860,6 +938,39 @@ export const renderLoanDetails = async (params) => {
           <div style="display: flex; justify-content: flex-end; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border-color);">
             <button type="button" class="btn btn-outline" id="write-off-cancel">Cancel</button>
             <button type="submit" class="btn btn-primary" style="background: var(--danger); border-color: var(--danger);">Write Off Loan</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="add-security-modal" class="security-editor-modal" role="dialog" aria-modal="true" aria-labelledby="add-security-title">
+      <div class="security-editor-shell">
+        <div class="security-editor-header">
+          <div>
+            <div class="text-xs text-muted" style="font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;">Loan Collateral</div>
+            <h2 class="text-lg" id="add-security-title" style="margin-top: 4px;">Add Security</h2>
+          </div>
+          <button type="button" class="security-editor-close" id="add-security-close" aria-label="Close add security form">&times;</button>
+        </div>
+        <form id="add-security-form" class="security-editor-body">
+          <div class="form-group">
+            <label class="form-label">Security Item</label>
+            <input type="text" name="item" class="form-control" required placeholder="e.g. Motorbike, laptop, title deed" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Estimated Value (KES)</label>
+            <input type="number" name="value" class="form-control" min="0" step="0.01" required placeholder="0.00" />
+          </div>
+          <div class="security-editor-photo">
+            <div id="add-security-preview" class="security-editor-preview">
+              <span class="text-sm text-muted">No picture attached</span>
+            </div>
+            <button type="button" class="btn btn-outline btn-sm" id="add-security-photo-btn">Capture Picture</button>
+            <input type="hidden" name="photo" />
+          </div>
+          <div style="display: flex; justify-content: flex-end; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border-color);">
+            <button type="button" class="btn btn-outline" id="add-security-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save Security</button>
           </div>
         </form>
       </div>
@@ -960,55 +1071,69 @@ export const renderLoanDetails = async (params) => {
         background: rgba(239, 68, 68, 0.06);
       }
       .security-card-actions {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
-        gap: 8px;
-        margin-top: 10px;
-      }
-      .security-preview-frame {
-        height: 128px;
-        position: relative;
-        background: var(--bg-light);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        overflow: hidden;
-        border-bottom: 1px solid var(--border-color);
-      }
-      .security-preview-frame img {
-        transition: transform 0.24s ease, filter 0.24s ease;
-      }
-      .security-preview-frame:hover img {
-        transform: scale(1.05);
-        filter: saturate(1.06);
-      }
-      .security-preview-view {
-        position: absolute;
-        right: 10px;
-        bottom: 10px;
-        height: 32px;
-        padding: 0 12px;
-        border-radius: 999px;
-        border: 1px solid rgba(255, 255, 255, 0.65);
-        background: rgba(15, 37, 69, 0.84);
-        color: #fff;
         display: inline-flex;
         align-items: center;
-        gap: 6px;
-        font-weight: 700;
-        font-size: 0.78rem;
-        cursor: pointer;
-        box-shadow: 0 10px 24px rgba(8, 18, 35, 0.24);
-        backdrop-filter: blur(6px);
-        transition: transform 0.18s ease, background 0.18s ease;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: 8px;
       }
-      .security-preview-view:hover {
-        transform: translateY(-1px);
-        background: rgba(15, 37, 69, 0.94);
+      .security-list-wrap {
+        padding: 14px;
+        overflow-x: auto;
+      }
+      .security-list-table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        min-width: 680px;
+      }
+      .security-list-table th {
+        padding: 10px 12px;
+        text-align: left;
+        color: var(--text-muted);
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        border-bottom: 1px solid var(--border-color);
+        background: rgba(27, 61, 114, 0.03);
+      }
+      .security-list-table th:first-child {
+        border-top-left-radius: 8px;
+      }
+      .security-list-table th:last-child {
+        border-top-right-radius: 8px;
+      }
+      .security-list-table td {
+        padding: 12px;
+        border-bottom: 1px solid var(--border-color);
+        vertical-align: middle;
+        background: #fff;
+      }
+      .security-list-table tr:last-child td {
+        border-bottom: none;
+      }
+      .security-photo-status {
+        min-height: 30px;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 5px 10px;
+        border-radius: 999px;
+        background: rgba(107, 114, 128, 0.08);
+        color: var(--text-muted);
+        font-size: 0.78rem;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      .security-photo-status.ready {
+        background: rgba(16, 185, 129, 0.1);
+        color: var(--success);
       }
       .security-action-button {
-        min-height: 34px;
-        border-radius: 8px;
+        min-height: 32px;
+        border-radius: 7px;
+        padding: 0 10px;
         border: 1px solid var(--primary);
         background: var(--primary);
         color: #fff;
@@ -1033,6 +1158,70 @@ export const renderLoanDetails = async (params) => {
       .security-action-button.muted:hover {
         border-color: var(--primary);
         background: rgba(27, 61, 114, 0.04);
+      }
+      .security-editor-modal {
+        display: none;
+        position: fixed;
+        z-index: 1210;
+        inset: 0;
+        background: rgba(8, 18, 35, 0.62);
+        backdrop-filter: blur(6px);
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }
+      .security-editor-shell {
+        width: min(520px, 100%);
+        background: #fff;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 22px 54px rgba(8, 18, 35, 0.28);
+        animation: securityViewerPop 0.2s ease-out;
+      }
+      .security-editor-header {
+        padding: 18px 22px;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+      }
+      .security-editor-close {
+        width: 38px;
+        height: 38px;
+        border-radius: 8px;
+        border: 1px solid var(--border-color);
+        background: #fff;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 1.5rem;
+        line-height: 1;
+      }
+      .security-editor-body {
+        padding: 22px;
+        display: grid;
+        gap: 16px;
+      }
+      .security-editor-photo {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+      }
+      .security-editor-preview {
+        height: 118px;
+        border: 1px dashed var(--border-color);
+        border-radius: 10px;
+        background: var(--bg-light);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+      .security-editor-preview img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
       }
       .security-viewer-modal {
         display: none;
@@ -1164,6 +1353,15 @@ export const renderLoanDetails = async (params) => {
         .security-viewer-details .btn {
           grid-column: 1 / -1;
         }
+        .security-list-wrap {
+          padding: 10px;
+        }
+        .security-list-table {
+          min-width: 620px;
+        }
+        .security-editor-photo {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   `;
@@ -1181,8 +1379,40 @@ export const renderLoanDetails = async (params) => {
   const securityViewerOpen = container.querySelector('#security-viewer-open');
   const securityViewerPrev = container.querySelector('#security-viewer-prev');
   const securityViewerNext = container.querySelector('#security-viewer-next');
+  const securitiesOverviewEl = container.querySelector('#securities-overview');
+  const securityCountBadge = container.querySelector('#security-count-badge');
+  const securityValueBadge = container.querySelector('#security-value-badge');
+  const addSecurityModal = container.querySelector('#add-security-modal');
+  const addSecurityForm = container.querySelector('#add-security-form');
+  const addSecurityPreview = container.querySelector('#add-security-preview');
+  const addSecurityPhotoBtn = container.querySelector('#add-security-photo-btn');
   let activeSecurityIndex = null;
   let activeSecuritySource = '';
+  let newSecurityPhoto = null;
+  let newSecurityPhotoMeta = null;
+
+  const getTotalCollateralValue = () => collaterals.reduce((sum, item) => sum + (Number(item?.value) || 0), 0);
+
+  const refreshSecuritiesOverview = () => {
+    if (securitiesOverviewEl) securitiesOverviewEl.innerHTML = renderSecuritiesOverview();
+    if (securityCountBadge) securityCountBadge.textContent = `${collaterals.length} ITEM${collaterals.length === 1 ? '' : 'S'}`;
+    if (securityValueBadge) securityValueBadge.textContent = `KES ${formatMoney(getTotalCollateralValue())}`;
+    wireSecurityCardActions();
+  };
+
+  const resetAddSecurityForm = () => {
+    addSecurityForm?.reset();
+    newSecurityPhoto = null;
+    newSecurityPhotoMeta = null;
+    if (addSecurityPreview) {
+      addSecurityPreview.innerHTML = '<span class="text-sm text-muted">No picture attached</span>';
+    }
+  };
+
+  const closeAddSecurityModal = () => {
+    if (addSecurityModal) addSecurityModal.style.display = 'none';
+    resetAddSecurityForm();
+  };
 
   const openImageInNewWindow = (src, title) => {
     const imageWindow = window.open('', '_blank');
@@ -1292,7 +1522,6 @@ export const renderLoanDetails = async (params) => {
         const index = Number(btn.dataset.index);
         const collateral = collaterals[index];
         if (!collateral) return;
-        const itemName = getCollateralItemName(collateral, index);
 
         openCamera(async (dataUrl, file, meta) => {
           const restoreButton = setButtonLoading(btn, 'Saving...');
@@ -1311,12 +1540,7 @@ export const renderLoanDetails = async (params) => {
           try {
             await loanService.update(loan.id, { collaterals: updatedCollaterals });
             collaterals[index] = updatedCollaterals[index];
-            const preview = container.querySelector(`[data-security-preview="${index}"]`);
-            const metaEl = container.querySelector(`[data-security-meta="${index}"]`);
-            const actionsEl = container.querySelector(`[data-security-actions="${index}"]`);
-            if (preview) preview.innerHTML = renderSecurityPhoto(dataUrl, itemName);
-            if (metaEl) metaEl.textContent = meta?.sizeKb ? `Photo: ${formatMoney(meta.sizeKb)} KB` : 'Photo updated';
-            if (actionsEl) actionsEl.outerHTML = renderSecurityActions(updatedCollaterals[index], index);
+            refreshSecuritiesOverview();
             saved = true;
             if (window.notify) window.notify.success('Security picture saved to loan file.');
           } catch (error) {
@@ -1329,6 +1553,74 @@ export const renderLoanDetails = async (params) => {
       };
     });
   };
+
+  if (canEditSecurities) {
+    const addSecurityBtn = container.querySelector('#add-security-btn');
+    if (addSecurityBtn) {
+      addSecurityBtn.onclick = () => {
+        resetAddSecurityForm();
+        addSecurityModal.style.display = 'flex';
+        addSecurityForm.elements.item?.focus();
+      };
+    }
+
+    container.querySelector('#add-security-close').onclick = closeAddSecurityModal;
+    container.querySelector('#add-security-cancel').onclick = closeAddSecurityModal;
+    addSecurityModal.onclick = (event) => {
+      if (event.target === addSecurityModal) closeAddSecurityModal();
+    };
+    addSecurityModal.onkeydown = (event) => {
+      if (event.key === 'Escape') closeAddSecurityModal();
+    };
+
+    addSecurityPhotoBtn.onclick = () => {
+      openCamera((dataUrl, file, meta) => {
+        newSecurityPhoto = dataUrl;
+        newSecurityPhotoMeta = {
+          sizeKb: meta?.sizeKb || null,
+          mimeType: file?.type || 'image/webp'
+        };
+        addSecurityPreview.innerHTML = `<img src="${dataUrl}" alt="New security picture" />`;
+        if (window.notify && meta?.sizeKb) window.notify.success(`Security image compressed to ${meta.sizeKb} KB.`);
+      });
+    };
+
+    addSecurityForm.onsubmit = async (event) => {
+      event.preventDefault();
+      const formData = new FormData(addSecurityForm);
+      const itemName = String(formData.get('item') || '').trim();
+      const value = Number(formData.get('value')) || 0;
+
+      if (!itemName) {
+        window.notify?.error('Enter the security item name.');
+        return;
+      }
+
+      const nextSecurity = {
+        item: itemName,
+        value,
+        photo: newSecurityPhoto,
+        photo_size_kb: newSecurityPhotoMeta?.sizeKb || null,
+        photo_mime_type: newSecurityPhotoMeta?.mimeType || null,
+        added_at: new Date().toISOString(),
+        added_by: authService.getUser()?.id || null
+      };
+      const updatedCollaterals = [...collaterals, nextSecurity];
+      const restoreButton = setButtonLoading(addSecurityForm.querySelector('button[type="submit"]'), 'Saving...');
+
+      try {
+        await loanService.update(loan.id, { collaterals: updatedCollaterals });
+        collaterals.splice(0, collaterals.length, ...updatedCollaterals);
+        refreshSecuritiesOverview();
+        closeAddSecurityModal();
+        window.notify?.success('Security added to loan file.');
+      } catch (error) {
+        window.notify?.error('Failed to add security: ' + (error.message || 'Please try again.'));
+      } finally {
+        restoreButton();
+      }
+    };
+  }
 
   container.querySelector('#security-viewer-close').onclick = closeSecurityViewer;
   securityViewerOpen.onclick = () => {
@@ -1360,14 +1652,17 @@ export const renderLoanDetails = async (params) => {
     
     tbody.innerHTML = repaymentLoadError
       ? `<tr><td colspan="${columnCount}" class="text-center text-danger">Repayment history could not be loaded.</td></tr>`
-      : paginated.length === 0 ? `<tr><td colspan="${columnCount}" class="text-center text-muted">No repayments recorded yet.</td></tr>` : paginated.map(r => `
+      : paginated.length === 0 ? `<tr><td colspan="${columnCount}" class="text-center text-muted">No repayments recorded yet.</td></tr>` : paginated.map(r => {
+        const fineAmount = Math.min(Number(r.amount) || 0, Number(r.fine_amount) || 0);
+        const repaymentAmount = getRepaymentContractAmount(r);
+        return `
       <tr>
         <td>${formatDate(r.date)}</td>
         <td><div class="font-semibold">${escapeHtml(r.reference || 'N/A')}</div><div class="text-xs text-muted">${escapeHtml(String(r.method || '-').toUpperCase())}</div></td>
         <td class="text-sm">${r.note ? escapeHtml(r.note) : '<span class="text-muted">-</span>'}</td>
         <td class="text-xs text-muted">${r.expand?.recorded_by?.name || 'System'}</td>
-        <td class="text-right font-semibold ${Number(r.fine_amount) > 0 ? 'text-warning' : 'text-muted'}">${formatMoney(r.fine_amount)}</td>
-        <td class="text-right font-semibold text-success">${formatMoney(r.amount)}</td>
+        <td class="text-right font-semibold ${fineAmount > 0 ? 'text-warning' : 'text-muted'}">${formatMoney(fineAmount)}</td>
+        <td class="text-right font-semibold text-success">${formatMoney(repaymentAmount)}</td>
         ${(canEditRepayments || canDeleteRepayments) ? `
           <td class="text-right">
             <div class="loan-repayment-actions">
@@ -1376,7 +1671,8 @@ export const renderLoanDetails = async (params) => {
             </div>
           </td>
         ` : ''}
-      </tr>`).join('');
+      </tr>`;
+      }).join('');
 
     if (canEditRepayments) {
       tbody.querySelectorAll('.edit-repayment-btn').forEach(btn => {
@@ -1825,7 +2121,7 @@ export const renderLoanDetails = async (params) => {
     repaymentEditForm.elements.method.value = repayment.method || 'mpesa';
     repaymentEditForm.elements.reference.value = repayment.reference || '';
     repaymentEditForm.elements.note.value = repayment.note || '';
-    repaymentEditSubtitle.textContent = `${formatDate(repayment.date)} · KES ${formatMoney(repayment.amount)}`;
+    repaymentEditSubtitle.textContent = `${formatDate(repayment.date)} · Receipt KES ${formatMoney(repayment.amount)} · Repayment KES ${formatMoney(getRepaymentContractAmount(repayment))}`;
     updateEditRepaymentReferenceState();
     repaymentEditModal.style.display = 'flex';
   };

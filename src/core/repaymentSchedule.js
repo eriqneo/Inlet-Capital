@@ -12,6 +12,12 @@ export const getRepaymentScheduleAnchorDate = (loan) => (
   || new Date()
 );
 
+export const getLoanGracePeriodMonths = (loan) => {
+  if (loan?.type !== 'farming') return 0;
+  const gracePeriod = Number.parseInt(loan?.grace_period_months, 10);
+  return Number.isInteger(gracePeriod) && gracePeriod > 0 ? gracePeriod : 0;
+};
+
 export const addMonthsPreservingDay = (dateInput, monthsToAdd) => {
   const source = toValidDate(dateInput) || new Date();
   const targetDay = source.getDate();
@@ -28,4 +34,23 @@ export const addMonthsPreservingDay = (dateInput, monthsToAdd) => {
 
   dueDate.setDate(Math.min(targetDay, lastDayOfTargetMonth));
   return dueDate;
+};
+
+export const getRepaymentScheduleDueDate = (loan, installmentNo) => {
+  const installment = Number.parseInt(installmentNo, 10);
+  if (!Number.isInteger(installment) || installment < 1) return null;
+
+  const gracePeriod = getLoanGracePeriodMonths(loan);
+  const firstDueMonth = gracePeriod || 1;
+  return addMonthsPreservingDay(
+    getRepaymentScheduleAnchorDate(loan),
+    firstDueMonth + installment - 1
+  );
+};
+
+export const getLoanFinalDueDate = (loan) => {
+  const period = Number.parseInt(loan?.period, 10);
+  return Number.isInteger(period) && period > 0
+    ? getRepaymentScheduleDueDate(loan, period)
+    : null;
 };

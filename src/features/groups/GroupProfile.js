@@ -13,7 +13,7 @@ import { setButtonLoading, renderDatabaseLoaderIcon, DATABASE_LOADING_LABEL } fr
 import { withReturnTo } from '../../core/navigation.js';
 import { getArrearsTotal, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
 import { getOfficerScopeCacheKey } from '../../core/officerScope.js';
-import { getSettlementContractAmount } from '../../core/repaymentAllocation.js';
+import { getRepaymentContractAmount, getSettlementContractAmount } from '../../core/repaymentAllocation.js';
 import { calculateGroupSavingsPerformance } from '../../core/groupSavingsPerformance.js';
 
 export const renderGroupProfile = async (params) => {
@@ -89,10 +89,10 @@ export const renderGroupProfile = async (params) => {
 
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px;">
         <div class="card" style="padding: 16px; border-left: 3px solid var(--success);"><div class="text-xs text-muted">Total Savings</div><div class="text-lg font-semibold text-success">KES ${formatMoney(totalSavings)}</div></div>
-        <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);"><div class="text-xs text-muted">Outstanding Loan</div><div class="text-lg font-semibold text-danger">KES ${formatMoney(outstandingLoan)}</div></div>
-        <div class="card" style="padding: 16px; border-left: 3px solid var(--secondary);"><div class="text-xs text-muted">Total Repayments</div><div class="text-lg font-semibold" style="color: var(--secondary);">Syncing...</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">Outstanding Loan</div><div class="text-lg font-semibold text-primary">KES ${formatMoney(outstandingLoan)}</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--success);"><div class="text-xs text-muted">Total Repayments</div><div class="text-lg font-semibold text-success">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">This Month Collections Expected</div><div class="text-lg font-semibold" style="color: var(--primary);">Syncing...</div></div>
-        <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);"><div class="text-xs text-muted">Total Fees</div><div class="text-lg font-semibold" style="color: var(--warning);">Syncing...</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--success);"><div class="text-xs text-muted">Total Fees</div><div class="text-lg font-semibold text-success">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">Total Members</div><div class="text-lg font-semibold text-primary">${memberCount}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid ${totalArrears > 0 ? 'var(--danger)' : 'var(--border-color)'};"><div class="text-xs text-muted">Total Arrears</div><div class="text-lg font-semibold" style="color: ${totalArrears > 0 ? 'var(--danger)' : 'inherit'};">KES ${formatMoney(totalArrears)}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);"><div class="text-xs text-muted">Portfolio at Risk (PAR)</div><div class="text-lg font-semibold" style="color: var(--warning);">Syncing...</div></div>
@@ -140,7 +140,7 @@ export const renderGroupProfile = async (params) => {
     const liability = getLoanLiability(loan);
     const paid = repayments
       .filter(r => r.loan === loan.id)
-      .reduce((repaymentSum, r) => repaymentSum + (Number(r.amount) || 0), 0)
+      .reduce((repaymentSum, r) => repaymentSum + getRepaymentContractAmount(r), 0)
       + settlements
         .filter(s => s.loan === loan.id && s.status !== 'reversed')
         .reduce((settlementSum, s) => settlementSum + getSettlementContractAmount(s), 0);
@@ -160,7 +160,7 @@ export const renderGroupProfile = async (params) => {
     .filter(isDisbursedLoanForBalance)
     .reduce((sum, loan) => sum + calculateLoanBalance(loan, repayments, settlements), 0);
   const calculateRepaymentsTotal = (repayments) => repayments
-    .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0);
+    .reduce((sum, repayment) => sum + getRepaymentContractAmount(repayment), 0);
   const getRegistrationFeeDate = (member) => member.registration_fee_details?.date
     || member.registration_fee_details?.captured_at
     || member.registration_date
@@ -204,7 +204,10 @@ export const renderGroupProfile = async (params) => {
 
     const repaymentsByLoan = new Map();
     [
-      ...repayments,
+      ...repayments.map(repayment => ({
+        ...repayment,
+        amount: getRepaymentContractAmount(repayment)
+      })),
       ...settlements
         .filter(settlement => settlement.status !== 'reversed')
         .map(settlement => ({
@@ -492,21 +495,21 @@ export const renderGroupProfile = async (params) => {
               <span style="color: var(--danger); font-weight: 700;">WIT ${formatMoney(initialSavingsMovement.withdrawals)}</span>
             </div>
           </div>
-          <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);">
+          <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);">
             <div class="text-xs text-muted">Outstanding Loan</div>
-            <div class="text-lg font-semibold text-danger" id="group-outstanding-loan-kpi">KES ${formatMoney(totalOutstandingLoan)}</div>
+            <div class="text-lg font-semibold text-primary" id="group-outstanding-loan-kpi">KES ${formatMoney(totalOutstandingLoan)}</div>
           </div>
-          <div class="card" style="padding: 16px; border-left: 3px solid var(--secondary);">
+          <div class="card" style="padding: 16px; border-left: 3px solid var(--success);">
             <div class="text-xs text-muted">Total Repayments</div>
-            <div class="text-lg font-semibold" id="group-total-repayments-kpi" style="color: var(--secondary);">KES ${formatMoney(calculateRepaymentsTotal(allRepayments))}</div>
+            <div class="text-lg font-semibold text-success" id="group-total-repayments-kpi">KES ${formatMoney(calculateRepaymentsTotal(allRepayments))}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);">
             <div class="text-xs text-muted">This Month Collections Expected</div>
             <div class="text-lg font-semibold" id="group-this-month-expected-kpi" style="color: var(--primary);">KES ${formatMoney(thisMonthCollectionsExpected)}</div>
           </div>
-          <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);">
+          <div class="card" style="padding: 16px; border-left: 3px solid var(--success);">
             <div class="text-xs text-muted">Total Fees</div>
-            <div class="text-lg font-semibold" id="group-total-fees-kpi" style="color: var(--warning);">KES ${formatMoney(calculateFeesTotal(allGroupMembers, groupLoans))}</div>
+            <div class="text-lg font-semibold text-success" id="group-total-fees-kpi">KES ${formatMoney(calculateFeesTotal(allGroupMembers, groupLoans))}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);">
             <div class="text-xs text-muted">Total Members</div>
