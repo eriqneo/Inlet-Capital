@@ -53,9 +53,11 @@ routerAdd('POST', '/api/inlet/loans/{id}/recovery', (e) => {
 
     loan.set('renewal_date', quote.renewalDate);
     loan.set('renewal_summary', { renewal_id: audit.id, reason, principal: quote.principal,
-      interest: quote.interest, fines: quote.fines, total_payable: quote.totalPayable,
+      renewal_base: quote.renewalBase, interest: quote.interest, fines_included: quote.fines,
+      total_payable: quote.totalPayable,
       period: quote.period, source_unit: quote.sourceUnit });
     loan.set('period', quote.period);
+    loan.set('approved_amount', quote.renewalBase);
     loan.set('interest_rate', quote.interestRate);
     loan.set('interest_amount', quote.interest);
     loan.set('total_liability', quote.liability);

@@ -26,14 +26,14 @@ Only application users with the `super_admin` role can preview or confirm a rene
 
 The confirmed terms are:
 
-- The original unpaid principal remains principal.
-- Interest is recalculated at a flat **20% of principal** for the new term. This replaces the old unpaid interest; it does not add a second interest charge on top of it.
-- Accrued unpaid fines carry forward separately. Fines do not attract interest and are not collected income until paid.
+- The current OLB becomes the renewal base, including any unpaid contractual interest and accrued fines once.
+- Interest is recalculated at a flat **20% of the current OLB** for the new term.
+- Accrued unpaid fines are shown in the renewal quote as part of the OLB and are not added a second time.
 - A required agreement/reason and a new period of 1 to 120 whole months are captured.
 - The renewal starts on the current Nairobi calendar date. The first installment is due one month later, with month-end dates clamped to the last valid day.
 - Existing fines attach to the first installment and remain part of outstanding balance. Future overdue installments can generate additional normal fines.
 
-Example: principal **15,000**, recalculated interest **3,000**, and unpaid fines **1,000** give **19,000 total payable**. Over six months the contractual installment is **3,000**, with the **1,000 carried fine** due alongside the first installment. When 2,000 is received, 1,000 clears the carried fine and 1,000 reduces the loan contract.
+Example: a current OLB of **12,500** at the standard **20%** renewal rate gives a new total payable of **15,000**. Over six months the contractual installment is **2,500**.
 
 No new loan, disbursement, or repayment receipt is created. The loan number and original application/disbursement dates remain. The old terms and schedule are archived in `loan_renewals`; renewal history is available in Loan Management > Overview. Current reports use the new schedule. Archived schedules remain available for audit; this change does not add historical schedule-version reconstruction to date-filtered reports.
 

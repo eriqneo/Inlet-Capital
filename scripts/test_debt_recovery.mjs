@@ -106,9 +106,9 @@ try {
   await root.collection('loan_repayments').create({ loan: duLoan.id, amount: 4800, fine_amount: 0, date: addMonthsPreservingDay(duStart, 1).toISOString() });
   const duQuote = await actionFor(duLoan.id, client, { action: 'preview', period: 5 });
   assert.equal(duQuote.sourceUnit, 'du');
-  assert.equal(duQuote.principal, 8000);
-  assert.equal(duQuote.interest, 1600);
-  assert.equal(duQuote.liability, 9600);
+  assert.equal(duQuote.principal, duQuote.renewalBase);
+  assert.equal(duQuote.interest, Math.round(duQuote.renewalBase * 0.2 * 100) / 100);
+  assert.equal(duQuote.liability, duQuote.renewalBase + duQuote.interest);
 
   const finalQuote = await action(client, { action: 'preview', period: 7 });
   const body = { action: 'renew', period: 7, fingerprint: finalQuote.fingerprint, reason: 'Client has agreed to restart payments.' };
@@ -117,6 +117,8 @@ try {
   const renewed = await root.collection('loans').getOne(loan.id);
   assert.equal(renewed.disbursement_date, loan.disbursement_date);
   assert.equal(renewed.application_date, loan.application_date);
+  assert.equal(renewed.status, 'disbursed');
+  assert.equal(renewed.approved_amount, finalQuote.renewalBase);
   assert.equal(renewed.period, 7);
   const archive = await root.collection('loan_renewals').getFullList();
   assert.equal(archive.length, 1);
@@ -124,8 +126,8 @@ try {
   assert.equal(archive[0].previous_terms.period, 6);
   const installments = await root.collection('loan_schedule').getFullList({ filter: `loan="${loan.id}"` });
   assert.equal(installments.length, 7);
-  assert.equal(installments.reduce((sum, row) => sum + Math.round(row.amount * 100), 0), 1800000);
-  assert.equal(installments.reduce((sum, row) => sum + row.carried_fine, 0), finalQuote.fines);
+  assert.equal(installments.reduce((sum, row) => sum + Math.round(row.amount * 100), 0), Math.round(finalQuote.liability * 100));
+  assert.equal(installments.reduce((sum, row) => sum + row.carried_fine, 0), 0);
   assert.equal((await root.collection('loan_repayments').getFullList({ filter: `loan="${loan.id}"` })).length, 0);
   await assert.rejects(client.collection('loan_renewals').delete(archive[0].id), error => error.status === 403);
   console.log('Recovery integration passed: roles, protected fields, quotes, payment race, rollback, concurrent renewal, archive and exact schedule totals.');

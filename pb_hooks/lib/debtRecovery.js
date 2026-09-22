@@ -181,33 +181,6 @@ var getSettlementContractAmount = (settlement) => {
   if (!settlement || settlement.status === "reversed") return 0;
   return asAmount(settlement.amount);
 };
-var allocateRepayment = ({ loan, repaymentAmount, fineAmount = 0, priorContractPaid = 0 }) => {
-  const principal = getLoanPrincipalAmount(loan);
-  const interest = getLoanInterestAmount(loan);
-  const liability = getLoanLiabilityAmount(loan);
-  const amount = asAmount(repaymentAmount);
-  const fine = Math.min(amount, asAmount(fineAmount));
-  const netPayment = amount - fine;
-  const paidBefore = Math.min(liability, asAmount(priorContractPaid));
-  const allocatedToContract = Math.min(netPayment, Math.max(0, liability - paidBefore));
-  const interestRatio = liability > 0 ? interest / liability : 0;
-  const interestPaidBefore = Math.min(interest, paidBefore * interestRatio);
-  const interestAmount = Math.min(
-    Math.max(0, interest - interestPaidBefore),
-    allocatedToContract * interestRatio
-  );
-  return {
-    amount,
-    fineAmount: fine,
-    contractAmount: allocatedToContract,
-    principalAmount: Math.max(0, allocatedToContract - interestAmount),
-    interestAmount: Math.max(0, interestAmount),
-    excessAmount: Math.max(0, netPayment - allocatedToContract),
-    principal,
-    interest,
-    liability
-  };
-};
 
 // src/core/loanPortfolio.js
 var isDisbursedLoanRecord = (loan) => Boolean(loan == null ? void 0 : loan.disbursement_date) && ["disbursed", "approved", "partial_approved", "completed", "closed"].includes(loan == null ? void 0 : loan.status);
@@ -402,34 +375,10 @@ var buildDebtRecoveryRenewal = ({
   if (schedules.some((row) => !Number.isFinite(businessDay(row.due_date)) || !(Number(row.amount) > 0)) || !Array.from({ length: schedules.length }, (_, index) => index + 1).every((number) => installmentNumbers.has(number))) {
     throw new Error("Repair invalid or duplicate installments before renewing this loan.");
   }
-  let priorContractPaid = 0;
-  let principalPaid = 0;
-  [
-    ...repayments.filter((row) => !row.is_reversed).map((row) => ({
-      date: row.date || row.created,
-      amount: row.amount,
-      fine_amount: row.fine_amount
-    })),
-    ...settlements.filter((row) => row.status !== "reversed").map((row) => ({
-      date: row.effective_date || row.date || row.created,
-      amount: getSettlementContractAmount(row),
-      fine_amount: 0
-    }))
-  ].sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0)).forEach((row) => {
-    const allocation = allocateRepayment({
-      loan,
-      repaymentAmount: row.amount,
-      fineAmount: row.fine_amount,
-      priorContractPaid
-    });
-    priorContractPaid += allocation.contractAmount;
-    principalPaid += allocation.principalAmount;
-  });
-  const principal = money(Math.max(0, getLoanPrincipalAmount(loan) - principalPaid));
-  if (principal <= 0) throw new Error("This loan has no valid outstanding principal to renew.");
-  const configuredRate = Number(loan.interest_rate);
-  const interestRate = Number.isFinite(configuredRate) && configuredRate >= 0 ? configuredRate : 20;
-  const interest = money(principal * interestRate / 100);
+  const renewalBase = money(outstandingBalance);
+  if (renewalBase <= 0) throw new Error("This loan has no valid outstanding balance to renew.");
+  const interestRate = 20;
+  const interest = money(renewalBase * interestRate / 100);
   const calendarDate = (value) => new Date(businessDay(value) * 864e5 + 12 * 36e5).toISOString();
   const fines = money(calculateLoanPenaltyState({
     schedules: schedules.map((row) => __spreadProps(__spreadValues({}, row), { due_date: calendarDate(row.due_date) })),
@@ -438,7 +387,7 @@ var buildDebtRecoveryRenewal = ({
     penaltyAmount,
     referenceDate: calendarDate(referenceDate)
   }).outstandingFine);
-  const renewedLiability = money(principal + interest);
+  const renewedLiability = money(renewalBase + interest);
   const renewalDate = new Date(businessDay(referenceDate) * 864e5 - 3 * 36e5).toISOString();
   const renewalDay = new Date(businessDay(referenceDate) * 864e5).toISOString().slice(0, 10);
   const monthlyCents = Math.floor(Math.round(renewedLiability * 100) / period);
@@ -450,24 +399,25 @@ var buildDebtRecoveryRenewal = ({
     paid: 0,
     status: "pending",
     penalty_waived: false,
-    carried_fine: index === 0 ? fines : 0
+    carried_fine: 0
   }));
   const fingerprint = JSON.stringify({
     updated: loan.updated,
     renewalDate,
     period,
-    principal,
+    renewalBase,
     interest,
     fines,
     schedules: schedules.map((s) => [s.id, s.updated, s.amount, s.paid, s.due_date, s.penalty_waived, s.carried_fine])
   });
   return {
-    principal,
+    principal: renewalBase,
+    renewalBase,
     interestRate,
     interest,
     fines,
     liability: renewedLiability,
-    totalPayable: money(renewedLiability + fines),
+    totalPayable: renewedLiability,
     sourceUnit: isDebtRecovery ? "dru" : "du",
     period,
     renewalDate,

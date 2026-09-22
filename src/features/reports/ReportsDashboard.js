@@ -520,10 +520,12 @@ export const renderReportsDashboard = async () => {
             ['olb', 'Outstanding OLB', 'var(--primary)'],
             ['arrears', 'Arrears (Excl. Fines)', 'var(--danger)'],
             ['fines', 'Outstanding Fines', 'var(--warning)'],
+            ['recoveryRate', 'Recovered % (DU / D.R.U)', 'var(--success)'],
             ['recovered', 'Recovered Amount (RL)', 'var(--success)']
           ].map(([key, label, color]) => `<div style="border-left: 3px solid ${color}; padding: 8px 12px;">
             <div class="text-xs text-muted">${label}</div>
             <div id="debt-${key}" class="font-semibold" style="font-size: 18px; margin-top: 6px; overflow-wrap: anywhere;">-</div>
+            ${key === 'recoveryRate' ? '<div id="debt-recovery-rate-detail" class="text-xs text-muted" style="margin-top: 4px;">-</div>' : ''}
           </div>`).join('')}
         </div>
         <div class="table-responsive"><table class="table"><thead><tr>
@@ -1771,12 +1773,13 @@ export const renderReportsDashboard = async () => {
 
   const updateDebtManagement = () => {
     const tbody = container.querySelector('#debt-table-body');
-    const summaryKeys = ['count', 'dru', 'du', 'rl', 'olb', 'arrears', 'fines', 'recovered'];
+    const summaryKeys = ['count', 'dru', 'du', 'rl', 'olb', 'arrears', 'fines', 'recoveryRate', 'recovered'];
     const invalidRange = dateRange.from && dateRange.to && dateRange.from > dateRange.to;
-    container.querySelector('#debt-position-label').textContent = `Current balances as at ${formatDate(new Date())}. DU and D.R.U can overlap; overall totals count each loan once.`;
+    container.querySelector('#debt-position-label').textContent = `Current balances as at ${formatDate(new Date())}. Recovered % is contractual collections divided by expected contract value; fines are excluded. DU and D.R.U can overlap; overall totals count each loan once.`;
     container.querySelector('#debt-date-heading').textContent = debtDateBasis === 'disbursement' ? 'Disbursed Date' : 'Entry / Last Payment';
     if (!debtDataReady || debtDataError || invalidRange) {
       summaryKeys.forEach(key => { container.querySelector(`#debt-${key}`).textContent = '-'; });
+      container.querySelector('#debt-recovery-rate-detail').textContent = '-';
       tbody.innerHTML = invalidRange
         ? '<tr><td colspan="13" class="text-danger">From date must be on or before To date.</td></tr>'
         : debtDataError
@@ -1805,9 +1808,14 @@ export const renderReportsDashboard = async () => {
       }).filter(row => isWithinDateRange(row.reportDate));
     const totals = summarizeDebtManagement(rows);
     summaryKeys.forEach(key => {
-      container.querySelector(`#debt-${key}`).textContent = ['count', 'du', 'dru', 'rl'].includes(key)
-        ? totals[key].toLocaleString() : `KES ${formatMoney(totals[key])}`;
+      const value = ['count', 'du', 'dru', 'rl'].includes(key)
+        ? totals[key].toLocaleString()
+        : key === 'recoveryRate'
+          ? formatPercent(totals[key])
+          : `KES ${formatMoney(totals[key])}`;
+      container.querySelector(`#debt-${key}`).textContent = value;
     });
+    container.querySelector('#debt-recovery-rate-detail').textContent = `KES ${formatMoney(totals.recoveryCollected)} collected of KES ${formatMoney(totals.recoveryExpected)} expected`;
     const paginated = getReportRowsForView('debt', sortReportRows('debt', rows));
     const badges = { dru: ['D.R.U', 'badge-danger'], du: ['DU', 'badge-warning'], rl: ['RL', 'badge-success'] };
     tbody.innerHTML = paginated.length ? paginated.map(row => `<tr>

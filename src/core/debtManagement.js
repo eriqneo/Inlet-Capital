@@ -47,10 +47,12 @@ export const buildDebtManagementRows = ({ loans = [], repayments = [], settlemen
       status: item.remainingPrincipal > 0 ? 'pending' : 'paid' }));
     const contractPaid = paymentRecords.reduce((sum, row) => sum + getRepaymentContractAmount(row), 0)
       + settlementRecords.reduce((sum, row) => sum + getSettlementContractAmount(row), 0);
-    return [{ loan, categories, categoryDates, endDate, olb,
+    const expected = getLoanLiabilityAmount(loan);
+    const contractCollected = Math.min(expected, contractPaid);
+    return [{ loan, categories, categoryDates, endDate, olb, expected, contractCollected,
       arrears: recovered ? 0 : getArrearsTotal(effectiveSchedules, referenceDate),
       fines: penalty.outstandingFine,
-      collected: Math.min(getLoanLiabilityAmount(loan), contractPaid) + penalty.fineCollected }];
+      collected: contractCollected + penalty.fineCollected }];
   });
 };
 
@@ -61,13 +63,21 @@ export const getDebtReportDate = (row, { category = 'all', basis = 'activity' } 
   return dates.length ? new Date(Math.min(...dates.map(Number))) : null;
 };
 
-export const summarizeDebtManagement = (rows = []) => ({
-  count: rows.length,
-  dru: rows.filter(row => row.categories.includes('dru')).length,
-  du: rows.filter(row => row.categories.includes('du')).length,
-  rl: rows.filter(row => row.categories.includes('rl')).length,
-  olb: rows.reduce((sum, row) => sum + row.olb, 0),
-  arrears: rows.reduce((sum, row) => sum + row.arrears, 0),
-  fines: rows.reduce((sum, row) => sum + row.fines, 0),
-  recovered: rows.filter(row => row.categories.includes('rl')).reduce((sum, row) => sum + row.collected, 0)
-});
+export const summarizeDebtManagement = (rows = []) => {
+  const recoveryExpected = rows.reduce((sum, row) => sum + (Number(row.expected) || 0), 0);
+  const recoveryCollected = rows.reduce((sum, row) => sum + (Number(row.contractCollected) || 0), 0);
+
+  return {
+    count: rows.length,
+    dru: rows.filter(row => row.categories.includes('dru')).length,
+    du: rows.filter(row => row.categories.includes('du')).length,
+    rl: rows.filter(row => row.categories.includes('rl')).length,
+    olb: rows.reduce((sum, row) => sum + row.olb, 0),
+    arrears: rows.reduce((sum, row) => sum + row.arrears, 0),
+    fines: rows.reduce((sum, row) => sum + row.fines, 0),
+    recovered: rows.filter(row => row.categories.includes('rl')).reduce((sum, row) => sum + row.collected, 0),
+    recoveryExpected,
+    recoveryCollected,
+    recoveryRate: recoveryExpected > 0 ? (recoveryCollected / recoveryExpected) * 100 : 0
+  };
+};

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { buildDebtRecoveryRenewal, getRecoveryAgeDays, isDebtRecoveryLoan } from '../src/core/debtRecovery.js';
 import { calculateLoanOutstandingBalance } from '../src/core/loanPortfolio.js';
 import { calculateLoanPenaltyState } from '../src/core/loanPenalty.js';
+import { isDistressUnitLoan } from '../src/core/distressUnit.js';
 
 const loan = { id: 'loan1', status: 'disbursed', disbursement_date: '2026-01-01T09:00:00+03:00',
   approved_amount: 15000, total_liability: 18000, interest_amount: 3000, period: 6 };
@@ -48,25 +49,27 @@ test('non-disbursed, settled and invalid-date loans cannot enter DRU', () => {
   }
 });
 
-test('DRU renewal replaces interest at 20 percent, carries fines once, and resets eligibility', () => {
+test('DRU renewal uses current OLB as the base and resets debt-unit eligibility', () => {
   const quote = buildDebtRecoveryRenewal(options);
   assert.equal(quote.sourceUnit, 'dru');
-  assert.equal(quote.principal, 15000);
-  assert.equal(quote.interest, 3000);
+  assert.equal(quote.renewalBase, 19000);
+  assert.equal(quote.principal, 19000);
+  assert.equal(quote.interest, 3800);
   assert.equal(quote.fines, 1000);
-  assert.equal(quote.totalPayable, 19000);
+  assert.equal(quote.totalPayable, 22800);
   assert.equal(quote.installments[0].due_date.slice(0, 10), '2026-05-01');
   assert.equal(quote.installments.at(-1).due_date.slice(0, 10), '2026-10-01');
-  const renewed = { ...loan, renewal_date: quote.renewalDate, total_liability: quote.liability };
+  const renewed = { ...loan, renewal_date: quote.renewalDate, approved_amount: quote.renewalBase,
+    interest_rate: quote.interestRate, interest_amount: quote.interest, total_liability: quote.liability };
   assert.equal(isDebtRecoveryLoan(renewed, { referenceDate }), false);
-  assert.equal(calculateLoanOutstandingBalance({ loan: renewed, schedules: quote.installments, referenceDate, penaltyAmount: 500 }), 19000);
-  // Receipt of 2,000 includes 1,000 carried fine, leaving 1,000 to the contract.
-  const repayments = [{ amount: 2000, fine_amount: 1000, date: referenceDate.toISOString() }];
-  assert.equal(calculateLoanOutstandingBalance({ loan: renewed, schedules: quote.installments, referenceDate, repayments, penaltyAmount: 500 }), 17000);
+  assert.equal(isDistressUnitLoan(renewed, { outstandingBalance: quote.liability, referenceDate }), false);
+  assert.equal(calculateLoanOutstandingBalance({ loan: renewed, schedules: quote.installments, referenceDate, penaltyAmount: 500 }), 22800);
+  const repayments = [{ amount: 2000, fine_amount: 0, date: referenceDate.toISOString() }];
+  assert.equal(calculateLoanOutstandingBalance({ loan: renewed, schedules: quote.installments, referenceDate, repayments, penaltyAmount: 500 }), 20800);
   assert.equal(calculateLoanPenaltyState({ schedules: quote.installments, referenceDate, repayments, penaltyAmount: 500 }).outstandingFine, 0);
 });
 
-test('DU renewal starts from unpaid principal after partial payments', () => {
+test('DU renewal uses the current OLB after partial payments', () => {
   const quote = buildDebtRecoveryRenewal({
     loan,
     schedules,
@@ -80,14 +83,14 @@ test('DU renewal starts from unpaid principal after partial payments', () => {
   });
 
   assert.equal(quote.sourceUnit, 'du');
-  assert.equal(quote.principal, 10000);
-  assert.equal(quote.interest, 2000);
-  assert.equal(quote.liability, 12000);
+  assert.equal(quote.renewalBase, 14000);
+  assert.equal(quote.interest, 2800);
+  assert.equal(quote.liability, 16800);
   assert.equal(quote.installments.length, 8);
-  assert.equal(quote.installments.reduce((sum, s) => sum + Math.round(s.amount * 100), 0), 1200000);
+  assert.equal(quote.installments.reduce((sum, s) => sum + Math.round(s.amount * 100), 0), 1680000);
 });
 
-test('renewal uses the loan interest rate, including special offers', () => {
+test('renewal uses the standard 20 percent rate against the current OLB', () => {
   const quote = buildDebtRecoveryRenewal({
     loan: { ...loan, interest_rate: 10, interest_amount: 1500, total_liability: 16500 },
     schedules: schedules.map(row => ({ ...row, amount: 2750 })),
@@ -96,10 +99,10 @@ test('renewal uses the loan interest rate, including special offers', () => {
     penaltyAmount: 500
   });
 
-  assert.equal(quote.principal, 15000);
-  assert.equal(quote.interestRate, 10);
-  assert.equal(quote.interest, 1500);
-  assert.equal(quote.liability, 16500);
+  assert.equal(quote.renewalBase, 17500);
+  assert.equal(quote.interestRate, 20);
+  assert.equal(quote.interest, 3500);
+  assert.equal(quote.liability, 21000);
 });
 
 test('renewal validates period, payment eligibility and complete source schedule', () => {
@@ -110,7 +113,7 @@ test('renewal validates period, payment eligibility and complete source schedule
 
 test('installments total exactly to cents and retain month-end date', () => {
   const quote = buildDebtRecoveryRenewal({ ...options, period: 7, referenceDate: '2026-08-31T09:00:00Z' });
-  assert.equal(quote.installments.reduce((sum, s) => sum + Math.round(s.amount * 100), 0), 1800000);
+  assert.equal(quote.installments.reduce((sum, s) => sum + Math.round(s.amount * 100), 0), Math.round(quote.liability * 100));
   assert.equal(quote.installments[0].due_date.slice(0, 10), '2026-09-30');
   assert.equal(quote.installments[1].due_date.slice(0, 10), '2026-10-31');
 });

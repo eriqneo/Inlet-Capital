@@ -57,6 +57,9 @@ test('debt report shares categories and totals overlapping DU/DRU once', () => {
   assert.equal(totals.arrears, 18000);
   assert.equal(totals.fines, 1500);
   assert.equal(totals.recovered, 19000);
+  assert.equal(totals.recoveryExpected, 36000);
+  assert.equal(totals.recoveryCollected, 18000);
+  assert.equal(totals.recoveryRate, 50);
   assert.equal(getDebtReportDate(rows[1], { category: 'dru' }).toISOString().slice(0, 10), '2026-04-01');
   assert.equal(getDebtReportDate(rows[1], { category: 'du' }).toISOString().slice(0, 10), '2026-04-02');
   assert.equal(getDebtReportDate(rows[0], { category: 'rl' }).toISOString().slice(0, 10), '2026-04-01');
@@ -72,4 +75,7 @@ test('debt arrears apply partial payments to the oldest installments', () => {
   assert.deepEqual(rows[0].categories, ['du']);
   assert.equal(rows[0].arrears, 12000);
   assert.equal(rows[0].collected, 7000);
+  const totals = summarizeDebtManagement(rows);
+  assert.equal(totals.recoveryCollected, 6000);
+  assert.ok(Math.abs(totals.recoveryRate - (100 / 3)) < 0.000001);
 });
