@@ -15,6 +15,7 @@ import { getArrearsTotal, isScheduleInArrears } from '../../core/loanScheduleMet
 import { getOfficerScopeCacheKey } from '../../core/officerScope.js';
 import { getRepaymentContractAmount, getSettlementContractAmount } from '../../core/repaymentAllocation.js';
 import { calculateGroupSavingsPerformance } from '../../core/groupSavingsPerformance.js';
+import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
 
 export const renderGroupProfile = async (params) => {
   const { id } = params;
@@ -97,7 +98,7 @@ export const renderGroupProfile = async (params) => {
         <div class="card" style="padding: 16px; border-left: 3px solid ${totalArrears > 0 ? 'var(--danger)' : 'var(--border-color)'};"><div class="text-xs text-muted">Total Arrears</div><div class="text-lg font-semibold" style="color: ${totalArrears > 0 ? 'var(--danger)' : 'inherit'};">KES ${formatMoney(totalArrears)}</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);"><div class="text-xs text-muted">Portfolio at Risk (PAR)</div><div class="text-lg font-semibold" style="color: var(--warning);">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid ${membersInArrears > 0 ? 'var(--warning)' : 'var(--border-color)'};"><div class="text-xs text-muted">Members in Arrears</div><div class="text-lg font-semibold" style="color: ${membersInArrears > 0 ? 'var(--warning)' : 'inherit'};">${membersInArrears}</div></div>
-        <div class="card" style="padding: 16px; border-left: 3px solid ${inactiveMembers > 0 ? 'var(--danger)' : 'var(--border-color)'};"><div class="text-xs text-muted">Inactive Members</div><div class="text-lg font-semibold" style="color: ${inactiveMembers > 0 ? 'var(--danger)' : 'inherit'};">${inactiveMembers} <span class="text-xs text-muted" style="font-weight:normal;">(>90 days)</span></div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid ${inactiveMembers > 0 ? 'var(--danger)' : 'var(--border-color)'};"><div class="text-xs text-muted">Inactive Members</div><div class="text-lg font-semibold" style="color: ${inactiveMembers > 0 ? 'var(--danger)' : 'inherit'};">${inactiveMembers} <span class="text-xs text-muted" style="font-weight:normal;">(no deposit in 3 months)</span></div></div>
       </div>
 
       <div class="card text-center" style="padding: 36px;">
@@ -376,23 +377,28 @@ export const renderGroupProfile = async (params) => {
   let totalGroupArrears = 0;
   let membersInArrearsCount = 0;
   let inactiveMembersCount = 0;
-  const enrichedMembers = sortMembersByGroupJoinedAsc(allGroupMembers).map((m) => {
-    const mSavings = groupSavings.filter(s => s.member === m.id);
-    const mLoans = groupLoans.filter(l => l.member === m.id);
+  let enrichedMembers = [];
+  const rebuildEnrichedMembers = () => {
+    enrichedMembers = sortMembersByGroupJoinedAsc(allGroupMembers).map((member) => {
+      const memberSavings = groupSavings.filter(saving => saving.member === member.id);
+      const memberLoans = groupLoans.filter(loan => loan.member === member.id);
+      const activeLoans = memberLoans.filter(isCollectibleLoan);
+      const memberLoanIds = new Set(activeLoans.map(loan => loan.id));
+      const overdue = allSchedules.filter(schedule => memberLoanIds.has(schedule.loan) && isScheduleInArrears(schedule));
+      const lastSavingsDate = getLatestSavingsDate(memberSavings);
+      const activityStatus = getMemberActivityStatus(member, lastSavingsDate);
 
-    const totalSavings = calculateSavingsTotal(mSavings);
-
-    const activeLoans = mLoans.filter(isCollectibleLoan);
-    const memberLoanIds = new Set(activeLoans.map(l => l.id));
-    const overdue = allSchedules.filter(s => memberLoanIds.has(s.loan) && isScheduleInArrears(s));
-    const totalArrears = getArrearsTotal(overdue);
-
-    const olBalance = calculateOutstandingLoanBalance(mLoans, allRepayments, allBalanceOffs);
-    const lastSavingsDate = mSavings.length > 0 ? new Date(Math.max(...mSavings.map(s => new Date(s.date)))) : null;
-    const isActive = lastSavingsDate && (new Date() - lastSavingsDate <= 90 * 24 * 60 * 60 * 1000);
-
-    return { ...m, totalSavings, olBalance, totalArrears, isActive, lastSavingsDate };
-  });
+      return {
+        ...member,
+        totalSavings: calculateSavingsTotal(memberSavings),
+        olBalance: calculateOutstandingLoanBalance(memberLoans, allRepayments, allBalanceOffs),
+        totalArrears: getArrearsTotal(overdue),
+        isActive: activityStatus.isActive,
+        lastSavingsDate
+      };
+    });
+  };
+  rebuildEnrichedMembers();
 
   // Aggregate group savings
   const activeEnrichedMembers = enrichedMembers.filter(member => !isSuspendedMember(member));
@@ -530,7 +536,7 @@ export const renderGroupProfile = async (params) => {
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid ${inactiveMembersCount > 0 ? 'var(--danger)' : 'var(--border-color)'};">
             <div class="text-xs text-muted">Inactive Members</div>
-            <div class="text-lg font-semibold" id="group-inactive-members-kpi" style="color: ${inactiveMembersCount > 0 ? 'var(--danger)' : 'inherit'};">${inactiveMembersCount} <span class="text-xs text-muted" style="font-weight:normal;">(>90 days)</span></div>
+            <div class="text-lg font-semibold" id="group-inactive-members-kpi" style="color: ${inactiveMembersCount > 0 ? 'var(--danger)' : 'inherit'};">${inactiveMembersCount} <span class="text-xs text-muted" style="font-weight:normal;">(no deposit in 3 months)</span></div>
           </div>
         </div>
 
@@ -1029,7 +1035,7 @@ export const renderGroupProfile = async (params) => {
       parHealthEl.style.color = parHealth.color;
     }
     container.querySelector('#group-arrears-kpi').textContent = arrearsCount;
-    container.querySelector('#group-inactive-members-kpi').innerHTML = `${inactiveCount} <span class="text-xs text-muted" style="font-weight:normal;">(>90 days)</span>`;
+    container.querySelector('#group-inactive-members-kpi').innerHTML = `${inactiveCount} <span class="text-xs text-muted" style="font-weight:normal;">(no deposit in 3 months)</span>`;
 
     const scope = accountScopeSelect?.value || 'all';
     const scopeLabel = scope === 'all' ? 'all members and group accounts' : (scope === 'members' ? 'all members' : 'group account');
@@ -1250,6 +1256,7 @@ export const renderGroupProfile = async (params) => {
         expand: 'member,member.group,group,recorded_by'
       });
       await dataCache.set(`groups:profile:${id}:savings:v3`, groupSavings);
+      rebuildEnrichedMembers();
       allFinancialSavingsSorted.length = 0;
       allFinancialSavingsSorted.push(...groupSavings.sort((a, b) => new Date(b.date) - new Date(a.date)));
       totalGroupSavings = calculateSavingsTotal(groupSavings.filter(isActiveMemberFinancialRecord));

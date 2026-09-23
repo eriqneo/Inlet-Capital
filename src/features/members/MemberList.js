@@ -149,11 +149,12 @@ export const renderMemberList = async () => {
     try {
       const memberSavings = await pb.collection('savings').getFullList({
         filter: `(${relationFilter('member', memberIds)}) && is_reversed=false`,
-        fields: 'id,member,date,created',
+        fields: 'id,member,type,is_reversed,date,created',
         sort: '-date'
       });
       const lastSavingsByMember = new Map();
       memberSavings.forEach(record => {
+        if (record.type !== 'deposit') return;
         const date = getValidActivityDate(record.date || record.created);
         if (!date) return;
         const current = lastSavingsByMember.get(record.member);
@@ -205,7 +206,7 @@ export const renderMemberList = async () => {
         <td>${m.phone_number || ''}</td>
         <td>
           <span class="badge ${activityStatus.className}">${activityStatus.label}</span>
-          <div class="text-xs text-muted" style="margin-top: 4px;">${isSuspended ? 'Excluded from active portfolio' : (m.group ? `Last saved: ${m.__lastSavingsDate ? m.__lastSavingsDate.toLocaleDateString() : 'Never'}` : 'Savings rule: Individual')}</div>
+          <div class="text-xs text-muted" style="margin-top: 4px;">${isSuspended ? 'Excluded from active portfolio' : (m.group ? (activityStatus.isOnboardingGrace ? 'New group member: savings grace period' : `Last saved: ${m.__lastSavingsDate ? m.__lastSavingsDate.toLocaleDateString() : 'Never'}`) : 'Savings rule: Individual')}</div>
         </td>
         <td>
           <div class="member-action-group">

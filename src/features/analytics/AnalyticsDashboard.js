@@ -409,10 +409,11 @@ export const renderAnalyticsDashboard = async () => {
       }
       collectionOfficerMap[officerKey].collectedInWindow = collected;
     });
-    const getEfficiencyRating = (rate, gross) => {
+    const getCollectionPerformanceRating = (rate, gross) => {
       if (gross <= 0) return { label: 'No Due', color: 'var(--text-muted)' };
-      if (rate <= 50) return { label: 'Below Average', color: 'var(--danger)' };
-      if (rate <= 80) return { label: 'Average', color: 'var(--warning)' };
+      if (rate <= 30) return { label: 'Poor', color: 'var(--danger)' };
+      if (rate <= 55) return { label: 'Average', color: 'var(--warning)' };
+      if (rate <= 75) return { label: 'Good', color: '#3b82f6' };
       return { label: 'Best', color: 'var(--success)' };
     };
     const collectionOfficerRows = Object.values(collectionOfficerMap)
@@ -429,7 +430,8 @@ export const renderAnalyticsDashboard = async () => {
           thisMonthPaid: thisMonthStats.paid,
           thisMonthRepaymentRate,
           efficiency,
-          rating: getEfficiencyRating(efficiency, row.gross)
+          forecastRating: getCollectionPerformanceRating(thisMonthRepaymentRate, thisMonthStats.gross),
+          efficiencyRating: getCollectionPerformanceRating(efficiency, row.gross)
         };
       })
       .sort((a, b) => b.expected - a.expected);
@@ -445,7 +447,7 @@ export const renderAnalyticsDashboard = async () => {
       ? Math.min(100, (collectedInWindowTotal / scheduledGrossCollection) * 100)
       : 0;
     const overallCollectionEfficiency = formatPercent(overallCollectionEfficiencyNumber);
-    const overallCollectionEfficiencyRating = getEfficiencyRating(overallCollectionEfficiencyNumber, scheduledGrossCollection);
+    const overallCollectionEfficiencyRating = getCollectionPerformanceRating(overallCollectionEfficiencyNumber, scheduledGrossCollection);
     
     // Correct savings calculation
     const totalSavings = scopedSavings
@@ -692,7 +694,7 @@ export const renderAnalyticsDashboard = async () => {
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(13, 148, 136, 0.1); color: #0d9488;">🧾</div>
           <div class="kpi-label">Officer Collection Efficiency</div>
-          <div class="kpi-value">${overallCollectionEfficiency}</div>
+          <div class="kpi-value" style="color: ${overallCollectionEfficiencyRating.color};">${overallCollectionEfficiency}</div>
           <div class="kpi-trend" style="color: ${overallCollectionEfficiencyRating.color};">${overallCollectionEfficiencyRating.label} · Collected KES ${formatMoney(collectedInWindowTotal)} of KES ${formatMoney(scheduledGrossCollection)}</div>
         </div>
         <div class="kpi-card">
@@ -775,10 +777,10 @@ export const renderAnalyticsDashboard = async () => {
                   <td class="text-right font-semibold text-danger">${formatMoney(row.expected)}</td>
                   <td class="text-right">
                     ${row.thisMonthGross > 0
-                      ? `<div class="font-semibold">${formatPercent(row.thisMonthRepaymentRate)}</div><div class="text-xs text-muted">${formatMoney(row.thisMonthPaid)} / ${formatMoney(row.thisMonthGross)}</div>`
+                      ? `<div class="font-semibold" style="color: ${row.forecastRating.color};">${formatPercent(row.thisMonthRepaymentRate)}</div><div class="text-xs text-muted">${formatMoney(row.thisMonthPaid)} / ${formatMoney(row.thisMonthGross)}</div>`
                       : '<span class="text-muted">No due</span>'}
                   </td>
-                  <td><span class="badge" style="background: ${row.rating.color}; color: white; font-size: 0.65rem;">${row.rating.label}</span></td>
+                  <td><span class="badge" style="background: ${row.forecastRating.color}; color: white; font-size: 0.65rem;">${row.forecastRating.label}</span></td>
                 </tr>
               `).join('')}
             </tbody>
@@ -822,8 +824,8 @@ export const renderAnalyticsDashboard = async () => {
                   <td class="text-right">${formatMoney(o.gross)}</td>
                   <td class="text-right text-success">${formatMoney(o.collectedInWindow)}</td>
                   <td class="text-right font-semibold text-danger">${formatMoney(o.targetGap)}</td>
-                  <td class="text-right font-semibold" style="color: ${o.rating.color};">${formatPercent(o.efficiency)}</td>
-                  <td><span class="badge" style="background: ${o.rating.color}; color: white; font-size: 0.65rem;">${o.rating.label}</span></td>
+                  <td class="text-right font-semibold" style="color: ${o.efficiencyRating.color};">${formatPercent(o.efficiency)}</td>
+                  <td><span class="badge" style="background: ${o.efficiencyRating.color}; color: white; font-size: 0.65rem;">${o.efficiencyRating.label}</span></td>
                 </tr>
               `).join('')}
             </tbody>

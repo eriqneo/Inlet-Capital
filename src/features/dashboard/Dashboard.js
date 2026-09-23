@@ -6,7 +6,7 @@ import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { formatMoney, formatPercent } from '../../core/utils.js';
-import { applyEffectiveSchedulePayments, buildEffectiveSchedulePaidMap, getArrearsTotal, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
+import { applyEffectiveSchedulePayments, buildEffectiveSchedulePaidMap, getArrearsTotal, getDaysInArrears, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
 import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
 import { createLoanPortfolioCalculator, isCollectibleLoanRecord } from '../../core/loanPortfolio.js';
@@ -279,6 +279,37 @@ export const renderDashboard = async () => {
         : gparRateNumber >= 11
           ? { label: 'Good', color: 'var(--primary)', accent: 'var(--primary)' }
           : { label: 'Excellent', color: 'var(--success)', accent: 'var(--success)' };
+  const overdueLoanAges = new Map();
+  overdueSchedules.forEach(schedule => {
+    const daysLate = getDaysInArrears(schedule, today);
+    const current = overdueLoanAges.get(schedule.loan);
+    if (!current || daysLate > current.daysLate) {
+      overdueLoanAges.set(schedule.loan, { daysLate, loan: loansById.get(schedule.loan) });
+    }
+  });
+  const parAging = {
+    par30: { olb: 0, loanCount: 0 },
+    par60: { olb: 0, loanCount: 0 },
+    par90: { olb: 0, loanCount: 0 }
+  };
+  overdueLoanAges.forEach(({ daysLate, loan }) => {
+    if (!loan) return;
+    const bucket = daysLate <= 30
+      ? parAging.par30
+      : (daysLate <= 60 ? parAging.par60 : (daysLate <= 90 ? parAging.par90 : null));
+    if (!bucket) return;
+    bucket.loanCount += 1;
+    bucket.olb += Math.max(0, Number(getLoanOutstandingBalance(loan)) || 0);
+  });
+  const formatCompactMoney = (amount) => {
+    const value = Math.max(0, Number(amount) || 0);
+    if (value >= 1000000) return `KES ${(value / 1000000).toFixed(2)}M`;
+    if (value >= 1000) return `KES ${(value / 1000).toFixed(2)}K`;
+    return `KES ${formatMoney(value)}`;
+  };
+  const getParAgingRate = (bucket) => activeOutstandingLoanPortfolio > 0
+    ? (bucket.olb / activeOutstandingLoanPortfolio) * 100
+    : 0;
 
   const alertLoanIds = new Set();
   alertSchedules.forEach(s => {
@@ -386,7 +417,7 @@ export const renderDashboard = async () => {
         <p style="font-size: 2.5rem; font-weight: 700; color: var(--danger);">${formatMoney(totalArrears)}</p>
       </div>
       <div class="card" style="border-left: 4px solid ${parHealth.accent};">
-        <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Portfolio at Risk (PAR)</h3>
+        <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Arrears Ratio</h3>
         <p style="font-size: 2.5rem; font-weight: 700; color: ${parHealth.color};">${parRate}</p>
         <p class="text-xs" style="margin-top: 8px; color: ${parHealth.color}; font-weight: 700;">${parHealth.label}</p>
         <p class="text-xs text-muted" style="margin-top: 4px;">Arrears / Active Loan Portfolio</p>
@@ -396,6 +427,23 @@ export const renderDashboard = async () => {
         <p style="font-size: 2.5rem; font-weight: 700; color: ${gparHealth.color};">${gparRate}</p>
         <p class="text-xs" style="margin-top: 8px; color: ${gparHealth.color}; font-weight: 700;">${gparHealth.label}</p>
         <p class="text-xs text-muted" style="margin-top: 4px;">Overdue Outstanding / Loan Portfolio</p>
+      </div>
+      <div class="card" style="border-left: 4px solid var(--primary); min-width: 0;">
+        <h3 class="text-sm text-muted" style="margin-bottom: 12px;">PAR Aging by OLB</h3>
+        <div style="display: flex; gap: 10px; align-items: stretch;">
+          ${[
+            { label: 'PAR 30', days: '1-30 days', bucket: parAging.par30, color: '#10b981' },
+            { label: 'PAR 60', days: '31-60 days', bucket: parAging.par60, color: '#f59e0b' },
+            { label: 'PAR 90', days: '61-90 days', bucket: parAging.par90, color: '#ef4444' }
+          ].map(item => `
+            <div style="flex: 1 1 0; min-width: 0; border-left: 2px solid ${item.color}; padding-left: 7px;">
+              <div class="text-xs text-muted" style="white-space: nowrap;">${item.label}</div>
+              <div style="font-size: 1.05rem; font-weight: 700; color: ${item.color}; white-space: nowrap;">${formatPercent(getParAgingRate(item.bucket))}</div>
+              <div class="text-xs" style="margin-top: 3px; color: ${item.color}; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${formatMoney(item.bucket.olb)} outstanding loan balance">${formatCompactMoney(item.bucket.olb)}</div>
+              <div class="text-xs text-muted" style="margin-top: 2px; white-space: nowrap;">${item.days} · ${item.bucket.loanCount}</div>
+            </div>
+          `).join('')}
+        </div>
       </div>
       <div class="card" onclick="window.location.hash = '#/reports?tab=alerts'" style="cursor: pointer; border-left: 4px solid var(--warning); background: rgba(245, 158, 11, 0.05); transition: transform 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='var(--shadow-md)';" onmouseout="this.style.transform='none'; this.style.boxShadow='var(--shadow-sm)';">
         <h3 class="text-sm" style="margin-bottom: 8px; color: var(--warning); font-weight: 600;">Active Alerts & Reminders ⚠️</h3>

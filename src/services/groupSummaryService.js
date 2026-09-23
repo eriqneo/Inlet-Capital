@@ -2,6 +2,7 @@ import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
 import { getArrearsTotal, isScheduleInArrears } from '../core/loanScheduleMetrics.js';
 import { getSettlementContractAmount } from '../core/repaymentAllocation.js';
+import { getLatestSavingsDate, getMemberActivityStatus } from '../core/memberActivity.js';
 
 const summaryCacheKey = (groupId) => `group_summary:${groupId}:v1`;
 const scopedGroupRecordFilter = (groupId) => `group="${groupId}" || member.group="${groupId}"`;
@@ -42,7 +43,6 @@ const buildSummaryPayload = ({ groupId, members, loans, savings, repayments, set
   const portfolioMemberIds = new Set(portfolioMembers.map(member => member.id));
   const portfolioLoans = loans.filter(loan => !loan.member || portfolioMemberIds.has(loan.member));
   const portfolioSavings = savings.filter(record => !record.member || portfolioMemberIds.has(record.member));
-  const activeMemberCutoff = Date.now() - (90 * 24 * 60 * 60 * 1000);
   const activeGroupLoans = portfolioLoans.filter(loan => !loan.member && isCollectibleLoan(loan));
   const activeGroupLoanIds = new Set(activeGroupLoans.map(loan => loan.id));
   const groupLevelArrears = getArrearsTotal(
@@ -60,10 +60,8 @@ const buildSummaryPayload = ({ groupId, members, loans, savings, repayments, set
     const memberArrears = getArrearsTotal(
       schedules.filter(schedule => activeMemberLoanIds.has(schedule.loan) && isScheduleInArrears(schedule))
     );
-    const lastSavingsDate = memberSavings.length > 0
-      ? new Date(Math.max(...memberSavings.map(record => new Date(record.date))))
-      : null;
-    const isActive = lastSavingsDate && lastSavingsDate.getTime() >= activeMemberCutoff;
+    const lastSavingsDate = getLatestSavingsDate(memberSavings);
+    const isActive = getMemberActivityStatus(member, lastSavingsDate).isActive;
 
     totalArrears += memberArrears;
     if (memberArrears > 0) membersInArrears += 1;
