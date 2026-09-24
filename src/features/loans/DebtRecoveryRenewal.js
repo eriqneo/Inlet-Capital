@@ -60,13 +60,61 @@ export const openDebtRecoveryRenewal = (loan, onRenewed) => {
   const quoteArea = form.querySelector('.recovery-quote');
   const errorArea = form.querySelector('.recovery-error');
   let quote = null;
+  let displayedQuote = null;
   let busy = false;
   dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
   dialog.addEventListener('close', () => { dialog.remove(); previousFocus?.focus(); });
   cancel.onclick = () => dialog.close();
   const clearQuote = () => {
     quote = null;
+    displayedQuote = null;
     quoteArea.replaceChildren();
+    submit.textContent = 'Review renewal';
+  };
+  const renderQuote = (quoteToRender, notice = '') => {
+    quoteArea.innerHTML = `
+      <dl class="recovery-totals">
+        <dt>Renewal unit</dt><dd>${quoteToRender.sourceUnit === 'du' ? 'D.U' : 'D.R.U'}</dd>
+        <dt>Renewal base (Current OLB)</dt><dd>${formatMoney(quoteToRender.renewalBase ?? quoteToRender.principal)}</dd>
+        <dt>Interest (${quoteToRender.interestRate}%)</dt><dd>${formatMoney(quoteToRender.interest)}</dd>
+        <dt>Accrued fines in OLB</dt><dd>${formatMoney(quoteToRender.fines)}</dd>
+        <dt><strong>Total payable (KES)</strong></dt><dd><strong>${formatMoney(quoteToRender.totalPayable)}</strong></dd>
+        <dt>Restart date</dt><dd>${formatDate(quoteToRender.renewalDate)}</dd>
+        <dt>Final due date</dt><dd>${formatDate(quoteToRender.installments.at(-1).due_date)}</dd>
+      </dl>
+      ${notice ? `<p class="text-sm" style="margin-top: 12px; color: var(--warning); font-weight: 600;">${notice}</p>` : ''}
+      <p class="text-sm text-muted">The current OLB is the renewal base. Any accrued fines are already included in that base and are not added a second time. The approved interest rate and dates above define this renewed loan cycle.</p>
+      <details><summary>New repayment schedule</summary>
+        <div class="table-responsive"><table class="table"><thead><tr><th>Due date</th><th>Installment</th></tr></thead>
+        <tbody>${quoteToRender.installments.map(row => `<tr><td>${formatDate(row.due_date)}</td><td>${formatMoney(row.amount)}</td></tr>`).join('')}</tbody></table></div>
+      </details>`;
+  };
+  const refreshInterestPreview = () => {
+    const interestRate = Number(interestRateInput.value);
+    if (!displayedQuote || !Number.isFinite(interestRate)) {
+      clearQuote();
+      return;
+    }
+    const renewalBase = Number(displayedQuote.renewalBase ?? displayedQuote.principal) || 0;
+    const interest = Math.round(renewalBase * interestRate) / 100;
+    const totalPayable = Math.round((renewalBase + interest) * 100) / 100;
+    const installmentTotalCents = Math.round(totalPayable * 100);
+    const regularInstallmentCents = Math.floor(installmentTotalCents / displayedQuote.installments.length);
+    const installments = displayedQuote.installments.map((installment, index) => ({
+      ...installment,
+      amount: (index === displayedQuote.installments.length - 1
+        ? installmentTotalCents - (regularInstallmentCents * index)
+        : regularInstallmentCents) / 100
+    }));
+    quote = null;
+    renderQuote({
+      ...displayedQuote,
+      interestRate,
+      interest,
+      liability: totalPayable,
+      totalPayable,
+      installments
+    }, 'Interest preview updated. Review renewal before confirming these terms.');
     submit.textContent = 'Review renewal';
   };
   const syncFinalDueDate = () => {
@@ -82,7 +130,8 @@ export const openDebtRecoveryRenewal = (loan, onRenewed) => {
     if (months >= 1 && months <= 120) periodInput.value = String(months);
   };
   periodInput.oninput = () => { syncFinalDueDate(); clearQuote(); };
-  interestRateInput.oninput = clearQuote;
+  interestRateInput.oninput = refreshInterestPreview;
+  interestRateInput.onchange = refreshInterestPreview;
   restartDateInput.onchange = () => { syncFinalDueDate(); clearQuote(); };
   finalDueDateInput.onchange = () => { syncPeriodFromFinalDueDate(); clearQuote(); };
   const getRenewalTerms = () => ({
@@ -102,22 +151,13 @@ export const openDebtRecoveryRenewal = (loan, onRenewed) => {
     let committed = false;
     try {
       if (!quote) {
-        quote = await loanService.recoveryAction(loan.id, { action: 'preview', ...getRenewalTerms() });
-        quoteArea.innerHTML = `
-          <dl class="recovery-totals">
-            <dt>Renewal unit</dt><dd>${quote.sourceUnit === 'du' ? 'D.U' : 'D.R.U'}</dd>
-            <dt>Renewal base (Current OLB)</dt><dd>${formatMoney(quote.renewalBase ?? quote.principal)}</dd>
-            <dt>Interest (${quote.interestRate}%)</dt><dd>${formatMoney(quote.interest)}</dd>
-            <dt>Accrued fines in OLB</dt><dd>${formatMoney(quote.fines)}</dd>
-            <dt><strong>Total payable (KES)</strong></dt><dd><strong>${formatMoney(quote.totalPayable)}</strong></dd>
-            <dt>Restart date</dt><dd>${formatDate(quote.renewalDate)}</dd>
-            <dt>Final due date</dt><dd>${formatDate(quote.installments.at(-1).due_date)}</dd>
-          </dl>
-          <p class="text-sm text-muted">The current OLB is the renewal base. Any accrued fines are already included in that base and are not added a second time. The approved interest rate and dates above define this renewed loan cycle.</p>
-          <details><summary>New repayment schedule</summary>
-            <div class="table-responsive"><table class="table"><thead><tr><th>Due date</th><th>Installment</th></tr></thead>
-            <tbody>${quote.installments.map(row => `<tr><td>${formatDate(row.due_date)}</td><td>${formatMoney(row.amount)}</td></tr>`).join('')}</tbody></table></div>
-          </details>`;
+        const terms = getRenewalTerms();
+        quote = await loanService.recoveryAction(loan.id, { action: 'preview', ...terms });
+        if (Number(quote.interestRate) !== terms.interest_rate) {
+          throw new Error('The server did not apply the selected interest rate. Upload the latest debt recovery hook, then review again.');
+        }
+        displayedQuote = quote;
+        renderQuote(quote);
       } else {
         await loanService.recoveryAction(loan.id, { action: 'renew', ...getRenewalTerms(),
           fingerprint: quote.fingerprint, reason: form.elements.reason.value.trim() });
@@ -127,8 +167,7 @@ export const openDebtRecoveryRenewal = (loan, onRenewed) => {
       }
     } catch (error) {
       errorArea.textContent = error.message;
-      quote = null;
-      quoteArea.replaceChildren();
+      clearQuote();
     } finally {
       busy = false;
       Array.from(form.elements).forEach(element => { element.disabled = false; });

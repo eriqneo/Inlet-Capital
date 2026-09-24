@@ -9,7 +9,7 @@ import { formatDate, formatMoney, formatPercent } from '../../core/utils.js';
 import { dataCache } from '../../services/dataCache.js';
 import { renderCardSkeleton, renderInlineSyncStatus, renderTableSkeletonRows, setButtonLoading } from '../../core/uiState.js';
 import { settingsService } from '../../services/settingsService.js';
-import { getArrearsTotal, getDaysInArrears, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
+import { applyEffectiveSchedulePayments, buildEffectiveSchedulePaidMap, getArrearsTotal, getDaysInArrears, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
 import {
@@ -20,7 +20,7 @@ import {
   getRepaymentContractAmount
 } from '../../core/repaymentAllocation.js';
 import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, getOfficerScopeCacheKey, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
-import { createLoanPortfolioCalculator, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
+import { createLoanPortfolioCalculator, isCollectibleLoanRecord, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
 import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
 import { buildDebtManagementRows, getDebtReportDate, summarizeDebtManagement } from '../../core/debtManagement.js';
 
@@ -1684,18 +1684,14 @@ export const renderReportsDashboard = async () => {
     const membersById = new Map(members.map(member => [member.id, member]));
     const groupsById = new Map(groups.map(group => [group.id, group]));
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
-    const getLoanLiability = (loan) => {
-      const storedLiability = Number(loan?.total_liability) || 0;
-      if (storedLiability > 0) return storedLiability;
-      const principal = Number(loan?.approved_amount || loan?.amount_applied) || 0;
-      return principal + (Number(loan?.interest_amount) || 0);
-    };
-    const repaymentsByLoan = repayments.reduce((map, repayment) => {
-      if (!repayment.loan) return map;
-      map.set(repayment.loan, (map.get(repayment.loan) || 0) + getRepaymentContractAmount(repayment));
-      return map;
-    }, new Map());
-    const isCollectibleLoan = (loan) => loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
+    const isCollectibleLoan = isCollectibleLoanRecord;
+    const effectiveSchedulePaidMap = buildEffectiveSchedulePaidMap({
+      schedules,
+      repayments,
+      settlements,
+      useRecordedPaid: false
+    });
+    const effectiveSchedules = applyEffectiveSchedulePayments(schedules, effectiveSchedulePaidMap);
     const getLoanOwner = (loan) => {
       const member = loan?.expand?.member || membersById.get(loan?.member);
       const group = loan?.expand?.group || groupsById.get(loan?.group) || member?.expand?.group || groupsById.get(member?.group);
@@ -1715,7 +1711,7 @@ export const renderReportsDashboard = async () => {
       return { id: '1_30', label: '1-30 days', color: '#10b981', badgeClass: 'badge-success' };
     };
 
-    const allArrearsRows = schedules
+    const allArrearsRows = effectiveSchedules
       .map(schedule => {
         const loan = loansById.get(schedule.loan);
         if (!loan || !isCollectibleLoan(loan) || !isScheduleInArrears(schedule)) return null;
@@ -1724,7 +1720,7 @@ export const renderReportsDashboard = async () => {
         const arrearsAmount = getScheduleRemaining(schedule);
         if (arrearsAmount <= 0) return null;
         const owner = getLoanOwner(loan);
-        const olb = Math.max(0, getLoanLiability(loan) - (repaymentsByLoan.get(loan.id) || 0));
+        const olb = getLoanOutstandingBalanceWithFines(loan);
         return {
           schedule,
           loan,
@@ -1785,14 +1781,17 @@ export const renderReportsDashboard = async () => {
       bucket.loanCount += 1;
       bucket.olb += Math.max(0, Number(olb) || 0);
     });
-    const reportingPortfolio = Array.from(parLoans.values())
-      .reduce((sum, loan) => sum + Math.max(0, Number(loan.olb) || 0), 0);
+    const activeOutstandingLoanPortfolio = loans
+      .filter(isCollectibleLoan)
+      .reduce((sum, loan) => sum + getLoanOutstandingBalanceWithFines(loan), 0);
     const count1To30 = parBuckets.par30.loanCount;
     const count31To60 = parBuckets.par60.loanCount;
     const count61To90 = parBuckets.par90.loanCount;
     const renderParDetail = (element, label, bucket) => {
       if (!element) return;
-      const portfolioRate = reportingPortfolio > 0 ? (bucket.olb / reportingPortfolio) * 100 : 0;
+      const portfolioRate = activeOutstandingLoanPortfolio > 0
+        ? (bucket.olb / activeOutstandingLoanPortfolio) * 100
+        : 0;
       element.innerHTML = `${label} · ${bucket.loanCount} ${bucket.loanCount === 1 ? 'loan' : 'loans'} · <strong style="font-weight: 800; color: var(--text-primary);">${formatPercent(portfolioRate)}</strong>`;
     };
     const totalAmountEl = container.querySelector('#arrears-total-amount');

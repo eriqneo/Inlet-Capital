@@ -4,6 +4,7 @@ import { memberService } from '../../services/memberService.js';
 import { groupService } from '../../services/groupService.js';
 import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
+import { settingsService } from '../../services/settingsService.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { formatMoney, formatPercent } from '../../core/utils.js';
 import { applyEffectiveSchedulePayments, buildEffectiveSchedulePaidMap, getArrearsTotal, getDaysInArrears, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
@@ -149,7 +150,7 @@ export const renderDashboard = async () => {
   
   const refresh = async () => {
     try {
-    let members, groups, loans, savings, schedules, repayments, settlements;
+    let members, groups, loans, savings, schedules, repayments, settlements, automaticPenaltyAmount;
     const today = new Date();
     const upcomingThreshold = new Date();
     upcomingThreshold.setDate(upcomingThreshold.getDate() + 7);
@@ -161,7 +162,8 @@ export const renderDashboard = async () => {
       savings,
       schedules,
       repayments,
-      settlements
+      settlements,
+      automaticPenaltyAmount
     ] = await Promise.all([
       safe('members', () => memberService.getAll(), []),
       safe('groups', () => groupService.getAll(), []),
@@ -184,7 +186,8 @@ export const renderDashboard = async () => {
         () => pb.collection('loan_repayments').getFullList(),
         () => debouncedRefresh()
       ), []),
-      safe('loan balance-offs', () => loanService.getBalanceOffsFullList({ expand: '' }), [])
+      safe('loan balance-offs', () => loanService.getBalanceOffsFullList({ expand: '' }), []),
+      safe('penalty setting', () => settingsService.getNumber('penalty_amount', 500), 500)
     ]);
 
     const portfolioMemberIds = getPortfolioMemberIds(members);
@@ -224,7 +227,12 @@ export const renderDashboard = async () => {
     const pendingLoans = loans.filter(l => l.status === 'pending').length;
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
     const isCollectibleLoan = isCollectibleLoanRecord;
-    const portfolioCalculator = createLoanPortfolioCalculator({ repayments, settlements, schedules });
+    const portfolioCalculator = createLoanPortfolioCalculator({
+      repayments,
+      settlements,
+      schedules,
+      penaltyAmount: automaticPenaltyAmount
+    });
     const getLoanOutstandingBalance = portfolioCalculator.getOutstanding;
     const effectiveSchedulePaidMap = buildEffectiveSchedulePaidMap({
       schedules,
@@ -294,12 +302,6 @@ export const renderDashboard = async () => {
     bucket.loanCount += 1;
     bucket.olb += Math.max(0, Number(getLoanOutstandingBalance(loan)) || 0);
   });
-  const formatCompactMoney = (amount) => {
-    const value = Math.max(0, Number(amount) || 0);
-    if (value >= 1000000) return `KES ${(value / 1000000).toFixed(2)}M`;
-    if (value >= 1000) return `KES ${(value / 1000).toFixed(2)}K`;
-    return `KES ${formatMoney(value)}`;
-  };
   const getParAgingRate = (bucket) => activeOutstandingLoanPortfolio > 0
     ? (bucket.olb / activeOutstandingLoanPortfolio) * 100
     : 0;
@@ -423,17 +425,22 @@ export const renderDashboard = async () => {
       </div>
       <div class="card" role="button" tabindex="0" aria-label="Open Arrears Aging report" onclick="window.location.hash = '#/reports?tab=arrears'" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); window.location.hash = '#/reports?tab=arrears'; }" style="border-left: 4px solid var(--primary); min-width: 0; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='var(--shadow-md)';" onmouseout="this.style.transform='none'; this.style.boxShadow='var(--shadow-sm)';">
         <h3 class="text-sm text-muted" style="margin-bottom: 12px;">PAR Aging Analysis</h3>
-        <div style="display: flex; gap: 10px; align-items: stretch;">
+        <div style="display: grid; gap: 8px;">
           ${[
-            { label: 'PAR 30', days: '1-30 days', bucket: parAging.par30, color: '#10b981' },
-            { label: 'PAR 60', days: '31-60 days', bucket: parAging.par60, color: '#f59e0b' },
-            { label: 'PAR 90', days: '61-90 days', bucket: parAging.par90, color: '#ef4444' }
-          ].map(item => `
-            <div style="flex: 1 1 0; min-width: 0; border-left: 2px solid ${item.color}; padding-left: 7px;">
-              <div class="text-xs text-muted" style="white-space: nowrap;">${item.label}</div>
-              <div style="font-size: 1.05rem; font-weight: 700; color: ${item.color}; white-space: nowrap;">${formatPercent(getParAgingRate(item.bucket))}</div>
-              <div class="text-xs" style="margin-top: 3px; color: ${item.color}; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${formatMoney(item.bucket.olb)} outstanding loan balance">${formatCompactMoney(item.bucket.olb)}</div>
-              <div class="text-xs text-muted" style="margin-top: 2px; white-space: nowrap;">${item.days} · ${item.bucket.loanCount}</div>
+            { label: 'PAR 30', bucket: parAging.par30, color: '#10b981' },
+            { label: 'PAR 60', bucket: parAging.par60, color: '#f59e0b' },
+            { label: 'PAR 90', bucket: parAging.par90, color: '#ef4444' }
+          ].map((item, index) => `
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; ${index ? 'border-top: 1px solid var(--border-color); padding-top: 8px;' : ''}">
+              <div style="border-left: 3px solid ${item.color}; padding-left: 8px; min-width: 64px;">
+                <div class="text-xs" style="font-weight: 700; color: ${item.color}; white-space: nowrap;">${item.label}</div>
+                <div class="text-xs text-muted" style="margin-top: 2px; white-space: nowrap;">${item.bucket.loanCount} ${item.bucket.loanCount === 1 ? 'loan' : 'loans'}</div>
+              </div>
+              <div style="min-width: 0; text-align: right;">
+                <div class="text-xs text-muted">OLB</div>
+                <div style="margin-top: 2px; font-size: 0.95rem; font-weight: 800; color: ${item.color}; white-space: nowrap; font-variant-numeric: tabular-nums;">KES ${formatMoney(item.bucket.olb)}</div>
+                <div class="text-xs" style="margin-top: 2px; color: ${item.color}; font-weight: 700;">${formatPercent(getParAgingRate(item.bucket))}</div>
+              </div>
             </div>
           `).join('')}
         </div>
