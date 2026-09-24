@@ -110,8 +110,16 @@ try {
   assert.equal(duQuote.interest, Math.round(duQuote.renewalBase * 0.2 * 100) / 100);
   assert.equal(duQuote.liability, duQuote.renewalBase + duQuote.interest);
 
-  const finalQuote = await action(client, { action: 'preview', period: 7 });
-  const body = { action: 'renew', period: 7, fingerprint: finalQuote.fingerprint, reason: 'Client has agreed to restart payments.' };
+  const customRestartDate = new Date().toISOString().slice(0, 10);
+  const customFinalDueDate = addMonthsPreservingDay(`${customRestartDate}T12:00:00Z`, 7).toISOString().slice(0, 10);
+  const renewalTerms = {
+    period: 7,
+    interest_rate: 12.5,
+    renewal_date: customRestartDate,
+    final_due_date: customFinalDueDate
+  };
+  const finalQuote = await action(client, { action: 'preview', ...renewalTerms });
+  const body = { action: 'renew', ...renewalTerms, fingerprint: finalQuote.fingerprint, reason: 'Client has agreed to restart payments.' };
   const concurrent = await Promise.allSettled([action(client, body), action(client, body)]);
   assert.equal(concurrent.filter(result => result.status === 'fulfilled').length, 1);
   const renewed = await root.collection('loans').getOne(loan.id);
@@ -120,6 +128,9 @@ try {
   assert.equal(renewed.status, 'disbursed');
   assert.equal(renewed.approved_amount, finalQuote.renewalBase);
   assert.equal(renewed.period, 7);
+  assert.equal(renewed.interest_rate, 12.5);
+  assert.equal(renewed.renewal_summary.interest_rate, 12.5);
+  assert.equal(renewed.renewal_summary.final_due_date.slice(0, 10), customFinalDueDate);
   const archive = await root.collection('loan_renewals').getFullList();
   assert.equal(archive.length, 1);
   assert.equal(archive[0].previous_schedule.length, 6);
@@ -127,6 +138,7 @@ try {
   const installments = await root.collection('loan_schedule').getFullList({ filter: `loan="${loan.id}"` });
   assert.equal(installments.length, 7);
   assert.equal(installments.reduce((sum, row) => sum + Math.round(row.amount * 100), 0), Math.round(finalQuote.liability * 100));
+  assert.equal(installments.sort((a, b) => a.installment_no - b.installment_no).at(-1).due_date.slice(0, 10), customFinalDueDate);
   assert.equal(installments.reduce((sum, row) => sum + row.carried_fine, 0), 0);
   assert.equal((await root.collection('loan_repayments').getFullList({ filter: `loan="${loan.id}"` })).length, 0);
   await assert.rejects(client.collection('loan_renewals').delete(archive[0].id), error => error.status === 403);

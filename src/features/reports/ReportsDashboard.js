@@ -239,7 +239,7 @@ export const renderReportsDashboard = async () => {
             <div class="text-xl font-semibold text-danger" id="individuals-total-arrears">KES 0</div>
           </div>
           <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
-            <div class="text-xs text-muted">Table Entries</div>
+            <div class="text-xs text-muted">Table Loans</div>
             <div class="text-xl font-semibold text-primary" id="individuals-entry-count">0</div>
           </div>
         </div>
@@ -431,9 +431,9 @@ export const renderReportsDashboard = async () => {
             <div class="text-xs text-muted">Loan Repayments</div>
             <div class="text-xl font-semibold text-success" id="repayments-total-paid">KES 0</div>
           </div>
-          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--danger);">
+          <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--warning);">
             <div class="text-xs text-muted">Outstanding OLB</div>
-            <div class="text-xl font-semibold text-danger" id="repayments-total-olb">KES 0</div>
+            <div class="text-xl font-semibold text-warning" id="repayments-total-olb">KES 0</div>
           </div>
           <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
             <div class="text-xs text-muted">Table Entries</div>
@@ -447,7 +447,7 @@ export const renderReportsDashboard = async () => {
                 <th>Ln Number</th>
                 <th>Client Name</th>
                 <th>Group</th>
-                <th>OLB</th>
+                <th style="color: var(--warning);">OLB</th>
                 <th>Status</th>
                 <th>Due Date</th>
                 <th>Loan Repaid</th>
@@ -469,15 +469,15 @@ export const renderReportsDashboard = async () => {
             <div class="text-xl font-semibold text-danger" id="arrears-total-amount">KES 0</div>
           </div>
           <div class="card" style="background: var(--bg-light); border-left: 4px solid #10b981;">
-            <div class="text-xs text-muted">1-30 Days</div>
+            <div class="text-xs text-muted">1-30 Day Loans</div>
             <div class="text-xl font-semibold" style="color: #10b981;" id="arrears-1-30-count">0</div>
           </div>
           <div class="card" style="background: var(--bg-light); border-left: 4px solid #f59e0b;">
-            <div class="text-xs text-muted">31-60 Days</div>
+            <div class="text-xs text-muted">31-60 Day Loans</div>
             <div class="text-xl font-semibold" style="color: #f59e0b;" id="arrears-31-60-count">0</div>
           </div>
           <div class="card" style="background: var(--bg-light); border-left: 4px solid #ef4444;">
-            <div class="text-xs text-muted">61-90 Days</div>
+            <div class="text-xs text-muted">61-90 Day Loans</div>
             <div class="text-xl font-semibold" style="color: #ef4444;" id="arrears-61-plus-count">0</div>
           </div>
           <div class="card" style="background: var(--bg-light); border-left: 4px solid #10b981;">
@@ -1665,7 +1665,7 @@ export const renderReportsDashboard = async () => {
           <td class="font-semibold">${row.loan.loan_no || '-'}</td>
           <td class="font-semibold">${row.clientName}</td>
           <td><span class="badge badge-outline" style="font-size: 0.65rem;">${row.groupName}</span></td>
-          <td class="font-bold text-danger">${formatMoney(row.olb)}</td>
+          <td class="font-bold text-warning">${formatMoney(row.olb)}</td>
           <td><span class="badge ${row.statusClass}" style="font-size: 0.65rem;">${row.status}</span></td>
           <td>${formatDate(row.dueDate)}</td>
           <td class="font-bold text-success">${formatMoney(row.paid)}</td>
@@ -1715,7 +1715,7 @@ export const renderReportsDashboard = async () => {
       return { id: '1_30', label: '1-30 days', color: '#10b981', badgeClass: 'badge-success' };
     };
 
-    const arrearsRows = schedules
+    const allArrearsRows = schedules
       .map(schedule => {
         const loan = loansById.get(schedule.loan);
         if (!loan || !isCollectibleLoan(loan) || !isScheduleInArrears(schedule)) return null;
@@ -1737,28 +1737,40 @@ export const renderReportsDashboard = async () => {
         };
       })
       .filter(Boolean)
-      .filter(row => {
-        if (!isWithinDateRange(row.dueDate)) return false;
-        if (activeFilters.arrears === '1_30') return row.ageBand.id === '1_30';
-        if (activeFilters.arrears === '31_60') return row.ageBand.id === '31_60';
-        if (activeFilters.arrears === '61_plus') return row.ageBand.id === '61_plus';
-        return true;
-      })
+      .filter(row => isWithinDateRange(row.dueDate))
       .sort((a, b) => b.daysLate - a.daysLate);
+    const arrearsLoansById = new Map();
+    allArrearsRows.forEach(row => {
+      const current = arrearsLoansById.get(row.loan.id);
+      if (!current) {
+        arrearsLoansById.set(row.loan.id, { ...row });
+        return;
+      }
+
+      current.arrearsAmount += row.arrearsAmount;
+      if (row.daysLate > current.daysLate) {
+        current.schedule = row.schedule;
+        current.dueDate = row.dueDate;
+        current.daysLate = row.daysLate;
+        current.ageBand = row.ageBand;
+      }
+    });
+    const allArrearsLoanRows = Array.from(arrearsLoansById.values())
+      .sort((a, b) => b.daysLate - a.daysLate);
+    const arrearsRows = allArrearsLoanRows.filter(row => {
+      if (activeFilters.arrears === '1_30') return row.ageBand.id === '1_30';
+      if (activeFilters.arrears === '31_60') return row.ageBand.id === '31_60';
+      if (activeFilters.arrears === '61_plus') return row.ageBand.id === '61_plus';
+      return true;
+    });
 
     const totalArrearsAmount = arrearsRows.reduce((sum, row) => sum + row.arrearsAmount, 0);
-    const count1To30 = arrearsRows.filter(row => row.ageBand.id === '1_30').length;
-    const count31To60 = arrearsRows.filter(row => row.ageBand.id === '31_60').length;
-    const count61To90 = arrearsRows.filter(row => row.daysLate >= 61 && row.daysLate <= 90).length;
     const parLoans = new Map();
-    arrearsRows.forEach(row => {
-      const current = parLoans.get(row.loan.id);
-      if (!current || row.daysLate > current.daysLate) {
-        parLoans.set(row.loan.id, {
-          daysLate: row.daysLate,
-          olb: getLoanOutstandingBalanceWithFines(row.loan)
-        });
-      }
+    allArrearsLoanRows.forEach(row => {
+      parLoans.set(row.loan.id, {
+        daysLate: row.daysLate,
+        olb: getLoanOutstandingBalanceWithFines(row.loan)
+      });
     });
     const parBuckets = {
       par30: { loanCount: 0, olb: 0 },
@@ -1775,9 +1787,13 @@ export const renderReportsDashboard = async () => {
     });
     const reportingPortfolio = Array.from(parLoans.values())
       .reduce((sum, loan) => sum + Math.max(0, Number(loan.olb) || 0), 0);
-    const formatParDetail = (label, bucket) => {
+    const count1To30 = parBuckets.par30.loanCount;
+    const count31To60 = parBuckets.par60.loanCount;
+    const count61To90 = parBuckets.par90.loanCount;
+    const renderParDetail = (element, label, bucket) => {
+      if (!element) return;
       const portfolioRate = reportingPortfolio > 0 ? (bucket.olb / reportingPortfolio) * 100 : 0;
-      return `${label} · ${bucket.loanCount} ${bucket.loanCount === 1 ? 'loan' : 'loans'} · ${formatPercent(portfolioRate)}`;
+      element.innerHTML = `${label} · ${bucket.loanCount} ${bucket.loanCount === 1 ? 'loan' : 'loans'} · <strong style="font-weight: 800; color: var(--text-primary);">${formatPercent(portfolioRate)}</strong>`;
     };
     const totalAmountEl = container.querySelector('#arrears-total-amount');
     const count1To30El = container.querySelector('#arrears-1-30-count');
@@ -1800,10 +1816,10 @@ export const renderReportsDashboard = async () => {
     if (par60El) par60El.textContent = `KES ${formatMoney(parBuckets.par60.olb)}`;
     if (par90El) par90El.textContent = `KES ${formatMoney(parBuckets.par90.olb)}`;
     if (par90PlusEl) par90PlusEl.textContent = `KES ${formatMoney(parBuckets.par90Plus.olb)}`;
-    if (par30DetailEl) par30DetailEl.textContent = formatParDetail('1-30 days', parBuckets.par30);
-    if (par60DetailEl) par60DetailEl.textContent = formatParDetail('31-60 days', parBuckets.par60);
-    if (par90DetailEl) par90DetailEl.textContent = formatParDetail('61-90 days', parBuckets.par90);
-    if (par90PlusDetailEl) par90PlusDetailEl.textContent = formatParDetail('91+ days', parBuckets.par90Plus);
+    renderParDetail(par30DetailEl, '1-30 days', parBuckets.par30);
+    renderParDetail(par60DetailEl, '31-60 days', parBuckets.par60);
+    renderParDetail(par90DetailEl, '61-90 days', parBuckets.par90);
+    renderParDetail(par90PlusDetailEl, '91+ days', parBuckets.par90Plus);
     if (entriesCountEl) entriesCountEl.textContent = arrearsRows.length.toLocaleString();
 
     const sortedRows = sortReportRows('arrears', arrearsRows);
@@ -1828,11 +1844,7 @@ export const renderReportsDashboard = async () => {
         </tr>
       `).join('');
 
-    const totalArrearsSchedules = schedules.filter(schedule => {
-      const loan = loansById.get(schedule.loan);
-      return isCollectibleLoan(loan) && isScheduleInArrears(schedule);
-    }).length;
-    container.querySelector('#filter-count').textContent = `Showing ${arrearsRows.length} of ${totalArrearsSchedules} overdue schedules`;
+    container.querySelector('#filter-count').textContent = `Showing ${arrearsRows.length} of ${allArrearsLoanRows.length} overdue loans`;
     renderReportPagination('#arrears-pagination', arrearsRows.length, pageSize, (p) => { pages.arrears = p; updateArrears(); });
   };
 

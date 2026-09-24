@@ -374,7 +374,7 @@ export const renderLoanDetails = async (params) => {
         <div id="overview-tab">
           ${loan.renewal_date ? `<section style="padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid var(--border-color);">
             <h3 class="text-sm">Debt recovery renewal</h3>
-            <p class="text-sm">Restarted ${formatDate(loan.renewal_date)} &middot; ${Number(loan.period)} months &middot; Carried fines: KES ${formatMoney(loan.renewal_summary?.fines)}</p>
+            <p class="text-sm">Restarted ${formatDate(loan.renewal_date)} &middot; ${Number(loan.period)} months &middot; Interest: ${Number(loan.renewal_summary?.interest_rate ?? loan.interest_rate) || 0}% &middot; Final due: ${formatDate(loan.renewal_summary?.final_due_date || schedule.at(-1)?.due_date)} &middot; Carried fines: KES ${formatMoney(loan.renewal_summary?.fines)}</p>
             <p class="text-sm" style="white-space: pre-wrap; overflow-wrap: anywhere;">${escapeHtml(loan.renewal_summary?.reason || '')}</p>
             ${renewalsResult.status === 'rejected' ? '<p class="text-danger">Renewal history could not be loaded.</p>' : renewals.map(record => `<details style="margin-top: 12px;">
               <summary>Renewal ${formatDate(record.renewal_date)} &middot; ${Number(record.new_terms?.period)} months</summary>

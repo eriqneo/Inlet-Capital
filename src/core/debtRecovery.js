@@ -62,7 +62,8 @@ export const isRecoveredLoan = (loan, {
 };
 
 export const buildDebtRecoveryRenewal = ({ loan, repayments = [], settlements = [], schedules = [],
-  penaltyAmount = 500, period, referenceDate = new Date() }) => {
+  penaltyAmount = 500, period, interestRate: requestedInterestRate, renewalDate: requestedRenewalDate,
+  finalDueDate: requestedFinalDueDate, referenceDate = new Date() }) => {
   const outstandingBalance = calculateLoanOutstandingBalance({
     loan, repayments, settlements, schedules, penaltyAmount, referenceDate
   });
@@ -86,7 +87,10 @@ export const buildDebtRecoveryRenewal = ({ loan, repayments = [], settlements = 
   // unpaid contractual interest and includes accrued fines exactly once.
   const renewalBase = money(outstandingBalance);
   if (renewalBase <= 0) throw new Error('This loan has no valid outstanding balance to renew.');
-  const interestRate = 20;
+  const interestRate = requestedInterestRate === undefined ? 20 : Number(requestedInterestRate);
+  if (!Number.isFinite(interestRate) || interestRate < 0 || interestRate > 100) {
+    throw new Error('Enter an interest rate between 0% and 100%.');
+  }
   const interest = money(renewalBase * interestRate / 100);
   // Normalize calendar days so a UTC server and a Nairobi browser quote the same fines.
   const calendarDate = value => new Date(businessDay(value) * 86400000 + 12 * 3600000).toISOString();
@@ -95,13 +99,26 @@ export const buildDebtRecoveryRenewal = ({ loan, repayments = [], settlements = 
     repayments, settlements, penaltyAmount, referenceDate: calendarDate(referenceDate)
   }).outstandingFine);
   const renewedLiability = money(renewalBase + interest);
-  const renewalDate = new Date((businessDay(referenceDate) * 86400000) - 3 * 3600000).toISOString();
-  const renewalDay = new Date(businessDay(referenceDate) * 86400000).toISOString().slice(0, 10);
+  const renewalBusinessDay = businessDay(requestedRenewalDate || referenceDate);
+  if (!Number.isFinite(renewalBusinessDay)) throw new Error('Enter a valid restart date.');
+  const renewalDate = new Date((renewalBusinessDay * 86400000) - 3 * 3600000).toISOString();
+  const renewalDay = new Date(renewalBusinessDay * 86400000).toISOString().slice(0, 10);
+  const defaultFinalDueDate = addMonthsPreservingDay(`${renewalDay}T12:00:00Z`, period);
+  const finalDueBusinessDay = businessDay(requestedFinalDueDate || defaultFinalDueDate);
+  const penultimateDueDate = period > 1
+    ? addMonthsPreservingDay(`${renewalDay}T12:00:00Z`, period - 1)
+    : new Date(`${renewalDay}T12:00:00Z`);
+  if (!Number.isFinite(finalDueBusinessDay) || finalDueBusinessDay <= businessDay(penultimateDueDate)) {
+    throw new Error('Final due date must be after the prior installment and restart date.');
+  }
+  const finalDueDate = new Date(finalDueBusinessDay * 86400000 + 12 * 3600000).toISOString();
   const monthlyCents = Math.floor(Math.round(renewedLiability * 100) / period);
   const installments = Array.from({ length: period }, (_, index) => ({
     loan: loan.id,
     installment_no: index + 1,
-    due_date: addMonthsPreservingDay(`${renewalDay}T12:00:00Z`, index + 1).toISOString(),
+    due_date: index === period - 1
+      ? finalDueDate
+      : addMonthsPreservingDay(`${renewalDay}T12:00:00Z`, index + 1).toISOString(),
     amount: (index === period - 1 ? Math.round(renewedLiability * 100) - monthlyCents * (period - 1) : monthlyCents) / 100,
     paid: 0,
     status: 'pending',
@@ -109,9 +126,9 @@ export const buildDebtRecoveryRenewal = ({ loan, repayments = [], settlements = 
     carried_fine: 0
   }));
   // Bind confirmation to the exact terms and balances the approver reviewed.
-  const fingerprint = JSON.stringify({ updated: loan.updated, renewalDate, period, renewalBase, interest, fines,
+  const fingerprint = JSON.stringify({ updated: loan.updated, renewalDate, finalDueDate, period, renewalBase, interestRate, interest, fines,
     schedules: schedules.map(s => [s.id, s.updated, s.amount, s.paid, s.due_date, s.penalty_waived, s.carried_fine]) });
   return { principal: renewalBase, renewalBase, interestRate, interest, fines, liability: renewedLiability,
     totalPayable: renewedLiability, sourceUnit: isDebtRecovery ? 'dru' : 'du',
-    period, renewalDate, installments, fingerprint };
+    period, renewalDate, finalDueDate, installments, fingerprint };
 };

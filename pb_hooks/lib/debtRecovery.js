@@ -350,6 +350,9 @@ var buildDebtRecoveryRenewal = ({
   schedules = [],
   penaltyAmount = 500,
   period,
+  interestRate: requestedInterestRate,
+  renewalDate: requestedRenewalDate,
+  finalDueDate: requestedFinalDueDate,
   referenceDate = /* @__PURE__ */ new Date()
 }) => {
   const outstandingBalance = calculateLoanOutstandingBalance({
@@ -377,7 +380,10 @@ var buildDebtRecoveryRenewal = ({
   }
   const renewalBase = money(outstandingBalance);
   if (renewalBase <= 0) throw new Error("This loan has no valid outstanding balance to renew.");
-  const interestRate = 20;
+  const interestRate = requestedInterestRate === void 0 ? 20 : Number(requestedInterestRate);
+  if (!Number.isFinite(interestRate) || interestRate < 0 || interestRate > 100) {
+    throw new Error("Enter an interest rate between 0% and 100%.");
+  }
   const interest = money(renewalBase * interestRate / 100);
   const calendarDate = (value) => new Date(businessDay(value) * 864e5 + 12 * 36e5).toISOString();
   const fines = money(calculateLoanPenaltyState({
@@ -388,13 +394,22 @@ var buildDebtRecoveryRenewal = ({
     referenceDate: calendarDate(referenceDate)
   }).outstandingFine);
   const renewedLiability = money(renewalBase + interest);
-  const renewalDate = new Date(businessDay(referenceDate) * 864e5 - 3 * 36e5).toISOString();
-  const renewalDay = new Date(businessDay(referenceDate) * 864e5).toISOString().slice(0, 10);
+  const renewalBusinessDay = businessDay(requestedRenewalDate || referenceDate);
+  if (!Number.isFinite(renewalBusinessDay)) throw new Error("Enter a valid restart date.");
+  const renewalDate = new Date(renewalBusinessDay * 864e5 - 3 * 36e5).toISOString();
+  const renewalDay = new Date(renewalBusinessDay * 864e5).toISOString().slice(0, 10);
+  const defaultFinalDueDate = addMonthsPreservingDay(`${renewalDay}T12:00:00Z`, period);
+  const finalDueBusinessDay = businessDay(requestedFinalDueDate || defaultFinalDueDate);
+  const penultimateDueDate = period > 1 ? addMonthsPreservingDay(`${renewalDay}T12:00:00Z`, period - 1) : /* @__PURE__ */ new Date(`${renewalDay}T12:00:00Z`);
+  if (!Number.isFinite(finalDueBusinessDay) || finalDueBusinessDay <= businessDay(penultimateDueDate)) {
+    throw new Error("Final due date must be after the prior installment and restart date.");
+  }
+  const finalDueDate = new Date(finalDueBusinessDay * 864e5 + 12 * 36e5).toISOString();
   const monthlyCents = Math.floor(Math.round(renewedLiability * 100) / period);
   const installments = Array.from({ length: period }, (_, index) => ({
     loan: loan.id,
     installment_no: index + 1,
-    due_date: addMonthsPreservingDay(`${renewalDay}T12:00:00Z`, index + 1).toISOString(),
+    due_date: index === period - 1 ? finalDueDate : addMonthsPreservingDay(`${renewalDay}T12:00:00Z`, index + 1).toISOString(),
     amount: (index === period - 1 ? Math.round(renewedLiability * 100) - monthlyCents * (period - 1) : monthlyCents) / 100,
     paid: 0,
     status: "pending",
@@ -404,8 +419,10 @@ var buildDebtRecoveryRenewal = ({
   const fingerprint = JSON.stringify({
     updated: loan.updated,
     renewalDate,
+    finalDueDate,
     period,
     renewalBase,
+    interestRate,
     interest,
     fines,
     schedules: schedules.map((s) => [s.id, s.updated, s.amount, s.paid, s.due_date, s.penalty_waived, s.carried_fine])
@@ -421,6 +438,7 @@ var buildDebtRecoveryRenewal = ({
     sourceUnit: isDebtRecovery ? "dru" : "du",
     period,
     renewalDate,
+    finalDueDate,
     installments,
     fingerprint
   };

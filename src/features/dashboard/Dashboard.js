@@ -224,12 +224,6 @@ export const renderDashboard = async () => {
     const pendingLoans = loans.filter(l => l.status === 'pending').length;
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
     const isCollectibleLoan = isCollectibleLoanRecord;
-    const getLoanLiability = (loan) => {
-      const storedLiability = Number(loan?.total_liability) || 0;
-      if (storedLiability > 0) return storedLiability;
-      const principal = Number(loan?.approved_amount || loan?.amount_applied) || 0;
-      return principal + (Number(loan?.interest_amount) || 0);
-    };
     const portfolioCalculator = createLoanPortfolioCalculator({ repayments, settlements, schedules });
     const getLoanOutstandingBalance = portfolioCalculator.getOutstanding;
     const effectiveSchedulePaidMap = buildEffectiveSchedulePaidMap({
@@ -247,13 +241,12 @@ export const renderDashboard = async () => {
     .reduce((sum, s) => s.type === 'deposit' ? sum + (Number(s.amount) || 0) : sum - (Number(s.amount) || 0), 0);
 
   const totalArrears = getArrearsTotal(overdueSchedules, today);
-  const activeLoanPortfolio = loans
-    .filter(isCollectibleLoan)
-    .reduce((sum, loan) => sum + getLoanLiability(loan), 0);
   const activeOutstandingLoanPortfolio = loans
     .filter(isCollectibleLoan)
     .reduce((sum, loan) => sum + getLoanOutstandingBalance(loan), 0);
-  const parRateNumber = activeLoanPortfolio > 0 ? (totalArrears / activeLoanPortfolio) * 100 : 0;
+  const parRateNumber = activeOutstandingLoanPortfolio > 0
+    ? (totalArrears / activeOutstandingLoanPortfolio) * 100
+    : 0;
   const parRate = formatPercent(parRateNumber);
   const parHealth = parRateNumber >= 16
     ? { label: 'High Risk', color: 'var(--danger)', accent: 'var(--danger)' }
@@ -420,7 +413,7 @@ export const renderDashboard = async () => {
         <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Arrears Ratio</h3>
         <p style="font-size: 2.5rem; font-weight: 700; color: ${parHealth.color};">${parRate}</p>
         <p class="text-xs" style="margin-top: 8px; color: ${parHealth.color}; font-weight: 700;">${parHealth.label}</p>
-        <p class="text-xs text-muted" style="margin-top: 4px;">Arrears / Active Loan Portfolio</p>
+        <p class="text-xs text-muted" style="margin-top: 4px;">Arrears / Outstanding Loan Balance</p>
       </div>
       <div class="card" style="border-left: 4px solid ${gparHealth.accent};">
         <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Global Portfolio at Risk (GPAR)</h3>
@@ -428,8 +421,8 @@ export const renderDashboard = async () => {
         <p class="text-xs" style="margin-top: 8px; color: ${gparHealth.color}; font-weight: 700;">${gparHealth.label}</p>
         <p class="text-xs text-muted" style="margin-top: 4px;">Overdue Outstanding / Loan Portfolio</p>
       </div>
-      <div class="card" style="border-left: 4px solid var(--primary); min-width: 0;">
-        <h3 class="text-sm text-muted" style="margin-bottom: 12px;">PAR Aging by OLB</h3>
+      <div class="card" role="button" tabindex="0" aria-label="Open Arrears Aging report" onclick="window.location.hash = '#/reports?tab=arrears'" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); window.location.hash = '#/reports?tab=arrears'; }" style="border-left: 4px solid var(--primary); min-width: 0; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='var(--shadow-md)';" onmouseout="this.style.transform='none'; this.style.boxShadow='var(--shadow-sm)';">
+        <h3 class="text-sm text-muted" style="margin-bottom: 12px;">PAR Aging Analysis</h3>
         <div style="display: flex; gap: 10px; align-items: stretch;">
           ${[
             { label: 'PAR 30', days: '1-30 days', bucket: parAging.par30, color: '#10b981' },

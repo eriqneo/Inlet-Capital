@@ -105,6 +105,23 @@ test('renewal uses the standard 20 percent rate against the current OLB', () => 
   assert.equal(quote.liability, 21000);
 });
 
+test('renewal honors approved custom rate, restart date, and final due date', () => {
+  const quote = buildDebtRecoveryRenewal({
+    ...options,
+    period: 6,
+    interestRate: 12.5,
+    renewalDate: '2026-07-10',
+    finalDueDate: '2027-01-15'
+  });
+
+  assert.equal(quote.interestRate, 12.5);
+  assert.equal(quote.renewalDate.slice(0, 10), '2026-07-09');
+  assert.equal(quote.finalDueDate.slice(0, 10), '2027-01-15');
+  assert.equal(quote.installments[0].due_date.slice(0, 10), '2026-08-10');
+  assert.equal(quote.installments.at(-1).due_date.slice(0, 10), '2027-01-15');
+  assert.equal(quote.totalPayable, 21375);
+});
+
 test('renewal validates period, payment eligibility and complete source schedule', () => {
   for (const period of [0, -1, 1.5, 121, NaN]) assert.throws(() => buildDebtRecoveryRenewal({ ...options, period }));
   assert.throws(() => buildDebtRecoveryRenewal({ ...options, repayments: [{ amount: 1 }] }));

@@ -29,7 +29,9 @@ routerAdd('POST', '/api/inlet/loans/{id}/recovery', (e) => {
     try {
       quote = domain.buildDebtRecoveryRenewal({ loan: recordData(loan),
         repayments: repayments.map(recordData), settlements: settlements.map(recordData),
-        schedules: schedules.map(recordData), penaltyAmount, period: Number(body.period) });
+        schedules: schedules.map(recordData), penaltyAmount, period: Number(body.period),
+        interestRate: body.interest_rate === undefined ? undefined : Number(body.interest_rate),
+        renewalDate: body.renewal_date, finalDueDate: body.final_due_date });
     } catch (error) {
       throw new BadRequestError(error.message);
     }
@@ -55,7 +57,8 @@ routerAdd('POST', '/api/inlet/loans/{id}/recovery', (e) => {
     loan.set('renewal_summary', { renewal_id: audit.id, reason, principal: quote.principal,
       renewal_base: quote.renewalBase, interest: quote.interest, fines_included: quote.fines,
       total_payable: quote.totalPayable,
-      period: quote.period, source_unit: quote.sourceUnit });
+      interest_rate: quote.interestRate, period: quote.period, renewal_date: quote.renewalDate,
+      final_due_date: quote.finalDueDate, source_unit: quote.sourceUnit });
     loan.set('period', quote.period);
     loan.set('approved_amount', quote.renewalBase);
     loan.set('interest_rate', quote.interestRate);
