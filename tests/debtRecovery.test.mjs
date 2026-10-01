@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildDebtRecoveryRenewal, getRecoveryAgeDays, isDebtRecoveryLoan } from '../src/core/debtRecovery.js';
+import { buildDebtRecoveryRenewal, getRecoveryAgeDays, getRenewedLoanNumber,
+  isDebtRecoveryLoan } from '../src/core/debtRecovery.js';
 import { calculateLoanOutstandingBalance } from '../src/core/loanPortfolio.js';
 import { calculateLoanPenaltyState } from '../src/core/loanPenalty.js';
 import { isDistressUnitLoan } from '../src/core/distressUnit.js';
 
-const loan = { id: 'loan1', status: 'disbursed', disbursement_date: '2026-01-01T09:00:00+03:00',
+const loan = { id: 'loan1', loan_no: 'LN-TEST', status: 'disbursed', disbursement_date: '2026-01-01T09:00:00+03:00',
   approved_amount: 15000, total_liability: 18000, interest_amount: 3000, period: 6 };
 const referenceDate = new Date('2026-04-01T09:00:00+03:00');
 const schedules = Array.from({ length: 6 }, (_, i) => ({ id: `s${i}`, installment_no: i + 1,
@@ -52,6 +53,11 @@ test('non-disbursed, settled and invalid-date loans cannot enter DRU', () => {
 test('DRU renewal uses current OLB as the base and resets debt-unit eligibility', () => {
   const quote = buildDebtRecoveryRenewal(options);
   assert.equal(quote.sourceUnit, 'dru');
+  assert.equal(quote.decisionVerdict, 'Renewed');
+  assert.equal(quote.newLoanNo, 'LN-TEST-R1');
+  assert.equal(quote.amountDue, 19000);
+  assert.equal(quote.renewedAmount, 22800);
+  assert.equal(quote.sourceLoanId, loan.id);
   assert.equal(quote.renewalBase, 19000);
   assert.equal(quote.principal, 19000);
   assert.equal(quote.interest, 3800);
@@ -133,4 +139,10 @@ test('installments total exactly to cents and retain month-end date', () => {
   assert.equal(quote.installments.reduce((sum, s) => sum + Math.round(s.amount * 100), 0), Math.round(quote.liability * 100));
   assert.equal(quote.installments[0].due_date.slice(0, 10), '2026-09-30');
   assert.equal(quote.installments[1].due_date.slice(0, 10), '2026-10-31');
+});
+
+test('renewed loan numbers advance without reusing the source number', () => {
+  assert.equal(getRenewedLoanNumber('LN-2026-57061'), 'LN-2026-57061-R1');
+  assert.equal(getRenewedLoanNumber('LN-2026-57061-R1'), 'LN-2026-57061-R2');
+  assert.equal(getRenewedLoanNumber('LN-2026-57061-R9'), 'LN-2026-57061-R10');
 });

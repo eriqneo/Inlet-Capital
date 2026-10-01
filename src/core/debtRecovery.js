@@ -11,6 +11,15 @@ const businessDay = value => {
   return Number.isNaN(date.getTime()) ? NaN : Math.floor((date.getTime() + 3 * 3600000) / 86400000);
 };
 
+export const getRenewedLoanNumber = (loanNo = '') => {
+  const normalized = String(loanNo || '').trim() || 'LN';
+  const match = normalized.match(/^(.*)-R(\d+)$/i);
+  if (!match) return `${normalized}-R1`;
+  return `${match[1]}-R${Number(match[2]) + 1}`;
+};
+
+export const isRolledOverLoan = loan => Boolean(loan?.renewed_to?.id || loan?.renewed_to);
+
 export const getRecoveryAgeDays = (loan, referenceDate = new Date()) => {
   const recoveryStart = getLoanGracePeriodMonths(loan) > 0
     ? getRepaymentScheduleDueDate(loan, 1)
@@ -33,7 +42,9 @@ export const isDebtRecoveryLoan = (loan, {
 export const isRecoveredLoan = (loan, {
   repayments = [], settlements = [], schedules = [], penaltyAmount = 500, referenceDate = new Date()
 } = {}) => {
-  if (!isDisbursedLoanRecord(loan) || loan.written_off_at) return false;
+  const legacyInPlaceRenewal = Boolean(loan?.renewal_summary?.renewal_id)
+    && !(loan?.renewed_from?.id || loan?.renewed_from);
+  if (!isDisbursedLoanRecord(loan) || loan.written_off_at || isRolledOverLoan(loan) || legacyInPlaceRenewal) return false;
   const liability = getLoanLiabilityAmount(loan);
   if (!(liability > 0) || !Number.isFinite(businessDay(loan.disbursement_date))) return false;
   const payments = repayments.filter(row => !row.is_reversed && Number(row.amount) > 0);
@@ -126,9 +137,12 @@ export const buildDebtRecoveryRenewal = ({ loan, repayments = [], settlements = 
     carried_fine: 0
   }));
   // Bind confirmation to the exact terms and balances the approver reviewed.
-  const fingerprint = JSON.stringify({ updated: loan.updated, renewalDate, finalDueDate, period, renewalBase, interestRate, interest, fines,
+  const newLoanNo = getRenewedLoanNumber(loan.loan_no);
+  const fingerprint = JSON.stringify({ updated: loan.updated, newLoanNo, renewalDate, finalDueDate, period, renewalBase, interestRate, interest, fines,
     schedules: schedules.map(s => [s.id, s.updated, s.amount, s.paid, s.due_date, s.penalty_waived, s.carried_fine]) });
   return { principal: renewalBase, renewalBase, interestRate, interest, fines, liability: renewedLiability,
-    totalPayable: renewedLiability, sourceUnit: isDebtRecovery ? 'dru' : 'du',
+    amountDue: renewalBase, renewedAmount: renewedLiability, totalPayable: renewedLiability,
+    decisionVerdict: 'Renewed', newLoanNo, sourceLoanId: loan.id,
+    sourceLoanNo: loan.loan_no, sourceUnit: isDebtRecovery ? 'dru' : 'du',
     period, renewalDate, finalDueDate, installments, fingerprint };
 };

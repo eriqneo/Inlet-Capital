@@ -4,7 +4,7 @@ Loans now has an expandable menu containing Loan Management, Distress Unit (DU),
 
 ## Recovered Loans and Debt Management Report
 
-RL includes loans fully settled after D.R.U: either renewed through D.R.U, or with their first recorded payment at least 90 days after disbursement. Principal, interest and outstanding fines must all be cleared. A completed status alone is insufficient. Written-off loans, partial payments and unverifiable payment/schedule records do not qualify. Valid savings balance-offs can contribute to settlement; reversed entries cannot.
+RL includes new renewal cycles fully settled after D.U or D.R.U, plus loans paid directly from D.R.U with their first recorded payment at least 90 days after disbursement. A source loan rolled into a new cycle never becomes RL itself. Principal, interest and outstanding fines must all be cleared. A completed status alone is insufficient. Written-off loans, partial payments and unverifiable payment/schedule records do not qualify. Valid savings balance-offs can contribute to settlement; reversed entries cannot.
 
 Reports > Debt Management uses the same loan classifications. Filters include All Debt Units, D.R.U, DU and RL, with date range and sorting controls. Existing portfolio/officer access applies.
 
@@ -26,16 +26,22 @@ Only application users with the `super_admin` role can preview or confirm a rene
 
 The confirmed terms are:
 
-- The current OLB becomes the renewal base, including any unpaid contractual interest and accrued fines once.
-- Interest is recalculated at a flat **20% of the current OLB** for the new term.
-- Accrued unpaid fines are shown in the renewal quote as part of the OLB and are not added a second time.
+- The current OLB becomes **Amount Due**, including unpaid contractual interest and accrued fines exactly once.
+- The approved renewal interest rate is applied to Amount Due to produce the **Renewed Amount**.
 - A required agreement/reason and a new period of 1 to 120 whole months are captured.
-- The renewal starts on the current Nairobi calendar date. The first installment is due one month later, with month-end dates clamped to the last valid day.
-- Existing fines attach to the first installment and remain part of outstanding balance. Future overdue installments can generate additional normal fines.
+- The selected restart and final due dates define the new schedule, with intermediate month-end dates clamped to the last valid day.
+- Future overdue installments can generate additional normal fines.
 
 Example: a current OLB of **12,500** at the standard **20%** renewal rate gives a new total payable of **15,000**. Over six months the contractual installment is **2,500**.
 
-No new loan, disbursement, or repayment receipt is created. The loan number and original application/disbursement dates remain. The old terms and schedule are archived in `loan_renewals`; renewal history is available in Loan Management > Overview. Current reports use the new schedule. Archived schedules remain available for audit; this change does not add historical schedule-version reconstruction to date-filtered reports.
+Confirmation creates a separate active loan:
+
+- It receives a new traceable loan number (`-R1`, then `-R2`, and so on), a `Renewed` decision verdict, and its own schedule.
+- It starts with no repayment history and `0%` loan progress.
+- Its Amount Due is the source loan's complete OLB, including accrued fines; its Renewed Amount is Amount Due plus the selected interest.
+- The source loan and its repayment history and schedule remain unchanged for audit. The source is closed, linked to the new loan, excluded from operational OLB, and cannot appear in RL.
+
+The two loans are linked through `renewed_from` and `renewed_to`, and `loan_renewals` archives both sides of the transaction.
 
 ## PocketHost Deployment
 
@@ -54,7 +60,7 @@ The frontend alone cannot enable renewal. The two server files below must be dep
    node scripts/setup_debt_recovery.mjs --check
    ```
 
-   The script accepts `PB_URL`, `ADMIN_EMAIL`, and `ADMIN_PASS` environment variables, with the existing maintenance configuration as fallback. It adds `loans.renewal_date`, `loans.renewal_summary`, `loan_schedule.carried_fine`, and the immutable `loan_renewals` collection. It does not modify existing financial records.
+   The script accepts `PB_URL`, `ADMIN_EMAIL`, and `ADMIN_PASS` environment variables, with the existing maintenance configuration as fallback. It adds `loans.renewal_date`, `loans.renewal_summary`, `loans.renewed_from`, `loans.renewed_to`, `loan_schedule.carried_fine`, and the immutable `loan_renewals` links. It does not modify existing financial records.
 
 3. Using the instance's PocketHost file access, upload these files while preserving their relative paths:
 
@@ -66,7 +72,7 @@ The frontend alone cannot enable renewal. The two server files below must be dep
    Merge them into any existing `pb_hooks` directory. The second file is generated by the build; never edit it manually. Reload/restart the instance if needed for the custom route to become available. PocketBase's [JavaScript hooks documentation](https://pocketbase.io/docs/js-overview/) describes the hook directory, and its [transaction documentation](https://pocketbase.io/docs/js-database/) describes the atomic write behavior used here.
 
 4. Publish the frontend build through the existing Cloudflare deployment process.
-5. As a superadmin, open Loans > Debt Recovery Unit and review a renewal quote. Review is read-only. Confirm only an actual borrower agreement, because confirmation changes the live repayment schedule.
+5. As a superadmin, open Loans > Distress Unit or Debt Recovery Unit and review a renewal quote. Review is read-only. Confirm only an actual borrower agreement, because confirmation creates a new active loan cycle.
 
 ## Verification
 

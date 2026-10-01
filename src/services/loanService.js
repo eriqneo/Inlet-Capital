@@ -135,7 +135,11 @@ export const loanService = {
   },
 
   async getRenewalsForLoan(id) {
-    return pb.collection('loan_renewals').getFullList({ filter: pb.filter('loan = {:id}', { id }), sort: '-renewal_date' });
+    return pb.collection('loan_renewals').getFullList({
+      filter: pb.filter('loan = {:id} || renewed_loan = {:id}', { id }),
+      sort: '-renewal_date',
+      expand: 'loan,renewed_loan'
+    });
   },
 
   /**

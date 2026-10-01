@@ -39,8 +39,10 @@ var debtRecovery_exports = {};
 __export(debtRecovery_exports, {
   buildDebtRecoveryRenewal: () => buildDebtRecoveryRenewal,
   getRecoveryAgeDays: () => getRecoveryAgeDays,
+  getRenewedLoanNumber: () => getRenewedLoanNumber,
   isDebtRecoveryLoan: () => isDebtRecoveryLoan,
-  isRecoveredLoan: () => isRecoveredLoan
+  isRecoveredLoan: () => isRecoveredLoan,
+  isRolledOverLoan: () => isRolledOverLoan
 });
 module.exports = __toCommonJS(debtRecovery_exports);
 
@@ -196,8 +198,9 @@ var calculateLoanOutstandingBalance = ({
   referenceDate = /* @__PURE__ */ new Date(),
   useRecordedSchedulePaid = true
 } = {}) => {
+  var _a;
   if (!loan || !isDisbursedLoanRecord(loan)) return 0;
-  if (isWrittenOffLoanRecord(loan)) return 0;
+  if (isWrittenOffLoanRecord(loan) || ((_a = loan.renewed_to) == null ? void 0 : _a.id) || loan.renewed_to) return 0;
   const liability = getLoanLiabilityAmount(loan);
   const contractPaid = repayments.reduce(
     (sum, repayment) => sum + getRepaymentContractAmount(repayment),
@@ -289,6 +292,16 @@ var businessDay = (value) => {
   const date = new Date(typeof value === "string" ? value.replace(" ", "T") : value);
   return Number.isNaN(date.getTime()) ? NaN : Math.floor((date.getTime() + 3 * 36e5) / 864e5);
 };
+var getRenewedLoanNumber = (loanNo = "") => {
+  const normalized = String(loanNo || "").trim() || "LN";
+  const match = normalized.match(/^(.*)-R(\d+)$/i);
+  if (!match) return `${normalized}-R1`;
+  return `${match[1]}-R${Number(match[2]) + 1}`;
+};
+var isRolledOverLoan = (loan) => {
+  var _a;
+  return Boolean(((_a = loan == null ? void 0 : loan.renewed_to) == null ? void 0 : _a.id) || (loan == null ? void 0 : loan.renewed_to));
+};
 var getRecoveryAgeDays = (loan, referenceDate = /* @__PURE__ */ new Date()) => {
   const recoveryStart = getLoanGracePeriodMonths(loan) > 0 ? getRepaymentScheduleDueDate(loan, 1) : (loan == null ? void 0 : loan.renewal_date) || (loan == null ? void 0 : loan.disbursement_date);
   return businessDay(referenceDate) - businessDay(recoveryStart);
@@ -313,8 +326,9 @@ var isRecoveredLoan = (loan, {
   penaltyAmount = 500,
   referenceDate = /* @__PURE__ */ new Date()
 } = {}) => {
-  var _a;
-  if (!isDisbursedLoanRecord(loan) || loan.written_off_at) return false;
+  var _a, _b, _c;
+  const legacyInPlaceRenewal = Boolean((_a = loan == null ? void 0 : loan.renewal_summary) == null ? void 0 : _a.renewal_id) && !(((_b = loan == null ? void 0 : loan.renewed_from) == null ? void 0 : _b.id) || (loan == null ? void 0 : loan.renewed_from));
+  if (!isDisbursedLoanRecord(loan) || loan.written_off_at || isRolledOverLoan(loan) || legacyInPlaceRenewal) return false;
   const liability = getLoanLiabilityAmount(loan);
   if (!(liability > 0) || !Number.isFinite(businessDay(loan.disbursement_date))) return false;
   const payments = repayments.filter((row) => !row.is_reversed && Number(row.amount) > 0);
@@ -324,7 +338,7 @@ var isRecoveredLoan = (loan, {
     ...balanceOffs.map((row) => businessDay(row.effective_date || row.date || row.created))
   ];
   if (!paymentDays.length || paymentDays.some((day) => !Number.isFinite(day) || day > businessDay(referenceDate))) return false;
-  const renewedFromRecovery = Boolean((_a = loan.renewal_summary) == null ? void 0 : _a.renewal_id) && Number.isFinite(businessDay(loan.renewal_date));
+  const renewedFromRecovery = Boolean((_c = loan.renewal_summary) == null ? void 0 : _c.renewal_id) && Number.isFinite(businessDay(loan.renewal_date));
   const firstPaymentDay = Math.min(...paymentDays);
   const paidDirectlyFromRecovery = firstPaymentDay - businessDay(loan.disbursement_date) >= 90;
   if (!renewedFromRecovery && !paidDirectlyFromRecovery) return false;
@@ -416,8 +430,10 @@ var buildDebtRecoveryRenewal = ({
     penalty_waived: false,
     carried_fine: 0
   }));
+  const newLoanNo = getRenewedLoanNumber(loan.loan_no);
   const fingerprint = JSON.stringify({
     updated: loan.updated,
+    newLoanNo,
     renewalDate,
     finalDueDate,
     period,
@@ -434,7 +450,13 @@ var buildDebtRecoveryRenewal = ({
     interest,
     fines,
     liability: renewedLiability,
+    amountDue: renewalBase,
+    renewedAmount: renewedLiability,
     totalPayable: renewedLiability,
+    decisionVerdict: "Renewed",
+    newLoanNo,
+    sourceLoanId: loan.id,
+    sourceLoanNo: loan.loan_no,
     sourceUnit: isDebtRecovery ? "dru" : "du",
     period,
     renewalDate,

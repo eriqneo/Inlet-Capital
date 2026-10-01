@@ -338,8 +338,9 @@ export const renderLoanList = async (options = {}) => {
           const groupBadgeClass = isGroupAccountLoan || memberGroup ? 'badge-primary' : 'badge-outline';
           const isDistressUnit = Boolean(l.__distressUnit);
           const isRecoveryUnit = Boolean(l.__recoveryUnit);
+          const isRenewedLoan = Boolean(l.renewed_from?.id || l.renewed_from || l.renewal_summary?.source_loan_id);
           const statusLabel = l.__recovered ? 'RECOVERED (RL)' : isRecoveryUnit ? 'DEBT RECOVERY (D.R.U)' : isDistressUnit ? 'DISTRESS UNIT (DU)' :
-            l.status === 'disbursed' ? 'RUNNING' :
+            isRenewedLoan ? 'RENEWED · RUNNING' : l.status === 'disbursed' ? 'RUNNING' :
             l.status === 'approved' ? 'AWAITING DISBURSEMENT' :
             l.status === 'partial_approved' ? 'PARTIAL AWAITING DISBURSEMENT' :
             l.status === 'rejected' ? 'DECLINED' :
@@ -361,8 +362,14 @@ export const renderLoanList = async (options = {}) => {
               ${applicantBadge} ${clientReg}
               ${groupContext}
             </td>
-            <td>${formatMoney(l.amount_applied)}</td>
-            <td>${formatMoney(l.total_liability)}</td>
+            <td>
+              ${isRenewedLoan ? '<div class="text-xs text-muted">Amount Due</div>' : ''}
+              <div>${formatMoney(l.amount_applied)}</div>
+            </td>
+            <td>
+              ${isRenewedLoan ? '<div class="text-xs text-muted">Renewed Amount</div>' : ''}
+              <div>${formatMoney(l.total_liability)}</div>
+            </td>
             <td>
               <div class="fee-status-cell" data-loan="${l.id}">
                 ${l.processing_fee_paid
@@ -493,7 +500,7 @@ export const renderLoanList = async (options = {}) => {
               ? '(status="disbursed" || status="completed" || status="closed" || status="approved" || status="partial_approved") && disbursement_date!=""'
               : 'status="disbursed"', dateFilter),
             sort: '-application_date',
-            cacheKey: isRecoveredMode ? 'loans:list:recovered:expanded:v1' : 'loans:list:distress-unit:expanded:v1'
+            cacheKey: isRecoveredMode ? 'loans:list:recovered:expanded:v2' : 'loans:list:distress-unit:expanded:v1'
           }),
           dataCache.get('loan_repayments:loan-list:all:v1', () => pb.collection('loan_repayments').getFullList()),
           loanService.getBalanceOffsFullList({ expand: '' }),

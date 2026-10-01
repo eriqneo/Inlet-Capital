@@ -25,7 +25,12 @@ try {
   const loans = await request('collections/loans');
   const users = await request('collections/users');
   for (const [name, additions] of [
-    ['loans', [{ name: 'renewal_date', type: 'date' }, { name: 'renewal_summary', type: 'json' }]],
+    ['loans', [
+      { name: 'renewal_date', type: 'date' },
+      { name: 'renewal_summary', type: 'json' },
+      { name: 'renewed_from', type: 'relation', collectionId: loans.id, maxSelect: 1, cascadeDelete: false },
+      { name: 'renewed_to', type: 'relation', collectionId: loans.id, maxSelect: 1, cascadeDelete: false }
+    ]],
     ['loan_schedule', [{ name: 'carried_fine', type: 'number', min: 0 }]]
   ]) {
     const collection = await request(`collections/${name}`);
@@ -42,6 +47,9 @@ try {
     fields: [
       { name: 'loan', type: 'relation', collectionId: loans.id, maxSelect: 1, required: true, cascadeDelete: false },
       { name: 'recorded_by', type: 'relation', collectionId: users.id, maxSelect: 1, required: true, cascadeDelete: false },
+      // Optional only for backward compatibility with audit rows created before
+      // loan-to-loan rollover existed. Every new renewal writes this relation.
+      { name: 'renewed_loan', type: 'relation', collectionId: loans.id, maxSelect: 1, required: false, cascadeDelete: false },
       { name: 'renewal_date', type: 'date', required: true },
       { name: 'reason', type: 'text', required: true, max: 2000 },
       { name: 'previous_terms', type: 'json', required: true },
@@ -52,11 +60,15 @@ try {
     if (checkOnly) throw new Error('Missing loan_renewals collection.');
     await request('collections', 'POST', definition);
   } else {
+    const missingFields = definition.fields.filter(field => !audit.fields.some(existing => existing.name === field.name && existing.type === field.type));
     if ([audit.createRule, audit.updateRule, audit.deleteRule].some(rule => rule !== null)) {
       throw new Error('loan_renewals must have locked create, update, and delete API rules.');
     }
-    if (definition.fields.some(field => !audit.fields.some(existing => existing.name === field.name && existing.type === field.type))) {
-      throw new Error('Existing loan_renewals schema differs from the expected recovery audit schema.');
+    if (checkOnly && missingFields.length) {
+      throw new Error(`Missing loan_renewals fields: ${missingFields.map(field => field.name).join(', ')}. Run this script without --check.`);
+    }
+    if (missingFields.length) {
+      await request(`collections/${audit.id}`, 'PATCH', { fields: [...audit.fields, ...missingFields] });
     }
   }
   console.log('Debt recovery schema verified. Upload pb_hooks/debt_recovery.pb.js and pb_hooks/lib/debtRecovery.js to PocketHost to enable renewal. No financial records changed.');

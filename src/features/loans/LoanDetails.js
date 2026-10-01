@@ -72,7 +72,7 @@ export const renderLoanDetails = async (params) => {
     loanService.getWriteOffsForLoan(loan.id),
     loan.member ? savingsService.getMemberBalance(loan.member) : Promise.resolve(0),
     loan.member ? memberCommentService.getByMember(loan.member) : Promise.resolve([]),
-    loan.renewal_date ? loanService.getRenewalsForLoan(loan.id) : Promise.resolve([])
+    (loan.renewal_date || loan.renewed_from || loan.renewed_to) ? loanService.getRenewalsForLoan(loan.id) : Promise.resolve([])
   ]);
 
   if (scheduleResult.status === 'fulfilled') schedule = scheduleResult.value;
@@ -218,6 +218,8 @@ export const renderLoanDetails = async (params) => {
   };
   const totalLiability = getLoanLiability(loan);
   const isWrittenOff = loan.status === 'written_off';
+  const isRenewedLoan = Boolean(loan.renewed_from?.id || loan.renewed_from || loan.renewal_summary?.source_loan_id);
+  const isRolledOverSource = Boolean(loan.renewed_to?.id || loan.renewed_to);
   const penaltyState = calculateLoanPenaltyState({
     schedules: schedule,
     repayments,
@@ -235,9 +237,9 @@ export const renderLoanDetails = async (params) => {
   const writeOffInterestRatio = totalLiability > 0 ? (Number(loan.interest_amount) || 0) / totalLiability : 0;
   const writeOffInterestAmount = Math.min(Number(loan.interest_amount) || 0, contractualBalanceBeforeWriteOff * writeOffInterestRatio);
   const writeOffPrincipalAmount = Math.max(0, contractualBalanceBeforeWriteOff - writeOffInterestAmount);
-  const outstandingPrincipal = isWrittenOff ? 0 : contractualBalanceBeforeWriteOff;
-  const outstandingBalance = isWrittenOff ? 0 : balanceBeforeWriteOff;
-  const percentRepaid = totalLiability > 0
+  const outstandingPrincipal = (isWrittenOff || isRolledOverSource) ? 0 : contractualBalanceBeforeWriteOff;
+  const outstandingBalance = (isWrittenOff || isRolledOverSource) ? 0 : balanceBeforeWriteOff;
+  const percentRepaid = isRolledOverSource ? 0 : totalLiability > 0
     ? Math.min(100, (principalPaid / totalLiability) * 100)
     : (['completed', 'written_off', 'closed'].includes(loan.status) ? 100 : 0);
   const repaymentBehavior = calculateLoanRepaymentBehavior({
@@ -285,7 +287,7 @@ export const renderLoanDetails = async (params) => {
         }" style="${
           loan.status === 'approved' || loan.status === 'partial_approved' ? 'background: #0d9488; color: white;' : ''
         }">
-          ${loan.status === 'disbursed' ? 'DISBURSED' :
+          ${isRenewedLoan ? 'RENEWED · RUNNING' : loan.status === 'disbursed' ? 'DISBURSED' :
             loan.status === 'approved' ? 'APPROVED' :
             loan.status === 'partial_approved' ? 'PARTIAL APPROVED' :
             loan.status === 'written_off' ? 'WRITTEN OFF' :
@@ -293,6 +295,31 @@ export const renderLoanDetails = async (params) => {
         </span>
       </div>
     </div>
+
+    ${isRenewedLoan ? `
+    <section style="margin-bottom: 24px; border: 1px solid rgba(22, 101, 52, 0.28); border-left: 4px solid #166534; border-radius: 8px; background: rgba(22, 101, 52, 0.05); padding: 18px 20px;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap;">
+        <div>
+          <div class="text-xs" style="color: #166534; font-weight: 800; text-transform: uppercase;">Decision Verdict</div>
+          <div style="color: #166534; font-size: 1.25rem; font-weight: 800; margin-top: 4px;">Renewed</div>
+          <div class="text-sm text-muted" style="margin-top: 4px;">New active loan from ${escapeHtml(loan.renewal_summary?.source_loan_no || 'the previous D.U / D.R.U loan')}</div>
+        </div>
+        <div style="display: flex; gap: 24px; flex-wrap: wrap;">
+          <div>
+            <div class="text-xs text-muted">Amount Due</div>
+            <div class="font-semibold">KES ${formatMoney(loan.renewal_summary?.amount_due ?? loan.amount_applied)}</div>
+          </div>
+          <div>
+            <div class="text-xs text-muted">Renewed Amount</div>
+            <div class="font-semibold" style="color: #166534;">KES ${formatMoney(loan.renewal_summary?.renewed_amount ?? totalLiability)}</div>
+          </div>
+          <div>
+            <div class="text-xs text-muted">Starting Progress</div>
+            <div class="font-semibold">0.00%</div>
+          </div>
+        </div>
+      </div>
+    </section>` : ''}
 
     ${loan.status === 'rejected' && loan.rejectionReason ? `
     <div style="margin-bottom: 24px; border-radius: 16px; background: linear-gradient(135deg, rgba(239,68,68,0.06) 0%, rgba(239,68,68,0.02) 100%); border: 1px solid rgba(239,68,68,0.25); overflow: hidden;">
@@ -372,9 +399,9 @@ export const renderLoanDetails = async (params) => {
 
       <div id="tab-content" style="padding: 24px;">
         <div id="overview-tab">
-          ${loan.renewal_date ? `<section style="padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid var(--border-color);">
-            <h3 class="text-sm">Debt recovery renewal</h3>
-            <p class="text-sm">Restarted ${formatDate(loan.renewal_date)} &middot; ${Number(loan.period)} months &middot; Interest: ${Number(loan.renewal_summary?.interest_rate ?? loan.interest_rate) || 0}% &middot; Final due: ${formatDate(loan.renewal_summary?.final_due_date || schedule.at(-1)?.due_date)} &middot; Carried fines: KES ${formatMoney(loan.renewal_summary?.fines)}</p>
+          ${isRenewedLoan ? `<section style="padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid var(--border-color);">
+            <h3 class="text-sm">Renewed loan cycle</h3>
+            <p class="text-sm">Started ${formatDate(loan.renewal_date)} &middot; ${Number(loan.period)} months &middot; Interest: ${Number(loan.renewal_summary?.interest_rate ?? loan.interest_rate) || 0}% &middot; Final due: ${formatDate(loan.renewal_summary?.final_due_date || schedule.at(-1)?.due_date)} &middot; Fines included: KES ${formatMoney(loan.renewal_summary?.fines_included)}</p>
             <p class="text-sm" style="white-space: pre-wrap; overflow-wrap: anywhere;">${escapeHtml(loan.renewal_summary?.reason || '')}</p>
             ${renewalsResult.status === 'rejected' ? '<p class="text-danger">Renewal history could not be loaded.</p>' : renewals.map(record => `<details style="margin-top: 12px;">
               <summary>Renewal ${formatDate(record.renewal_date)} &middot; ${Number(record.new_terms?.period)} months</summary>
@@ -477,7 +504,7 @@ export const renderLoanDetails = async (params) => {
             
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">
-                <div class="text-xs text-muted">Total Liability</div>
+                <div class="text-xs text-muted">${isRenewedLoan ? 'Renewed Amount' : 'Total Liability'}</div>
                 <div class="font-semibold">KES ${formatMoney(totalLiability)}</div>
               </div>
               <div style="padding: 16px; background: var(--bg-light); border-radius: 8px;">

@@ -32,8 +32,18 @@ test('written off and unverifiable records do not count as recovered', () => {
   assert.equal(isRecoveredLoan(loan, { ...context, repayments: [{ ...payment, date: '2027-01-01' }] }), false);
 });
 
+test('a D.U source loan rolled into a new loan never becomes Recovered Loans', () => {
+  assert.equal(isRecoveredLoan({ ...loan, status: 'closed', renewed_to: 'new-loan-id' }, context), false);
+});
+
+test('a legacy in-place renewal cannot become recovered from its old repayments', () => {
+  assert.equal(isRecoveredLoan({ ...loan, status: 'completed',
+    renewal_summary: { renewal_id: 'legacy-renewal' } }, context), false);
+});
+
 test('renewed DRU loans count only after principal, interest and carried fines are settled', () => {
-  const renewed = { ...loan, renewal_date: '2026-04-01', renewal_summary: { renewal_id: 'r1' } };
+  const renewed = { ...loan, renewed_from: 'source-loan', renewal_date: '2026-04-01',
+    renewal_summary: { renewal_id: 'r1' } };
   const renewedSchedules = schedules.map((row, index) => ({ ...row, due_date: `2026-0${index + 5}-01`, carried_fine: index === 0 ? 1000 : 0 }));
   assert.equal(isRecoveredLoan(renewed, { ...context, schedules: renewedSchedules,
     repayments: [{ ...payment, date: '2026-04-02' }] }), true);
@@ -86,6 +96,7 @@ test('recovery rate ignores pre-renewal payments and starts with the renewed cyc
     ...loan,
     id: 'loan3',
     status: 'disbursed',
+    renewed_from: 'source-loan',
     renewal_date: '2026-04-01T09:00:00+03:00',
     renewal_summary: { renewal_id: 'renewal1' }
   };

@@ -28,7 +28,7 @@ const getLoanLiability = (loan) => {
 };
 
 const calculateLoanBalance = (loan, repayments = [], settlements = []) => {
-  if (!isDisbursedLoanForBalance(loan)) return 0;
+  if (!isDisbursedLoanForBalance(loan) || loan?.renewed_to?.id || loan?.renewed_to) return 0;
   const paid = repayments
     .filter(repayment => repayment.loan === loan.id)
     .reduce((sum, repayment) => sum + (Number(repayment.amount) || 0), 0)

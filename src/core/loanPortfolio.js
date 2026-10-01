@@ -20,7 +20,7 @@ export const calculateLoanOutstandingBalance = ({
   useRecordedSchedulePaid = true
 } = {}) => {
   if (!loan || !isDisbursedLoanRecord(loan)) return 0;
-  if (isWrittenOffLoanRecord(loan)) return 0;
+  if (isWrittenOffLoanRecord(loan) || loan.renewed_to?.id || loan.renewed_to) return 0;
   const liability = getLoanLiabilityAmount(loan);
   const contractPaid = repayments.reduce(
     (sum, repayment) => sum + getRepaymentContractAmount(repayment),

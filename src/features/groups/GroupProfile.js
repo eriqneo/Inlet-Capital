@@ -137,7 +137,7 @@ export const renderGroupProfile = async (params) => {
     return principal + (Number(loan?.interest_amount) || 0);
   };
   const calculateLoanBalance = (loan, repayments, settlements = []) => {
-    if (!isDisbursedLoanForBalance(loan)) return 0;
+    if (!isDisbursedLoanForBalance(loan) || loan?.renewed_to?.id || loan?.renewed_to) return 0;
     const liability = getLoanLiability(loan);
     const paid = repayments
       .filter(r => r.loan === loan.id)

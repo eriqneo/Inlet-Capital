@@ -1150,7 +1150,7 @@ export const renderReportsDashboard = async () => {
       .filter(Boolean)
       .sort((a, b) => b - a)[0] || null;
     const calculateOutstandingLoanBalance = (groupLoans) => groupLoans
-      .filter(isOutstandingLoan)
+      .filter(loan => isOutstandingLoan(loan) && !(loan?.renewed_to?.id || loan?.renewed_to))
       .reduce((sum, loan) => {
         const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
         const liability = Number(loan.total_liability) || (principal + (Number(loan.interest_amount) || 0));

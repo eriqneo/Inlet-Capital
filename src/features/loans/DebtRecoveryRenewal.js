@@ -74,16 +74,18 @@ export const openDebtRecoveryRenewal = (loan, onRenewed) => {
   const renderQuote = (quoteToRender, notice = '') => {
     quoteArea.innerHTML = `
       <dl class="recovery-totals">
+        <dt>Decision verdict</dt><dd><strong style="color: var(--success);">${quoteToRender.decisionVerdict || 'Renewed'}</strong></dd>
+        <dt>New loan number</dt><dd><strong>${quoteToRender.newLoanNo || '-'}</strong></dd>
         <dt>Renewal unit</dt><dd>${quoteToRender.sourceUnit === 'du' ? 'D.U' : 'D.R.U'}</dd>
-        <dt>Renewal base (Current OLB)</dt><dd>${formatMoney(quoteToRender.renewalBase ?? quoteToRender.principal)}</dd>
+        <dt>Amount due (Current OLB)</dt><dd>${formatMoney(quoteToRender.amountDue ?? quoteToRender.renewalBase ?? quoteToRender.principal)}</dd>
         <dt>Interest (${quoteToRender.interestRate}%)</dt><dd>${formatMoney(quoteToRender.interest)}</dd>
-        <dt>Accrued fines in OLB</dt><dd>${formatMoney(quoteToRender.fines)}</dd>
-        <dt><strong>Total payable (KES)</strong></dt><dd><strong>${formatMoney(quoteToRender.totalPayable)}</strong></dd>
+        <dt>Fines included in amount due</dt><dd>${formatMoney(quoteToRender.fines)}</dd>
+        <dt><strong>Renewed amount (KES)</strong></dt><dd><strong>${formatMoney(quoteToRender.renewedAmount ?? quoteToRender.totalPayable)}</strong></dd>
         <dt>Restart date</dt><dd>${formatDate(quoteToRender.renewalDate)}</dd>
         <dt>Final due date</dt><dd>${formatDate(quoteToRender.installments.at(-1).due_date)}</dd>
       </dl>
       ${notice ? `<p class="text-sm" style="margin-top: 12px; color: var(--warning); font-weight: 600;">${notice}</p>` : ''}
-      <p class="text-sm text-muted">The current OLB is the renewal base. Any accrued fines are already included in that base and are not added a second time. The approved interest rate and dates above define this renewed loan cycle.</p>
+      <p class="text-sm text-muted">A separate active loan will be created with no repayment history and 0% starting progress. The amount due includes the complete current OLB and accrued fines; interest is then applied once to create the renewed amount.</p>
       <details><summary>New repayment schedule</summary>
         <div class="table-responsive"><table class="table"><thead><tr><th>Due date</th><th>Installment</th></tr></thead>
         <tbody>${quoteToRender.installments.map(row => `<tr><td>${formatDate(row.due_date)}</td><td>${formatMoney(row.amount)}</td></tr>`).join('')}</tbody></table></div>
@@ -148,7 +150,7 @@ export const openDebtRecoveryRenewal = (loan, onRenewed) => {
     Array.from(form.elements).forEach(element => { element.disabled = true; });
     const renewing = Boolean(quote);
     submit.textContent = renewing ? 'Renewing...' : 'Calculating...';
-    let committed = false;
+    let renewalResult = null;
     try {
       if (!quote) {
         const terms = getRenewalTerms();
@@ -159,11 +161,10 @@ export const openDebtRecoveryRenewal = (loan, onRenewed) => {
         displayedQuote = quote;
         renderQuote(quote);
       } else {
-        await loanService.recoveryAction(loan.id, { action: 'renew', ...getRenewalTerms(),
+        renewalResult = await loanService.recoveryAction(loan.id, { action: 'renew', ...getRenewalTerms(),
           fingerprint: quote.fingerprint, reason: form.elements.reason.value.trim() });
-        committed = true;
         dialog.close();
-        window.notify?.success('Loan renewed. The new repayment schedule is ready.');
+        window.notify?.success(`Renewed as ${renewalResult?.loan?.loan_no || quote.newLoanNo}. The new loan is now active with 0% progress.`);
       }
     } catch (error) {
       errorArea.textContent = error.message;
@@ -173,6 +174,6 @@ export const openDebtRecoveryRenewal = (loan, onRenewed) => {
       Array.from(form.elements).forEach(element => { element.disabled = false; });
       submit.textContent = quote ? 'Confirm renewal' : 'Review renewal';
     }
-    if (committed) await onRenewed();
+    if (renewalResult) await onRenewed(renewalResult);
   };
 };
