@@ -18,6 +18,7 @@ import {
 } from '../../core/repaymentAllocation.js';
 import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
 import { renderDatabaseLoaderIcon, DATABASE_LOADING_LABEL } from '../../core/uiState.js';
+import { calculateSavingsSummary, getSavingsTransactionType } from '../../core/savingsMetrics.js';
 
 export const renderAnalyticsDashboard = async () => {
   const container = document.createElement('div');
@@ -46,7 +47,7 @@ export const renderAnalyticsDashboard = async () => {
         ),
         dataCache.getLocalFirst('loan_balance_offs:analytics:all:v1', () => loanService.getBalanceOffsFullList({ expand: '' })),
         groupService.getAll(),
-        savingsService.getFullListCached({ expand: '', cacheKey: 'savings:analytics:basic:v1' }),
+        savingsService.getFinancialRecordsCached(),
         dataCache.getLocalFirst(
           'loan_schedule:dashboard:all',
           () => pb.collection('loan_schedule').getFullList()
@@ -464,9 +465,7 @@ export const renderAnalyticsDashboard = async () => {
     const overallCollectionEfficiencyRating = getCollectionPerformanceRating(overallCollectionEfficiencyNumber, scheduledGrossCollection);
     
     // Correct savings calculation
-    const totalSavings = scopedSavings
-      .filter(s => !s.is_reversed)
-      .reduce((sum, s) => s.type === 'deposit' ? sum + (Number(s.amount) || 0) : sum - (Number(s.amount) || 0), 0);
+    const totalSavings = calculateSavingsSummary(scopedSavings).net;
 
     const getMonthBounds = (offset = 0) => {
       const start = new Date(today.getFullYear(), today.getMonth() + offset, 1);
@@ -506,7 +505,7 @@ export const renderAnalyticsDashboard = async () => {
     const officerScopedLoansAllTime = loans.filter(filterByOfficer);
     const getSavingsDepositsForPeriod = (bounds) => officerScopedSavingsAllTime
       .filter(s => !s.is_reversed)
-      .filter(s => s.type === 'deposit')
+      .filter(s => getSavingsTransactionType(s) === 'deposit')
       .filter(s => isWithinBounds(s.date || s.created, bounds))
       .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
     const getLoanDisbursedForMonth = (bounds) => officerScopedLoansAllTime
@@ -594,8 +593,8 @@ export const renderAnalyticsDashboard = async () => {
           withdrawals: 0
         };
 
-        if (saving.type === 'withdrawal') current.withdrawals += amount;
-        else if (saving.type === 'deposit') current.deposits += amount;
+        if (getSavingsTransactionType(saving) === 'withdrawal') current.withdrawals += amount;
+        else current.deposits += amount;
         saverMap.set(accountId, current);
       });
     const topSavers = [...saverMap.values()]
@@ -1195,7 +1194,8 @@ export const renderAnalyticsDashboard = async () => {
     // 4. Savings vs Disbursements
     const savingsData = monthKeys.map(mk => {
       return fSavings
-        .filter(s => s.date && s.date.startsWith(mk) && s.type === 'deposit')
+        .filter(s => !s.is_reversed)
+        .filter(s => s.date && s.date.startsWith(mk) && getSavingsTransactionType(s) === 'deposit')
         .reduce((sum, s) => sum + s.amount, 0);
     });
 
@@ -1246,7 +1246,7 @@ export const renderAnalyticsDashboard = async () => {
     const savingsDepositGrowthBase = monthKeys.map(mk => {
       return fSavings
         .filter(s => !s.is_reversed)
-        .filter(s => s.type === 'deposit')
+        .filter(s => getSavingsTransactionType(s) === 'deposit')
         .filter(s => (s.date || s.created || '').startsWith(mk))
         .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
     });
@@ -1345,7 +1345,7 @@ export const renderAnalyticsDashboard = async () => {
       console.warn('[Analytics] Loan realtime unavailable, polling will continue:', err.message);
       return null;
     }),
-    pb.collection('savings').subscribe('*', refreshAfterInvalidating('savings:analytics:basic:v1')).catch(err => {
+    pb.collection('savings').subscribe('*', refreshAfterInvalidating('savings:financial:all:v1')).catch(err => {
       console.warn('[Analytics] Savings realtime unavailable, polling will continue:', err.message);
       return null;
     })

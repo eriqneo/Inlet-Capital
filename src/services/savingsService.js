@@ -122,6 +122,14 @@ export const savingsService = {
     }, onUpdate);
   },
 
+  async getFinancialRecordsCached(onUpdate = null) {
+    return await this.getFullListCached({
+      sort: '-date',
+      expand: '',
+      cacheKey: 'savings:financial:all:v1'
+    }, onUpdate);
+  },
+
   /**
    * Get total balance for a specific member
    */

@@ -8,6 +8,8 @@ import { dataCache } from '../../services/dataCache.js';
 import { renderTableSkeletonRows, showDelayedLoading, setButtonLoading } from '../../core/uiState.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { canUseOfficerFilter, createOfficerScope, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
+import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
+import { calculateSavingsSummary, getSavingsTransactionType } from '../../core/savingsMetrics.js';
 
 export const renderSavingsList = async () => {
   const container = document.createElement('div');
@@ -263,10 +265,6 @@ export const renderSavingsList = async () => {
   const getTransactionGroupId = (transaction) => getRelationId(transaction?.group) || transaction?.expand?.group?.id || '';
   const getGroupMembers = (groupId) => members.filter(member => member.group === groupId || member.expand?.group?.id === groupId);
   const isAssignableGroupSaving = (transaction) => Boolean(getTransactionGroupId(transaction) && !getTransactionMemberId(transaction) && !transaction.is_reversed);
-  const getSavingsSignedAmount = (transaction) => {
-    const amount = Number(transaction?.amount) || 0;
-    return transaction?.type === 'withdrawal' ? -amount : amount;
-  };
   const toStartOfDayIso = (value) => value ? new Date(`${value}T00:00:00`).toISOString() : '';
   const toEndOfDayIso = (value) => value ? new Date(`${value}T23:59:59.999`).toISOString() : '';
   const getDateFilter = () => {
@@ -333,21 +331,35 @@ export const renderSavingsList = async () => {
   };
 
   const renderSavingsSummary = (items) => {
-    const activeItems = items.filter(item => !item.is_reversed);
-    const deposits = activeItems
-      .filter(item => (item.type || 'deposit') === 'deposit')
-      .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-    const withdrawals = activeItems
-      .filter(item => item.type === 'withdrawal')
-      .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-    const net = activeItems.reduce((sum, item) => sum + getSavingsSignedAmount(item), 0);
+    const { deposits, withdrawals, net, count } = calculateSavingsSummary(items);
 
     savingsNetTotal.textContent = `KES ${formatMoney(net)}`;
     savingsMovementTotal.innerHTML = `
       <span style="color: var(--success); font-weight: 700;">DEP ${formatMoney(deposits)}</span>
       <span style="color: var(--danger); font-weight: 700;">WIT ${formatMoney(withdrawals)}</span>
     `;
-    savingsEntryTotal.textContent = activeItems.length.toLocaleString();
+    savingsEntryTotal.textContent = count.toLocaleString();
+  };
+
+  const isTransactionInSelectedDateRange = (transaction) => {
+    if (!dateFrom && !dateTo) return true;
+    const value = transaction?.date || transaction?.created;
+    if (!value) return false;
+    const timestamp = new Date(value).getTime();
+    if (!Number.isFinite(timestamp)) return false;
+    if (dateFrom && timestamp < new Date(`${dateFrom}T00:00:00`).getTime()) return false;
+    if (dateTo && timestamp > new Date(`${dateTo}T23:59:59.999`).getTime()) return false;
+    return true;
+  };
+
+  const getSummaryRecords = (items) => {
+    const portfolioRecords = filterPortfolioFinancialRecords(items, getPortfolioMemberIds(members));
+    return filterTransactionsByOfficer(portfolioRecords.filter(isTransactionInSelectedDateRange));
+  };
+
+  const refreshSavingsSummary = async () => {
+    const financialRecords = await savingsService.getFinancialRecordsCached();
+    renderSavingsSummary(getSummaryRecords(financialRecords));
   };
 
   const sortTransactionsAlphabetically = (items) => [...items].sort((a, b) => {
@@ -362,7 +374,7 @@ export const renderSavingsList = async () => {
 
   const renderTransactions = (items) => {
     return items.map(t => {
-      const type = t.type || 'deposit';
+      const type = getSavingsTransactionType(t);
       const amount = Number(t.amount) || 0;
       const reference = String(t.reference || '');
       let paymentLabel = '-';
@@ -440,7 +452,7 @@ export const renderSavingsList = async () => {
           ? officerTransactions
           : sortTransactionsAlphabetically(officerTransactions);
         latestTransactions = sortedTransactions;
-        renderSavingsSummary(sortedTransactions);
+        await refreshSavingsSummary();
         renderReconcileBanner(sortedTransactions);
         const start = (currentPage - 1) * pageSize;
         renderResult({
@@ -467,7 +479,7 @@ export const renderSavingsList = async () => {
         cacheKey: 'savings:reconcile:expanded:v1'
       });
       latestTransactions = allForBanner;
-      renderSavingsSummary(allForBanner);
+      await refreshSavingsSummary();
       renderReconcileBanner(allForBanner);
     } catch (e) {
       cancelLoading();

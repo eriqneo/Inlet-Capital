@@ -640,6 +640,8 @@ h1, h2, h3, h4, h5, h6 {
   position: relative;
 }
 .badge-counter-primary {
+  background-color: #2563eb;
+}
 .badge-counter-warning {
   background-color: #b45309;
 }
@@ -648,8 +650,6 @@ h1, h2, h3, h4, h5, h6 {
 }
 .badge-counter-recovered {
   background-color: #166534;
-}
-  background-color: #2563eb;
 }
 
 .sidebar-footer {
