@@ -57,9 +57,9 @@ test('debt report shares categories and totals overlapping DU/DRU once', () => {
   assert.equal(totals.arrears, 18000);
   assert.equal(totals.fines, 1500);
   assert.equal(totals.recovered, 19000);
-  assert.equal(totals.recoveryExpected, 36000);
-  assert.equal(totals.recoveryCollected, 18000);
-  assert.equal(totals.recoveryRate, 50);
+  assert.equal(totals.recoveryExpected, 0);
+  assert.equal(totals.recoveryCollected, 0);
+  assert.equal(totals.recoveryRate, 0);
   assert.equal(getDebtReportDate(rows[1], { category: 'dru' }).toISOString().slice(0, 10), '2026-04-01');
   assert.equal(getDebtReportDate(rows[1], { category: 'du' }).toISOString().slice(0, 10), '2026-04-02');
   assert.equal(getDebtReportDate(rows[0], { category: 'rl' }).toISOString().slice(0, 10), '2026-04-01');
@@ -76,6 +76,37 @@ test('debt arrears apply partial payments to the oldest installments', () => {
   assert.equal(rows[0].arrears, 12000);
   assert.equal(rows[0].collected, 7000);
   const totals = summarizeDebtManagement(rows);
-  assert.equal(totals.recoveryCollected, 6000);
-  assert.ok(Math.abs(totals.recoveryRate - (100 / 3)) < 0.000001);
+  assert.equal(totals.recoveryExpected, 0);
+  assert.equal(totals.recoveryCollected, 0);
+  assert.equal(totals.recoveryRate, 0);
+});
+
+test('recovery rate ignores pre-renewal payments and starts with the renewed cycle', () => {
+  const renewed = {
+    ...loan,
+    id: 'loan3',
+    status: 'disbursed',
+    renewal_date: '2026-04-01T09:00:00+03:00',
+    renewal_summary: { renewal_id: 'renewal1' }
+  };
+  const renewedSchedules = schedules.map((row, index) => ({
+    ...row,
+    id: `renewed-${row.id}`,
+    loan: renewed.id,
+    due_date: `2026-0${index + 5}-01T09:00:00+03:00`
+  }));
+  const rows = buildDebtManagementRows({
+    loans: [renewed],
+    schedules: renewedSchedules,
+    repayments: [
+      { loan: renewed.id, amount: 6000, fine_amount: 0, date: '2026-03-01T09:00:00+03:00' },
+      { loan: renewed.id, amount: 4000, fine_amount: 0, date: '2026-04-02T09:00:00+03:00' }
+    ],
+    referenceDate: '2026-08-01T12:00:00+03:00',
+    penaltyAmount: 500
+  });
+  const totals = summarizeDebtManagement(rows);
+  assert.equal(totals.recoveryExpected, 18000);
+  assert.equal(totals.recoveryCollected, 4000);
+  assert.ok(Math.abs(totals.recoveryRate - (200 / 9)) < 0.000001);
 });

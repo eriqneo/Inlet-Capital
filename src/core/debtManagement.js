@@ -13,6 +13,18 @@ const addDays = (value, days) => {
   return date;
 };
 
+const getRecordDate = (record, fields) => {
+  const value = fields.map(field => record?.[field]).find(Boolean);
+  const date = toDate(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const getRenewalCycleStart = (loan) => {
+  if (!loan?.renewal_summary?.renewal_id) return null;
+  const date = toDate(loan.renewal_date || loan.renewal_summary?.renewal_date);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
 export const buildDebtManagementRows = ({ loans = [], repayments = [], settlements = [], schedules = [],
   penaltyAmount = 500, referenceDate = new Date() } = {}) => {
   const activeRepayments = repayments.filter(row => !row.is_reversed);
@@ -49,7 +61,25 @@ export const buildDebtManagementRows = ({ loans = [], repayments = [], settlemen
       + settlementRecords.reduce((sum, row) => sum + getSettlementContractAmount(row), 0);
     const expected = getLoanLiabilityAmount(loan);
     const contractCollected = Math.min(expected, contractPaid);
+    const renewalCycleStart = getRenewalCycleStart(loan);
+    const recoveryPayments = renewalCycleStart
+      ? paymentRecords.filter(row => {
+        const paymentDate = getRecordDate(row, ['date', 'created']);
+        return paymentDate && paymentDate >= renewalCycleStart;
+      })
+      : [];
+    const recoverySettlements = renewalCycleStart
+      ? settlementRecords.filter(row => {
+        const settlementDate = getRecordDate(row, ['effective_date', 'date', 'created']);
+        return settlementDate && settlementDate >= renewalCycleStart;
+      })
+      : [];
+    const recoveryExpected = renewalCycleStart ? expected : 0;
+    const recoveryCollected = Math.min(recoveryExpected,
+      recoveryPayments.reduce((sum, row) => sum + getRepaymentContractAmount(row), 0)
+      + recoverySettlements.reduce((sum, row) => sum + getSettlementContractAmount(row), 0));
     return [{ loan, categories, categoryDates, endDate, olb, expected, contractCollected,
+      recoveryExpected, recoveryCollected,
       arrears: recovered ? 0 : getArrearsTotal(effectiveSchedules, referenceDate),
       fines: penalty.outstandingFine,
       collected: contractCollected + penalty.fineCollected }];
@@ -64,8 +94,8 @@ export const getDebtReportDate = (row, { category = 'all', basis = 'activity' } 
 };
 
 export const summarizeDebtManagement = (rows = []) => {
-  const recoveryExpected = rows.reduce((sum, row) => sum + (Number(row.expected) || 0), 0);
-  const recoveryCollected = rows.reduce((sum, row) => sum + (Number(row.contractCollected) || 0), 0);
+  const recoveryExpected = rows.reduce((sum, row) => sum + (Number(row.recoveryExpected) || 0), 0);
+  const recoveryCollected = rows.reduce((sum, row) => sum + (Number(row.recoveryCollected) || 0), 0);
 
   return {
     count: rows.length,

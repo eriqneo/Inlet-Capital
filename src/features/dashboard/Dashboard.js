@@ -256,13 +256,17 @@ export const renderDashboard = async () => {
     ? (totalArrears / activeOutstandingLoanPortfolio) * 100
     : 0;
   const parRate = formatPercent(parRateNumber);
-  const parHealth = parRateNumber >= 16
-    ? { label: 'High Risk', color: 'var(--danger)', accent: 'var(--danger)' }
-    : parRateNumber >= 11
-      ? { label: 'Needs Attention', color: 'var(--warning)', accent: 'var(--warning)' }
-      : parRateNumber >= 6
-        ? { label: 'Good', color: 'var(--primary)', accent: 'var(--primary)' }
-        : { label: 'Excellent', color: 'var(--success)', accent: 'var(--success)' };
+  const parHealth = parRateNumber > 20
+    ? { label: 'Critical', detail: 'Severe arrears; urgent recovery action', color: '#991b1b', accent: '#991b1b' }
+    : parRateNumber > 12
+      ? { label: 'High Risk', detail: 'Significant portfolio-quality problem', color: 'var(--danger)', accent: 'var(--danger)' }
+      : parRateNumber > 8
+        ? { label: 'Needs Attention', detail: 'Elevated arrears; management action required', color: '#f97316', accent: '#f97316' }
+        : parRateNumber > 5
+          ? { label: 'Watch', detail: 'Early warning; collections need attention', color: '#ca8a04', accent: '#ca8a04' }
+          : parRateNumber > 2
+            ? { label: 'Healthy', detail: 'Good control; normal monitoring', color: 'var(--success)', accent: 'var(--success)' }
+            : { label: 'Excellent', detail: 'Very strong portfolio quality', color: 'var(--success)', accent: 'var(--success)' };
   const overdueLoanIds = new Set(overdueSchedules.map(schedule => schedule.loan));
   const totalOverdueOutstandingLoans = loans
     .filter(loan => overdueLoanIds.has(loan.id))
@@ -415,6 +419,7 @@ export const renderDashboard = async () => {
         <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Arrears Ratio</h3>
         <p style="font-size: 2.5rem; font-weight: 700; color: ${parHealth.color};">${parRate}</p>
         <p class="text-xs" style="margin-top: 8px; color: ${parHealth.color}; font-weight: 700;">${parHealth.label}</p>
+        <p class="text-xs text-muted" style="margin-top: 4px;">${parHealth.detail}</p>
         <p class="text-xs text-muted" style="margin-top: 4px;">Arrears / Outstanding Loan Balance</p>
       </div>
       <div class="card" style="border-left: 4px solid ${gparHealth.accent};">
@@ -437,9 +442,8 @@ export const renderDashboard = async () => {
                 <div class="text-xs text-muted" style="margin-top: 2px; white-space: nowrap;">${item.bucket.loanCount} ${item.bucket.loanCount === 1 ? 'loan' : 'loans'}</div>
               </div>
               <div style="min-width: 0; text-align: right;">
-                <div class="text-xs text-muted">OLB</div>
-                <div style="margin-top: 2px; font-size: 0.95rem; font-weight: 800; color: ${item.color}; white-space: nowrap; font-variant-numeric: tabular-nums;">KES ${formatMoney(item.bucket.olb)}</div>
-                <div class="text-xs" style="margin-top: 2px; color: ${item.color}; font-weight: 700;">${formatPercent(getParAgingRate(item.bucket))}</div>
+                <div style="color: ${item.color}; font-size: 1.25rem; font-weight: 800; line-height: 1; white-space: nowrap; font-variant-numeric: tabular-nums;">${formatPercent(getParAgingRate(item.bucket))}</div>
+                <div class="text-xs text-muted" style="margin-top: 5px; white-space: nowrap; font-variant-numeric: tabular-nums;">OLB: KES ${formatMoney(item.bucket.olb)}</div>
               </div>
             </div>
           `).join('')}

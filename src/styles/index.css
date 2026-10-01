@@ -518,6 +518,9 @@ h1, h2, h3, h4, h5, h6 {
   font-size: 0.64rem;
   font-weight: 700;
 }
+.nav-sub-code-warning { background: #b45309; color: #fff7ed; }
+.nav-sub-code-danger { background: #b91c1c; color: #fef2f2; }
+.nav-sub-code-recovered { background: #166534; color: #f0fdf4; }
 
 .sidebar.collapsed .nav-label,
 .sidebar.collapsed .logout-text,
@@ -635,6 +638,18 @@ h1, h2, h3, h4, h5, h6 {
   font-size: 0.75rem;
   margin-left: auto;
   position: relative;
+}
+.badge-counter-primary {
+.badge-counter-warning {
+  background-color: #b45309;
+}
+.badge-counter-danger {
+  background-color: #b91c1c;
+}
+.badge-counter-recovered {
+  background-color: #166534;
+}
+  background-color: #2563eb;
 }
 
 .sidebar-footer {

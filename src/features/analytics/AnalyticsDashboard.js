@@ -33,20 +33,21 @@ export const renderAnalyticsDashboard = async () => {
   // Data variables
   let members = [], loans = [], repayments = [], settlements = [], groups = [], savings = [], schedules = [], users = [];
   let automaticPenaltyAmount = 500;
+  let hasLoadedAnalyticsData = false;
 
-  const refresh = async () => {
+  const loadAnalyticsData = async () => {
     try {
       [members, loans, repayments, settlements, groups, savings, schedules, users, automaticPenaltyAmount] = await Promise.all([
         memberService.getAll(),
-        loanService.getFullListFresh({ cacheKey: 'loans:financial:expanded:v1' }),
-        dataCache.refreshDedupe(
+        loanService.getFullListCached({ cacheKey: 'loans:financial:expanded:v1' }),
+        dataCache.getLocalFirst(
           'loan_repayments:dashboard:all',
           () => pb.collection('loan_repayments').getFullList()
         ),
-        loanService.getBalanceOffsFullList({ expand: '' }),
+        dataCache.getLocalFirst('loan_balance_offs:analytics:all:v1', () => loanService.getBalanceOffsFullList({ expand: '' })),
         groupService.getAll(),
         savingsService.getFullListCached({ expand: '', cacheKey: 'savings:analytics:basic:v1' }),
-        dataCache.refreshDedupe(
+        dataCache.getLocalFirst(
           'loan_schedule:dashboard:all',
           () => pb.collection('loan_schedule').getFullList()
         ),
@@ -61,11 +62,13 @@ export const renderAnalyticsDashboard = async () => {
       ]);
     } catch (err) {
       console.error('Failed to load analytics data:', err);
-      container.innerHTML = `<div class="card text-center text-danger" style="padding: 40px; margin: 20px;">
-        <h3 style="margin-bottom: 12px;">Failed to load analytics</h3>
-        <p class="text-muted" style="margin-bottom: 20px;">${err.message}</p>
-        <button class="btn btn-primary" onclick="window.location.reload()">Retry Connection</button>
-      </div>`;
+      if (!hasLoadedAnalyticsData) {
+        container.innerHTML = `<div class="card text-center text-danger" style="padding: 40px; margin: 20px;">
+          <h3 style="margin-bottom: 12px;">Failed to load analytics</h3>
+          <p class="text-muted" style="margin-bottom: 20px;">${err.message}</p>
+          <button class="btn btn-primary" onclick="window.location.reload()">Retry Connection</button>
+        </div>`;
+      }
       return false;
     }
     const portfolioMemberIds = getPortfolioMemberIds(members);
@@ -75,7 +78,17 @@ export const renderAnalyticsDashboard = async () => {
     schedules = schedules.filter(schedule => visibleLoanIds.has(schedule.loan));
     repayments = repayments.filter(repayment => visibleLoanIds.has(repayment.loan));
     settlements = settlements.filter(settlement => visibleLoanIds.has(settlement.loan) && settlement.status !== 'reversed');
+    hasLoadedAnalyticsData = true;
     return true;
+  };
+
+  let analyticsRefreshPromise = null;
+  const refresh = () => {
+    if (!analyticsRefreshPromise) {
+      analyticsRefreshPromise = loadAnalyticsData()
+        .finally(() => { analyticsRefreshPromise = null; });
+    }
+    return analyticsRefreshPromise;
   };
 
   let dateRange = { from: '', to: '' };
@@ -411,10 +424,11 @@ export const renderAnalyticsDashboard = async () => {
     });
     const getCollectionPerformanceRating = (rate, gross) => {
       if (gross <= 0) return { label: 'No Due', color: 'var(--text-muted)' };
-      if (rate <= 30) return { label: 'Poor', color: 'var(--danger)' };
-      if (rate <= 55) return { label: 'Average', color: 'var(--warning)' };
-      if (rate <= 75) return { label: 'Good', color: '#3b82f6' };
-      return { label: 'Best', color: 'var(--success)' };
+      if (rate >= 95) return { label: 'Excellent', color: 'var(--success)', detail: 'Target operational performance. Cash flow is predictable, and defaults are minimal.' };
+      if (rate >= 80) return { label: 'Good / On Track', color: '#1e3a8a', detail: 'Acceptable variance. Minor missed repayments can be cleared within 7-14 days.' };
+      if (rate >= 75) return { label: 'Needs Attention', color: '#ca8a04', detail: 'Moderate credit risk. Requires active follow-up and weekly field monitoring.' };
+      if (rate >= 65) return { label: 'Poor / Moderate Risk', color: '#f97316', detail: 'High portfolio contamination risk.' };
+      return { label: 'Below Average', color: 'var(--danger)', detail: 'Threatens liquidity and requires escalation to recovery teams.' };
     };
     const collectionOfficerRows = Object.values(collectionOfficerMap)
       .map(row => {
@@ -695,7 +709,7 @@ export const renderAnalyticsDashboard = async () => {
           <div class="kpi-icon" style="background: rgba(13, 148, 136, 0.1); color: #0d9488;">🧾</div>
           <div class="kpi-label">Officer Collection Efficiency</div>
           <div class="kpi-value" style="color: ${overallCollectionEfficiencyRating.color};">${overallCollectionEfficiency}</div>
-          <div class="kpi-trend" style="color: ${overallCollectionEfficiencyRating.color};">${overallCollectionEfficiencyRating.label} · Collected KES ${formatMoney(collectedInWindowTotal)} of KES ${formatMoney(scheduledGrossCollection)}</div>
+          <div class="kpi-trend" title="${overallCollectionEfficiencyRating.detail || ''}" style="color: ${overallCollectionEfficiencyRating.color};">${overallCollectionEfficiencyRating.label} · Collected KES ${formatMoney(collectedInWindowTotal)} of KES ${formatMoney(scheduledGrossCollection)}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-icon" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">📅</div>
@@ -780,7 +794,7 @@ export const renderAnalyticsDashboard = async () => {
                       ? `<div class="font-semibold" style="color: ${row.forecastRating.color};">${formatPercent(row.thisMonthRepaymentRate)}</div><div class="text-xs text-muted">${formatMoney(row.thisMonthPaid)} / ${formatMoney(row.thisMonthGross)}</div>`
                       : '<span class="text-muted">No due</span>'}
                   </td>
-                  <td><span class="badge" style="background: ${row.forecastRating.color}; color: white; font-size: 0.65rem;">${row.forecastRating.label}</span></td>
+                  <td><span class="badge" title="${row.forecastRating.detail || ''}" style="background: ${row.forecastRating.color}; color: white; font-size: 0.65rem;">${row.forecastRating.label}</span></td>
                 </tr>
               `).join('')}
             </tbody>
@@ -788,6 +802,13 @@ export const renderAnalyticsDashboard = async () => {
         </div>
         <div class="text-xs text-muted" style="margin-top: 10px;">
           Due and paid are calculated from all installments due in the selected window. Expected collection is the remaining balance: installment amount minus amount already paid.
+        </div>
+        <div class="text-xs" style="display: flex; flex-wrap: wrap; gap: 12px 18px; margin-top: 14px; color: var(--text-muted);">
+          <div style="border-left: 3px solid var(--success); padding-left: 8px; flex: 1 1 190px;"><strong style="color: var(--success);">Excellent 95-100%</strong><br>Target operational performance. Cash flow is predictable, and defaults are minimal.</div>
+          <div style="border-left: 3px solid #1e3a8a; padding-left: 8px; flex: 1 1 190px;"><strong style="color: #1e3a8a;">Good / On Track 80-94.99%</strong><br>Acceptable variance; minor missed repayments can be cleared within 7-14 days.</div>
+          <div style="border-left: 3px solid #ca8a04; padding-left: 8px; flex: 1 1 190px;"><strong style="color: #ca8a04;">Needs Attention 75-79.99%</strong><br>Moderate credit risk; requires active follow-up and weekly field monitoring.</div>
+          <div style="border-left: 3px solid #f97316; padding-left: 8px; flex: 1 1 190px;"><strong style="color: #f97316;">Poor / Moderate Risk 65-74.99%</strong><br>High portfolio contamination risk.</div>
+          <div style="border-left: 3px solid var(--danger); padding-left: 8px; flex: 1 1 190px;"><strong style="color: var(--danger);">Below Average below 65%</strong><br>Threatens liquidity and requires escalation to recovery teams.</div>
         </div>
       </div>
 
@@ -825,7 +846,7 @@ export const renderAnalyticsDashboard = async () => {
                   <td class="text-right text-success">${formatMoney(o.collectedInWindow)}</td>
                   <td class="text-right font-semibold text-danger">${formatMoney(o.targetGap)}</td>
                   <td class="text-right font-semibold" style="color: ${o.efficiencyRating.color};">${formatPercent(o.efficiency)}</td>
-                  <td><span class="badge" style="background: ${o.efficiencyRating.color}; color: white; font-size: 0.65rem;">${o.efficiencyRating.label}</span></td>
+                  <td><span class="badge" title="${o.efficiencyRating.detail || ''}" style="background: ${o.efficiencyRating.color}; color: white; font-size: 0.65rem;">${o.efficiencyRating.label}</span></td>
                 </tr>
               `).join('')}
             </tbody>
@@ -1295,8 +1316,8 @@ export const renderAnalyticsDashboard = async () => {
     if (ok) renderData();
   });
 
-  // Keep analytics fresh without holding multiple PocketBase realtime SSE streams open.
-  // Realtime over Cloudflare/PocketHost can surface Chrome QUIC errors on long-lived streams.
+  // Realtime handles normal updates; conservative polling is only a fallback.
+  // This keeps Analytics current without repeatedly loading full collections.
   const debouncedRefresh = debounce(async () => {
     const ok = await refresh();
     if (ok) renderData();
@@ -1304,19 +1325,28 @@ export const renderAnalyticsDashboard = async () => {
 
   const pollInterval = setInterval(() => {
     if (!document.hidden) debouncedRefresh();
-  }, 10000);
+  }, 2 * 60 * 1000);
+
+  const refreshAfterInvalidating = prefix => async () => {
+    await dataCache.invalidatePrefix(prefix);
+    debouncedRefresh();
+  };
 
   container.__subscriptionPromise = Promise.all([
-    pb.collection('loan_repayments').subscribe('*', debouncedRefresh).catch(err => {
+    pb.collection('loan_repayments').subscribe('*', refreshAfterInvalidating('loan_repayments:dashboard:all')).catch(err => {
       console.warn('[Analytics] Repayment realtime unavailable, polling will continue:', err.message);
       return null;
     }),
-    pb.collection('loan_schedule').subscribe('*', debouncedRefresh).catch(err => {
+    pb.collection('loan_schedule').subscribe('*', refreshAfterInvalidating('loan_schedule:dashboard:all')).catch(err => {
       console.warn('[Analytics] Schedule realtime unavailable, polling will continue:', err.message);
       return null;
     }),
-    pb.collection('loans').subscribe('*', debouncedRefresh).catch(err => {
+    pb.collection('loans').subscribe('*', refreshAfterInvalidating('loans:financial:expanded:v1')).catch(err => {
       console.warn('[Analytics] Loan realtime unavailable, polling will continue:', err.message);
+      return null;
+    }),
+    pb.collection('savings').subscribe('*', refreshAfterInvalidating('savings:analytics:basic:v1')).catch(err => {
+      console.warn('[Analytics] Savings realtime unavailable, polling will continue:', err.message);
       return null;
     })
   ]).then(unsubs => [

@@ -217,7 +217,7 @@ export const renderReportsDashboard = async () => {
           <div class="card" style="background: var(--bg-light); border: none; border-left: 4px solid #f59e0b; box-shadow: var(--shadow-sm); transition: transform 0.2s, box-shadow 0.2s;">
             <div class="text-xs text-muted" style="font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;">Expected Interest Portfolio</div>
             <div class="text-xl font-semibold text-primary" id="pl-expected-interest" style="margin-top: 8px;">KES 0</div>
-            <div class="text-xs text-muted" style="margin-top: 4px; font-size: 0.7rem; opacity: 0.75;">Remaining after collected interest</div>
+            <div class="text-xs text-muted" style="margin-top: 4px; font-size: 0.7rem; opacity: 0.75;">Selected disbursements, less interest collected to date</div>
           </div>
         </div>
       </div>
@@ -482,22 +482,26 @@ export const renderReportsDashboard = async () => {
           </div>
           <div class="card" style="background: var(--bg-light); border-left: 4px solid #10b981;">
             <div class="text-xs text-muted">PAR 30</div>
-            <div class="text-xl font-semibold" style="color: #10b981;" id="arrears-par-30">KES 0</div>
+            <div class="font-semibold" style="font-size: 1.65rem; font-weight: 800; color: #10b981;" id="arrears-par-30-rate">0.00%</div>
+            <div class="text-sm font-semibold" style="margin-top: 4px; color: #10b981;" id="arrears-par-30">OLB: KES 0</div>
             <div class="text-xs text-muted" id="arrears-par-30-detail" style="margin-top: 4px;">1-30 days · 0 loans</div>
           </div>
           <div class="card" style="background: var(--bg-light); border-left: 4px solid #f59e0b;">
             <div class="text-xs text-muted">PAR 60</div>
-            <div class="text-xl font-semibold" style="color: #f59e0b;" id="arrears-par-60">KES 0</div>
+            <div class="font-semibold" style="font-size: 1.65rem; font-weight: 800; color: #f59e0b;" id="arrears-par-60-rate">0.00%</div>
+            <div class="text-sm font-semibold" style="margin-top: 4px; color: #f59e0b;" id="arrears-par-60">OLB: KES 0</div>
             <div class="text-xs text-muted" id="arrears-par-60-detail" style="margin-top: 4px;">31-60 days · 0 loans</div>
           </div>
           <div class="card" style="background: var(--bg-light); border-left: 4px solid #ef4444;">
             <div class="text-xs text-muted">PAR 90</div>
-            <div class="text-xl font-semibold" style="color: #ef4444;" id="arrears-par-90">KES 0</div>
+            <div class="font-semibold" style="font-size: 1.65rem; font-weight: 800; color: #ef4444;" id="arrears-par-90-rate">0.00%</div>
+            <div class="text-sm font-semibold" style="margin-top: 4px; color: #ef4444;" id="arrears-par-90">OLB: KES 0</div>
             <div class="text-xs text-muted" id="arrears-par-90-detail" style="margin-top: 4px;">61-90 days · 0 loans</div>
           </div>
           <div class="card" style="background: var(--bg-light); border-left: 4px solid #b91c1c;">
             <div class="text-xs text-muted">90+ Exposure</div>
-            <div class="text-xl font-semibold" style="color: #b91c1c;" id="arrears-par-90-plus">KES 0</div>
+            <div class="font-semibold" style="font-size: 1.65rem; font-weight: 800; color: #b91c1c;" id="arrears-par-90-plus-rate">0.00%</div>
+            <div class="text-sm font-semibold" style="margin-top: 4px; color: #b91c1c;" id="arrears-par-90-plus">OLB: KES 0</div>
             <div class="text-xs text-muted" id="arrears-par-90-plus-detail" style="margin-top: 4px;">91+ days · 0 loans</div>
           </div>
           <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
@@ -925,10 +929,8 @@ export const renderReportsDashboard = async () => {
     const interestSnapshotDate = toDate || new Date();
     const approvedLoans = loans.filter(l => isIncomeLoan(l) && isWithinDateRange(getLoanIncomeDate(l)));
     const repaymentLoans = loans.filter(isIncomeLoan);
-    const interestPortfolioLoans = repaymentLoans.filter(loan => {
-      const incomeDate = toValidDate(getLoanIncomeDate(loan));
-      return Boolean(incomeDate && incomeDate <= interestSnapshotDate);
-    });
+    // The portfolio context follows the report period's disbursement-date scope.
+    const interestPortfolioLoans = approvedLoans;
     const filteredExpenses = expenses.filter(e => isWithinDateRange(e.date || e.expense_date || e.created));
     const filteredMembers = members.filter(m => isWithinDateRange(getRegistrationFeeDate(m)));
     const filteredProcessingFeeLoans = loans.filter(l => l.processing_fee_paid && isWithinDateRange(getProcessingFeeDate(l)));
@@ -1787,12 +1789,11 @@ export const renderReportsDashboard = async () => {
     const count1To30 = parBuckets.par30.loanCount;
     const count31To60 = parBuckets.par60.loanCount;
     const count61To90 = parBuckets.par90.loanCount;
+    const getParRate = (bucket) => activeOutstandingLoanPortfolio > 0
+      ? (bucket.olb / activeOutstandingLoanPortfolio) * 100
+      : 0;
     const renderParDetail = (element, label, bucket) => {
-      if (!element) return;
-      const portfolioRate = activeOutstandingLoanPortfolio > 0
-        ? (bucket.olb / activeOutstandingLoanPortfolio) * 100
-        : 0;
-      element.innerHTML = `${label} · ${bucket.loanCount} ${bucket.loanCount === 1 ? 'loan' : 'loans'} · <strong style="font-weight: 800; color: var(--text-primary);">${formatPercent(portfolioRate)}</strong>`;
+      if (element) element.textContent = `${label} · ${bucket.loanCount} ${bucket.loanCount === 1 ? 'loan' : 'loans'}`;
     };
     const totalAmountEl = container.querySelector('#arrears-total-amount');
     const count1To30El = container.querySelector('#arrears-1-30-count');
@@ -1802,6 +1803,10 @@ export const renderReportsDashboard = async () => {
     const par60El = container.querySelector('#arrears-par-60');
     const par90El = container.querySelector('#arrears-par-90');
     const par90PlusEl = container.querySelector('#arrears-par-90-plus');
+    const par30RateEl = container.querySelector('#arrears-par-30-rate');
+    const par60RateEl = container.querySelector('#arrears-par-60-rate');
+    const par90RateEl = container.querySelector('#arrears-par-90-rate');
+    const par90PlusRateEl = container.querySelector('#arrears-par-90-plus-rate');
     const par30DetailEl = container.querySelector('#arrears-par-30-detail');
     const par60DetailEl = container.querySelector('#arrears-par-60-detail');
     const par90DetailEl = container.querySelector('#arrears-par-90-detail');
@@ -1811,10 +1816,14 @@ export const renderReportsDashboard = async () => {
     if (count1To30El) count1To30El.textContent = count1To30.toLocaleString();
     if (count31To60El) count31To60El.textContent = count31To60.toLocaleString();
     if (count61To90El) count61To90El.textContent = count61To90.toLocaleString();
-    if (par30El) par30El.textContent = `KES ${formatMoney(parBuckets.par30.olb)}`;
-    if (par60El) par60El.textContent = `KES ${formatMoney(parBuckets.par60.olb)}`;
-    if (par90El) par90El.textContent = `KES ${formatMoney(parBuckets.par90.olb)}`;
-    if (par90PlusEl) par90PlusEl.textContent = `KES ${formatMoney(parBuckets.par90Plus.olb)}`;
+    if (par30RateEl) par30RateEl.textContent = formatPercent(getParRate(parBuckets.par30));
+    if (par60RateEl) par60RateEl.textContent = formatPercent(getParRate(parBuckets.par60));
+    if (par90RateEl) par90RateEl.textContent = formatPercent(getParRate(parBuckets.par90));
+    if (par90PlusRateEl) par90PlusRateEl.textContent = formatPercent(getParRate(parBuckets.par90Plus));
+    if (par30El) par30El.textContent = `OLB: KES ${formatMoney(parBuckets.par30.olb)}`;
+    if (par60El) par60El.textContent = `OLB: KES ${formatMoney(parBuckets.par60.olb)}`;
+    if (par90El) par90El.textContent = `OLB: KES ${formatMoney(parBuckets.par90.olb)}`;
+    if (par90PlusEl) par90PlusEl.textContent = `OLB: KES ${formatMoney(parBuckets.par90Plus.olb)}`;
     renderParDetail(par30DetailEl, '1-30 days', parBuckets.par30);
     renderParDetail(par60DetailEl, '31-60 days', parBuckets.par60);
     renderParDetail(par90DetailEl, '61-90 days', parBuckets.par90);
@@ -1851,7 +1860,7 @@ export const renderReportsDashboard = async () => {
     const tbody = container.querySelector('#debt-table-body');
     const summaryKeys = ['count', 'dru', 'du', 'rl', 'olb', 'arrears', 'fines', 'recoveryRate', 'recovered'];
     const invalidRange = dateRange.from && dateRange.to && dateRange.from > dateRange.to;
-    container.querySelector('#debt-position-label').textContent = `Current balances as at ${formatDate(new Date())}. Recovered % is contractual collections divided by expected contract value; fines are excluded. DU and D.R.U can overlap; overall totals count each loan once.`;
+    container.querySelector('#debt-position-label').textContent = `Current balances as at ${formatDate(new Date())}. Recovered % counts only contractual collections made after a confirmed D.U/D.R.U renewal; previous-cycle payments and fines are excluded. DU and D.R.U can overlap; overall totals count each loan once.`;
     container.querySelector('#debt-date-heading').textContent = debtDateBasis === 'disbursement' ? 'Disbursed Date' : 'Entry / Last Payment';
     if (!debtDataReady || debtDataError || invalidRange) {
       summaryKeys.forEach(key => { container.querySelector(`#debt-${key}`).textContent = '-'; });

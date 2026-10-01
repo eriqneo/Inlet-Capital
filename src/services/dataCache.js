@@ -4,13 +4,24 @@ const DB_NAME = 'InletCacheDB';
 const DB_VERSION = 1;
 const STORE_NAME = 'collections';
 const TTL = 5 * 60 * 1000; // 5 minutes (data older than this triggers background refresh on access)
-const DEFAULT_LOCAL_FIRST_REFRESH_INTERVAL = 10 * 1000;
+const DEFAULT_LOCAL_FIRST_REFRESH_INTERVAL = 60 * 1000;
+const DEFAULT_RATE_LIMIT_BACKOFF_MS = 30 * 60 * 1000;
+const MAX_RATE_LIMIT_BACKOFF_MS = 60 * 60 * 1000;
 const CACHE_EPOCH_KEY = 'inlet_data_cache_epoch';
 export const DATA_CACHE_EPOCH = 'group-officer-transfer-2026-08-13-v2';
 const inFlightRefreshes = new Map();
+const refreshBackoffUntil = new Map();
 
 const getCacheOwner = () => pb.authStore.model?.id || 'anonymous';
 const getScopedKey = (key) => `${getCacheOwner()}::${String(key)}`;
+const isRateLimitError = error => Number(error?.status) === 429;
+const getRateLimitBackoffMs = (error) => {
+  const message = [error?.message, error?.data?.message, error?.response?.message].filter(Boolean).join(' ');
+  const retryAfterSeconds = Number(message.match(/retry\s+after\s+(\d+)\s*seconds?/i)?.[1]);
+  if (!Number.isFinite(retryAfterSeconds) || retryAfterSeconds <= 0) return DEFAULT_RATE_LIMIT_BACKOFF_MS;
+  return Math.min(MAX_RATE_LIMIT_BACKOFF_MS, retryAfterSeconds * 1000);
+};
+const isRefreshBackedOff = scopedKey => (refreshBackoffUntil.get(scopedKey) || 0) > Date.now();
 
 // Wrap IndexedDB in a Promise API
 const openDB = () => {
@@ -96,6 +107,7 @@ export const dataCache = {
       await clearDB();
       await clearBrowserCaches();
       inFlightRefreshes.clear();
+      refreshBackoffUntil.clear();
       localStorage.setItem(CACHE_EPOCH_KEY, DATA_CACHE_EPOCH);
       console.info(`[dataCache] Cleared stale local data cache for ${DATA_CACHE_EPOCH}.`);
       return true;
@@ -110,6 +122,7 @@ export const dataCache = {
       await clearDB();
       await clearBrowserCaches();
       inFlightRefreshes.clear();
+      refreshBackoffUntil.clear();
       localStorage.setItem(CACHE_EPOCH_KEY, DATA_CACHE_EPOCH);
       return true;
     } catch (e) {
@@ -132,7 +145,7 @@ export const dataCache = {
       if (cached) {
         const isStale = (now - cached.ts) > TTL;
         
-        if (isStale) {
+        if (isStale && !isRefreshBackedOff(scopedKey)) {
           // Background refresh
           this.refresh(key, fetchFn).then(newData => {
              if (onUpdate) onUpdate(newData);
@@ -143,8 +156,13 @@ export const dataCache = {
       }
       
       // Not in cache, must fetch
-      return await this.refresh(key, fetchFn);
+      return await this.refreshDedupe(key, fetchFn);
     } catch (err) {
+      if (isRateLimitError(err) || err?.isCacheBackoff) {
+        const cached = await getFromDB(scopedKey).catch(() => null);
+        if (cached) return cached.data;
+        throw err;
+      }
       console.error(`[dataCache] Error accessing DB for ${key}`, err);
       // Fallback to fetch
       return await fetchFn();
@@ -167,7 +185,7 @@ export const dataCache = {
 
       if (cached) {
         const shouldRefresh = (now - cached.ts) > minRefreshInterval;
-        if (shouldRefresh) {
+        if (shouldRefresh && !isRefreshBackedOff(scopedKey)) {
           this.refreshDedupe(key, fetchFn)
             .then(newData => {
               if (onUpdate) onUpdate(newData);
@@ -179,6 +197,11 @@ export const dataCache = {
 
       return await this.refreshDedupe(key, fetchFn);
     } catch (err) {
+      if (isRateLimitError(err) || err?.isCacheBackoff) {
+        const cached = await getFromDB(scopedKey).catch(() => null);
+        if (cached) return cached.data;
+        throw err;
+      }
       console.error(`[dataCache] Local-first access failed for ${key}`, err);
       return await fetchFn();
     }
@@ -186,6 +209,12 @@ export const dataCache = {
 
   async refreshDedupe(key, fetchFn) {
     const scopedKey = getScopedKey(key);
+    if (isRefreshBackedOff(scopedKey)) {
+      const error = new Error('Refresh paused temporarily after PocketHost rate limiting.');
+      error.status = 429;
+      error.isCacheBackoff = true;
+      throw error;
+    }
     if (inFlightRefreshes.has(scopedKey)) return await inFlightRefreshes.get(scopedKey);
 
     const refreshPromise = this.refresh(key, fetchFn)
@@ -200,16 +229,28 @@ export const dataCache = {
   async refresh(key, fetchFn) {
     const cacheOwner = getCacheOwner();
     const scopedKey = getScopedKey(key);
+    if (isRefreshBackedOff(scopedKey)) {
+      const error = new Error('Refresh paused temporarily after PocketHost rate limiting.');
+      error.status = 429;
+      error.isCacheBackoff = true;
+      throw error;
+    }
     try {
       // Ensure UI knows we are syncing
       updateSyncStatus('syncing');
       const freshData = await fetchFn();
       if (getCacheOwner() !== cacheOwner) return freshData;
       await putToDB(scopedKey, freshData);
+      refreshBackoffUntil.delete(scopedKey);
       updateSyncStatus('synced');
       return freshData;
     } catch (err) {
-      console.error(`[dataCache] Refresh failed for ${key}`, err);
+      if (isRateLimitError(err)) {
+        refreshBackoffUntil.set(scopedKey, Date.now() + getRateLimitBackoffMs(err));
+        console.warn(`[dataCache] Refresh rate-limited for ${key}; cached data will be used during cooldown.`);
+      } else {
+        console.error(`[dataCache] Refresh failed for ${key}`, err);
+      }
       updateSyncStatus('offline');
       throw err;
     }

@@ -5,10 +5,17 @@ import { settingsService } from '../services/settingsService.js';
 import { canAccessModule } from '../core/permissions.js';
 import { getOfficerDataScopeId, getOfficerScopeCacheKey } from '../core/officerScope.js';
 
+import { dataCache } from '../services/dataCache.js';
 const PENDING_LOANS_CACHE_KEY = 'inlet_pending_loans_count';
 const PENDING_LOANS_TTL = 2 * 60 * 1000;
+const LOAN_UNIT_COUNTS_CACHE_KEY = 'inlet_loan_unit_counts';
+const LOAN_UNIT_COUNTS_TTL = 2 * 60 * 1000;
 let pendingLoanCountPromise = null;
 const getPendingLoansCacheKey = () => `${PENDING_LOANS_CACHE_KEY}:${getOfficerScopeCacheKey()}`;
+let loanUnitCountsPromise = null;
+const getLoanUnitCountsCacheKey = () => `${LOAN_UNIT_COUNTS_CACHE_KEY}:${getOfficerScopeCacheKey()}`;
+const emptyLoanUnitCounts = () => ({ du: 0, dru: 0, rl: 0 });
+const renderLoanUnitBadge = (count, tone) => Number(count) > 0 ? `<span class="badge-counter badge-counter-${tone}">${count}</span>` : '';
 
 const pathModules = {
   '#/': 'dashboard',
@@ -92,7 +99,7 @@ const updatePendingLoanBadge = (sidebar, count) => {
   if (count > 0) {
     if (!badge) {
       badge = document.createElement('span');
-      badge.className = 'badge-counter';
+      badge.className = 'badge-counter badge-counter-primary';
       loansLink.appendChild(badge);
     }
     badge.textContent = count;
@@ -101,9 +108,63 @@ const updatePendingLoanBadge = (sidebar, count) => {
   }
 };
 
+const getCachedLoanUnitCounts = () => {
+  try {
+    const cached = JSON.parse(localStorage.getItem(getLoanUnitCountsCacheKey()) || 'null');
+    if (cached && Date.now() - cached.ts < LOAN_UNIT_COUNTS_TTL) return { ...emptyLoanUnitCounts(), ...cached.counts };
+  } catch (e) {}
+  return emptyLoanUnitCounts();
+};
+
+const setCachedLoanUnitCounts = (counts) => {
+  try {
+    localStorage.setItem(getLoanUnitCountsCacheKey(), JSON.stringify({ counts, ts: Date.now() }));
+  } catch (e) {}
+};
+
+const fetchLoanUnitCounts = async (penaltyAmount = 500) => {
+  if (!loanUnitCountsPromise) {
+    loanUnitCountsPromise = Promise.all([
+      import('../services/loanService.js'),
+      import('../core/debtManagement.js')
+    ]).then(async ([{ loanService }, { buildDebtManagementRows }]) => {
+      const [loans, repayments, settlements, schedules] = await Promise.all([
+        loanService.getFullListCached({
+          filter: 'disbursement_date!=""',
+          sort: '-disbursement_date',
+          expand: '',
+          cacheKey: 'loans:sidebar-unit-counts:v1'
+        }),
+        dataCache.getLocalFirst('loan_repayments:sidebar-unit-counts:v1', () => pb.collection('loan_repayments').getFullList()),
+        dataCache.getLocalFirst('loan_balance_offs:sidebar-unit-counts:v1', () => loanService.getBalanceOffsFullList({ expand: '' })),
+        dataCache.getLocalFirst('loan_schedule:sidebar-unit-counts:v1', () => pb.collection('loan_schedule').getFullList())
+      ]);
+      const rows = buildDebtManagementRows({ loans, repayments, settlements, schedules, penaltyAmount: Number(penaltyAmount) || 500 });
+      const counts = {
+        du: rows.filter(row => row.categories.includes('du')).length,
+        dru: rows.filter(row => row.categories.includes('dru')).length,
+        rl: rows.filter(row => row.categories.includes('rl')).length
+      };
+      setCachedLoanUnitCounts(counts);
+      return counts;
+    }).catch(() => getCachedLoanUnitCounts()).finally(() => {
+      loanUnitCountsPromise = null;
+    });
+  }
+  return loanUnitCountsPromise;
+};
+
+const updateLoanUnitBadge = (sidebar, path, count, tone) => {
+  const link = sidebar.querySelector(`[data-nav-path="${path}"]`);
+  if (!link) return;
+  link.querySelector('.badge-counter')?.remove();
+  if (Number(count) > 0) link.insertAdjacentHTML('beforeend', renderLoanUnitBadge(count, tone));
+};
+
 export const renderSidebar = async () => {
   const session = authService.getUser();
   const pendingCount = getCachedPendingLoanCount();
+  const loanUnitCounts = getCachedLoanUnitCounts();
   let orgSettings = {};
   try {
     orgSettings = await settingsService.getAll();
@@ -148,21 +209,21 @@ export const renderSidebar = async () => {
         <ul class="nav-sub-links">
           <li><a href="#/loans" class="nav-item nav-sub-item" data-nav-path="#/loans" data-tooltip="Loan Management">
             <span class="nav-sub-dot"></span><span class="nav-label">Loan Management</span>
-            ${pendingCount > 0 ? `<span class="badge-counter">${pendingCount}</span>` : ''}
+            ${pendingCount > 0 ? `<span class="badge-counter badge-counter-primary">${pendingCount}</span>` : ''}
           </a></li>
           <li>
             <a href="#/loans/distress-unit" class="nav-item nav-sub-item" data-nav-path="#/loans/distress-unit" data-tooltip="Distress Unit">
               <span class="nav-sub-dot"></span> <span class="nav-label">Distress Unit</span>
-              <span class="nav-sub-code">DU</span>
+              ${renderLoanUnitBadge(loanUnitCounts.du, 'warning')}
             </a>
           </li>
           <li><a href="#/loans/debt-recovery" class="nav-item nav-sub-item" data-nav-path="#/loans/debt-recovery" data-tooltip="Debt Recovery Unit (D.R.U)">
             <span class="nav-sub-dot"></span><span class="nav-label">Debt Recovery Unit</span>
-            <span class="nav-sub-code">DRU</span>
+            ${renderLoanUnitBadge(loanUnitCounts.dru, 'danger')}
           </a></li>
           <li><a href="#/loans/recovered" class="nav-item nav-sub-item" data-nav-path="#/loans/recovered" data-tooltip="Recovered Loans (RL)">
             <span class="nav-sub-dot"></span><span class="nav-label">Recovered Loans</span>
-            <span class="nav-sub-code">RL</span>
+            ${renderLoanUnitBadge(loanUnitCounts.rl, 'recovered')}
           </a></li>
         </ul>
         </details>
@@ -241,6 +302,11 @@ export const renderSidebar = async () => {
 
   updateSidebarActiveRoute();
   fetchPendingLoanCount().then(count => updatePendingLoanBadge(sidebar, count));
+  fetchLoanUnitCounts(orgSettings.penalty_amount).then(counts => {
+    updateLoanUnitBadge(sidebar, '#/loans/distress-unit', counts.du, 'warning');
+    updateLoanUnitBadge(sidebar, '#/loans/debt-recovery', counts.dru, 'danger');
+    updateLoanUnitBadge(sidebar, '#/loans/recovered', counts.rl, 'recovered');
+  });
 
   return sidebar;
 };
