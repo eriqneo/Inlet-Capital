@@ -1,14 +1,15 @@
 import { pb } from '../../services/api.js';
 import { renderPagination } from '../../components/Pagination.js';
-import { dataCache, debounce } from '../../services/dataCache.js';
-import { memberService } from '../../services/memberService.js';
-import { groupService } from '../../services/groupService.js';
-import { loanService } from '../../services/loanService.js';
+import { dataCache, debounce, observeCachedView } from '../../services/dataCache.js';
+import { loanFinancialSnapshotService } from '../../services/loanFinancialSnapshotService.js';
+import { getFinancialTimestamp, getPortfolioCutoff } from '../../core/financialRecords.js';
 import { savingsService } from '../../services/savingsService.js';
+import { expenseService } from '../../services/expenseService.js';
+import { calculateExpenseTrend } from '../../core/expenseMetrics.js';
 import { formatMoney, formatPercent } from '../../core/utils.js';
-import { buildEffectiveSchedulePaidMap, getDaysInArrears, getScheduleArrearsAmount, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
-import { canUseOfficerFilter, createOfficerScope, getGlobalOfficerFilter, getGroupOfficerId, getMemberOfficerId } from '../../core/officerScope.js';
-import { settingsService } from '../../services/settingsService.js';
+import { buildEffectiveSchedulePaidMap } from '../../core/loanScheduleMetrics.js';
+import { createLoanArrearsCalculator } from '../../core/loanArrears.js';
+import { canUseOfficerFilter, createOfficerScope, getGlobalOfficerFilter, getGroupOfficerId, getMemberOfficerId, getOfficerDataScopeId, getOfficerScopeCacheKey } from '../../core/officerScope.js';
 import { createLoanPortfolioCalculator, isCollectibleLoanRecord, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
 import {
   getLoanLiabilityAmount,
@@ -18,7 +19,7 @@ import {
 } from '../../core/repaymentAllocation.js';
 import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
 import { renderDatabaseLoaderIcon, DATABASE_LOADING_LABEL } from '../../core/uiState.js';
-import { calculateSavingsSummary, getSavingsTransactionType } from '../../core/savingsMetrics.js';
+import { calculateSavingsSummary, getSavingsDateBounds, getSavingsTimestamp, isSavingsInDateRange, selectSavingsRecords } from '../../core/savingsMetrics.js';
 
 export const renderAnalyticsDashboard = async () => {
   const container = document.createElement('div');
@@ -35,23 +36,13 @@ export const renderAnalyticsDashboard = async () => {
   let members = [], loans = [], repayments = [], settlements = [], groups = [], savings = [], schedules = [], users = [];
   let automaticPenaltyAmount = 500;
   let hasLoadedAnalyticsData = false;
+  let expenses = [], expensesUnavailable = false;
 
   const loadAnalyticsData = async () => {
     try {
-      [members, loans, repayments, settlements, groups, savings, schedules, users, automaticPenaltyAmount] = await Promise.all([
-        memberService.getAll(),
-        loanService.getFullListCached({ cacheKey: 'loans:financial:expanded:v1' }),
-        dataCache.getLocalFirst(
-          'loan_repayments:dashboard:all',
-          () => pb.collection('loan_repayments').getFullList()
-        ),
-        dataCache.getLocalFirst('loan_balance_offs:analytics:all:v1', () => loanService.getBalanceOffsFullList({ expand: '' })),
-        groupService.getAll(),
+      const [financial, savingRecords, loanUsers, expenseResult] = await Promise.all([
+        loanFinancialSnapshotService.get(),
         savingsService.getFinancialRecordsCached(),
-        dataCache.getLocalFirst(
-          'loan_schedule:dashboard:all',
-          () => pb.collection('loan_schedule').getFullList()
-        ),
         dataCache.get('users:analytics:loan-users:v1', () => pb.collection('users').getFullList({
           filter: 'role="loan_officer" || role="group_officer" || role="manager" || role="admin" || role="super_admin"',
           sort: 'email'
@@ -59,9 +50,32 @@ export const renderAnalyticsDashboard = async () => {
           console.warn('[Analytics] Loan user list unavailable, using loan records fallback:', err.message);
           return [];
         }),
-        settingsService.getNumber('penalty_amount', 500)
+        dataCache.get(`expenses:reports:${getOfficerScopeCacheKey()}`, () => expenseService.getFullList())
+          .then(records => ({ records }))
+          .catch(error => {
+            if (error.isCacheObsolete) throw error;
+            console.warn('[Analytics] Expense records unavailable:', error.message);
+            return { error };
+          }),
       ]);
+      expensesUnavailable = Boolean(expenseResult.error);
+      expenses = expenseResult.records || [];
+      ({ loans, repayments, settlements, schedules, penaltyAmount: automaticPenaltyAmount } = financial);
+      members = financial.members.filter(member => !['suspended', 'closed'].includes(member.status));
+      groups = financial.groups.filter(group => !['suspended', 'closed'].includes(group.status));
+      savings = savingRecords;
+      users = loanUsers;
+      const portfolioMemberIds = getPortfolioMemberIds(members);
+      loans = filterPortfolioFinancialRecords(loans, portfolioMemberIds);
+      savings = selectSavingsRecords(filterPortfolioFinancialRecords(savings, portfolioMemberIds), { members });
+      calculateSavingsSummary(savings);
+      savings.forEach(getSavingsTimestamp);
+      const visibleLoanIds = new Set(loans.map(loan => loan.id));
+      schedules = schedules.filter(schedule => visibleLoanIds.has(schedule.loan));
+      repayments = repayments.filter(repayment => visibleLoanIds.has(repayment.loan));
+      settlements = settlements.filter(settlement => visibleLoanIds.has(settlement.loan) && settlement.status !== 'reversed');
     } catch (err) {
+      if (err.isCacheObsolete) return false;
       console.error('Failed to load analytics data:', err);
       if (!hasLoadedAnalyticsData) {
         container.innerHTML = `<div class="card text-center text-danger" style="padding: 40px; margin: 20px;">
@@ -70,15 +84,13 @@ export const renderAnalyticsDashboard = async () => {
           <button class="btn btn-primary" onclick="window.location.reload()">Retry Connection</button>
         </div>`;
       }
+      else {
+        let notice = container.querySelector('[data-financial-stale]');
+        if (!notice) { notice = document.createElement('p'); notice.dataset.financialStale = ''; notice.className = 'text-warning'; container.prepend(notice); }
+        notice.textContent = 'Updates unavailable - showing previously loaded records';
+      }
       return false;
     }
-    const portfolioMemberIds = getPortfolioMemberIds(members);
-    loans = filterPortfolioFinancialRecords(loans, portfolioMemberIds);
-    savings = filterPortfolioFinancialRecords(savings, portfolioMemberIds);
-    const visibleLoanIds = new Set(loans.map(loan => loan.id));
-    schedules = schedules.filter(schedule => visibleLoanIds.has(schedule.loan));
-    repayments = repayments.filter(repayment => visibleLoanIds.has(repayment.loan));
-    settlements = settlements.filter(settlement => visibleLoanIds.has(settlement.loan) && settlement.status !== 'reversed');
     hasLoadedAnalyticsData = true;
     return true;
   };
@@ -96,6 +108,7 @@ export const renderAnalyticsDashboard = async () => {
   let currentOfficerFilter = getGlobalOfficerFilter();
   let currentCollectionWindow = 'this_month';
   let chartInstances = [];
+  let chartTimer;
 
   const destroyCharts = () => {
     chartInstances.forEach(c => c.destroy());
@@ -103,18 +116,21 @@ export const renderAnalyticsDashboard = async () => {
   };
 
   const renderData = () => {
+    if (container.__disposed) return;
+    clearTimeout(chartTimer);
+    destroyCharts();
     const today = new Date();
     const todayStart = new Date(today);
     todayStart.setHours(0, 0, 0, 0);
     const toValidDate = (value) => {
       if (!value) return null;
-      const date = new Date(value);
+      const date = new Date(getFinancialTimestamp(value));
       return Number.isNaN(date.getTime()) ? null : date;
     };
-    const fromDate = dateRange.from ? new Date(`${dateRange.from}T00:00:00`) : null;
-    const toDate = dateRange.to ? new Date(`${dateRange.to}T23:59:59.999`) : null;
+    const fromDate = dateRange.from ? new Date(getPortfolioCutoff(dateRange.from).getTime() - 86399999) : null;
+    const toDate = dateRange.to ? getPortfolioCutoff(dateRange.to) : null;
     const hasAnalyticsDateRange = Boolean(fromDate || toDate);
-    const snapshotDate = toDate || new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+    const snapshotDate = getPortfolioCutoff(dateRange.to);
     const isWithinDateRange = (value) => {
       if (!dateRange.from && !dateRange.to) return true;
       const date = toValidDate(value);
@@ -123,7 +139,7 @@ export const renderAnalyticsDashboard = async () => {
       if (toDate && date > toDate) return false;
       return true;
     };
-    const formatShortDate = (date) => date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    const formatShortDate = (date) => date.toLocaleDateString(undefined, { timeZone: 'Africa/Nairobi', month: 'short', day: 'numeric', year: 'numeric' });
     const analyticsRangeLabel = dateRange.from && dateRange.to
       ? `${formatShortDate(fromDate)} - ${formatShortDate(toDate)}`
       : dateRange.from
@@ -131,13 +147,19 @@ export const renderAnalyticsDashboard = async () => {
         : dateRange.to
           ? `Until ${formatShortDate(toDate)}`
           : 'All Time';
+    let expenseTrend = null;
+    if (!expensesUnavailable) {
+      try {
+        expenseTrend = calculateExpenseTrend(expenses, { ...dateRange, officer: getOfficerDataScopeId(), now: today });
+      } catch (error) { console.warn('[Analytics] Expense chart unavailable:', error.message); }
+    }
 
     // Filter datasets
     const fMembers = members.filter(m => isWithinDateRange(m.registration_date || m.created));
     const fLoans = loans.filter(l => isWithinDateRange(l.application_date || l.created));
     const fDisbursedLoans = loans.filter(l => l.disbursement_date && isWithinDateRange(l.disbursement_date));
     const fRepayments = repayments.filter(r => isWithinDateRange(r.date || r.created));
-    const fSavings = savings.filter(s => isWithinDateRange(s.date || s.created));
+    const fSavings = savings.filter(s => isSavingsInDateRange(s, dateRange));
 
     // Calculations based on filtered data
     const getLoanLiability = getLoanLiabilityAmount;
@@ -301,6 +323,7 @@ export const renderAnalyticsDashboard = async () => {
       schedules,
       repayments: hasAnalyticsDateRange ? snapshotRepayments : repayments,
       settlements: hasAnalyticsDateRange ? snapshotSettlements : settlements,
+      referenceDate: snapshotDate,
       useRecordedPaid: false
     });
     const getEffectiveSchedulePaid = (schedule) => effectiveSchedulePaidMap.get(schedule.id) ?? Math.min(Number(schedule.amount) || 0, Math.max(0, Number(schedule.paid) || 0));
@@ -311,25 +334,15 @@ export const renderAnalyticsDashboard = async () => {
       schedules,
       penaltyAmount: automaticPenaltyAmount,
       referenceDate: snapshotDate,
-      useRecordedSchedulePaid: !hasAnalyticsDateRange
+      useRecordedSchedulePaid: false,
+      asOf: dateRange.to ? snapshotDate : undefined,
+      loans
     });
     const getLoanOutstandingBalance = portfolioCalculator.getOutstanding;
-    const snapshotLoans = loans
-      .filter(loan => {
-        const disbursedAt = toValidDate(loan.disbursement_date);
-        if (!disbursedAt || disbursedAt > snapshotDate || !filterByOfficer(loan)) return false;
-        if (!hasAnalyticsDateRange) return isCollectibleLoanRecord(loan);
-        if (loan.status !== 'written_off') return isGivenLoan(loan);
-        const writtenOffAt = toValidDate(loan.written_off_at);
-        return Boolean(writtenOffAt && writtenOffAt > snapshotDate);
-      })
-      .map(loan => loan.status === 'written_off' ? { ...loan, status: 'disbursed' } : loan);
+    const snapshotLoans = loans.filter(filterByOfficer).filter(loan => getLoanOutstandingBalance(loan) > 0);
     const outstandingPortfolioLoans = snapshotLoans.filter(loan => getLoanOutstandingBalance(loan) > 0);
     const activeLoans = outstandingPortfolioLoans;
-    const loanPortfolio = outstandingPortfolioLoans.reduce(
-      (sum, loan) => sum + getLoanOutstandingBalance(loan),
-      0
-    );
+    const loanPortfolio = portfolioCalculator.sumOutstanding(outstandingPortfolioLoans);
     const totalDisbursedLoans = fDisbursedLoans
       .filter(filterByOfficer)
       .reduce((sum, loan) => sum + getLoanPrincipal(loan), 0);
@@ -503,11 +516,8 @@ export const renderAnalyticsDashboard = async () => {
     }
     const officerScopedSavingsAllTime = savings.filter(filterSavingsByOfficer);
     const officerScopedLoansAllTime = loans.filter(filterByOfficer);
-    const getSavingsDepositsForPeriod = (bounds) => officerScopedSavingsAllTime
-      .filter(s => !s.is_reversed)
-      .filter(s => getSavingsTransactionType(s) === 'deposit')
-      .filter(s => isWithinBounds(s.date || s.created, bounds))
-      .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+    const getSavingsDepositsForPeriod = (bounds) => calculateSavingsSummary(officerScopedSavingsAllTime
+      .filter(s => isWithinBounds(s.date || s.created, bounds))).deposits;
     const getLoanDisbursedForMonth = (bounds) => officerScopedLoansAllTime
       .filter(l => ['disbursed', 'approved', 'completed', 'closed'].includes(l.status) && l.disbursement_date)
       .filter(l => isWithinBounds(l.disbursement_date, bounds))
@@ -581,44 +591,35 @@ export const renderAnalyticsDashboard = async () => {
         if (!accountId) return;
 
         const member = memberId ? membersById.get(memberId) : null;
-        const group = groupId ? groupsById.get(groupId) : null;
-        const amount = Math.max(0, Number(saving.amount) || 0);
-        const current = saverMap.get(accountId) || {
+        const group = groupsById.get(member ? (member.group?.id || member.group) : groupId);
+        const accountKey = `${memberId ? 'member' : 'group'}:${accountId}`;
+        const current = saverMap.get(accountKey) || {
           id: member?.reg_no || group?.group_id || accountId,
           name: member?.full_name || group?.name || 'Unknown saver',
           account: member
             ? (group?.name || member?.expand?.group?.name || 'Individual')
             : 'Group Account',
-          deposits: 0,
-          withdrawals: 0
+          records: []
         };
 
-        if (getSavingsTransactionType(saving) === 'withdrawal') current.withdrawals += amount;
-        else current.deposits += amount;
-        saverMap.set(accountId, current);
+        current.records.push(saving);
+        saverMap.set(accountKey, current);
       });
     const topSavers = [...saverMap.values()]
-      .map(saver => ({ ...saver, netSavings: saver.deposits - saver.withdrawals }))
+      .map(saver => {
+        const summary = calculateSavingsSummary(saver.records);
+        return { ...saver, ...summary, netSavings: summary.net };
+      })
       .filter(saver => saver.netSavings > 0)
       .sort((a, b) => b.netSavings - a.netSavings || b.deposits - a.deposits)
       .slice(0, 5);
 
     // Compute Arrears Aging (All Time logic for arrears)
     const arrearsMap = {};
-    let totalArrearsGlobal = 0;
-    
-    const snapshotLoansById = new Map(snapshotLoans.map(loan => [loan.id, loan]));
-    scopedSchedules.forEach(s => {
-       const effectivePaid = getEffectiveSchedulePaid(s);
-       const historicalSchedule = {
-         ...s,
-         paid: effectivePaid,
-         status: effectivePaid >= (Number(s.amount) || 0) ? 'paid' : 'pending'
-       };
-       const loan = snapshotLoansById.get(s.loan);
-       if (loan && isScheduleInArrears(historicalSchedule, snapshotDate)) {
-          const arrearsAmount = getScheduleArrearsAmount(historicalSchedule, snapshotDate);
-          totalArrearsGlobal += arrearsAmount;
+    const arrearsSummary = createLoanArrearsCalculator({ loans, schedules, repayments, settlements,
+      referenceDate: snapshotDate, portfolioCalculator }).summarize(snapshotLoans);
+    const totalArrearsGlobal = arrearsSummary.total;
+    arrearsSummary.rows.forEach(({ loan, arrearsAmount, daysLate }) => {
           const id = loan.member || loan.group;
           if (!arrearsMap[id]) arrearsMap[id] = { name: '', id: '', amount: 0, daysOverdue: 0 };
           const member = members.find(m => m.id === id);
@@ -626,11 +627,9 @@ export const renderAnalyticsDashboard = async () => {
           arrearsMap[id].name = member ? member.full_name : (group ? group.name : 'Unknown');
           arrearsMap[id].id = member?.reg_no || group?.group_id || id;
           arrearsMap[id].amount += arrearsAmount;
-          const daysOverdue = getDaysInArrears(historicalSchedule, snapshotDate);
-          if (daysOverdue > arrearsMap[id].daysOverdue) {
-             arrearsMap[id].daysOverdue = daysOverdue;
+          if (daysLate > arrearsMap[id].daysOverdue) {
+             arrearsMap[id].daysOverdue = daysLate;
           }
-       }
     });
     const arrearsList = Object.values(arrearsMap).sort((a, b) => b.daysOverdue - a.daysOverdue);
 
@@ -894,6 +893,21 @@ export const renderAnalyticsDashboard = async () => {
       </div>
 
       <div class="charts-grid" style="margin-top: 24px;">
+        <div class="chart-card analytics-expenses-chart" style="grid-column: 1 / -1;">
+          <div class="chart-header">
+            <div>
+              <div class="chart-title" id="expenses-chart-title">Expenses (KES)</div>
+              <div class="text-xs text-muted" id="expenses-chart-period" style="margin-top: 4px;">${analyticsRangeLabel}${expenseTrend ? ` · ${expenseTrend.interval === 'year' ? 'Annual' : 'Monthly'} totals · ${expenseTrend.count.toLocaleString()} entries` : ''}</div>
+            </div>
+            <div class="text-lg font-semibold text-danger" id="expenses-chart-total">${expenseTrend ? `KES ${formatMoney(expenseTrend.total)}` : 'Unavailable'}</div>
+          </div>
+          ${!expenseTrend ? '<div class="text-center text-muted" role="status" style="padding: 40px 16px;">Expense records unavailable. <button type="button" class="btn btn-outline btn-sm" id="expenses-chart-retry">Retry</button></div>'
+            : !expenseTrend.count ? '<div class="text-center text-muted" role="status" style="padding: 40px 16px;">No expenses recorded for this period.</div>'
+            : `<div class="chart-canvas-wrapper"><canvas id="expensesBarChart" role="img" aria-labelledby="expenses-chart-title" aria-describedby="expenses-chart-period expenses-chart-total">${expenseTrend.labels.map((label, index) => `${label}: KES ${formatMoney(expenseTrend.amounts[index])}`).join('; ')}</canvas></div>`}
+        </div>
+      </div>
+
+      <div class="charts-grid" style="margin-top: 24px;">
         <div class="chart-card" style="grid-column: 1 / -1;">
           <div class="chart-header">
             <div class="chart-title">Loan Growth vs Savings Growth (%)</div>
@@ -1003,10 +1017,17 @@ export const renderAnalyticsDashboard = async () => {
     }
 
     const applyAnalyticsDateRange = () => {
-      dateRange = {
+      const nextRange = {
         from: container.querySelector('#analytics-date-from')?.value || '',
         to: container.querySelector('#analytics-date-to')?.value || ''
       };
+      try { getSavingsDateBounds(nextRange); } catch (error) {
+        container.querySelector('#analytics-date-from').value = dateRange.from;
+        container.querySelector('#analytics-date-to').value = dateRange.to;
+        window.notify?.error(error.message);
+        return;
+      }
+      dateRange = nextRange;
       renderData();
     };
     container.querySelector('#analytics-date-from').onchange = applyAnalyticsDateRange;
@@ -1018,6 +1039,13 @@ export const renderAnalyticsDashboard = async () => {
     container.querySelector('#collection-window-filter').onchange = (e) => {
       currentCollectionWindow = e.target.value;
       renderData();
+    };
+    const expenseRetry = container.querySelector('#expenses-chart-retry');
+    if (expenseRetry) expenseRetry.onclick = async () => {
+      expenseRetry.disabled = true;
+      expenseRetry.textContent = 'Fetching...';
+      try { await dataCache.invalidatePrefix('expenses:'); }
+      catch (error) { expenseRetry.disabled = false; expenseRetry.textContent = 'Retry'; window.notify?.error(error.message); }
     };
 
     const updateArrearsUI = () => {
@@ -1045,13 +1073,36 @@ export const renderAnalyticsDashboard = async () => {
 
     updateArrearsUI();
 
-    setTimeout(() => {
-      initCharts(scopedLoans, scopedRepayments, scopedMembers, scopedSavings);
+    chartTimer = setTimeout(() => {
+      if (!container.__disposed) initCharts(scopedLoans, scopedRepayments, scopedMembers, scopedSavings, expenseTrend);
     }, 100);
   };
 
-  const initCharts = (fLoans, fRepayments, allMembers, fSavings) => {
+  const initCharts = (fLoans, fRepayments, allMembers, fSavings, expenseTrend) => {
     destroyCharts();
+    if (typeof window.Chart !== 'function') {
+      const wrapper = container.querySelector('#expensesBarChart')?.parentElement;
+      if (wrapper) wrapper.textContent = 'Chart unavailable. Please reload to try again.';
+      return;
+    }
+
+    const expenseCanvas = container.querySelector('#expensesBarChart');
+    if (expenseCanvas && expenseTrend) chartInstances.push(new Chart(expenseCanvas, {
+      type: 'bar',
+      data: {
+        labels: expenseTrend.labels,
+        datasets: [{ label: 'Expenses', data: expenseTrend.amounts, backgroundColor: '#dc2626',
+          hoverBackgroundColor: '#991b1b', borderRadius: 4, maxBarThickness: 48 }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: context => `Expenses: KES ${formatMoney(context.raw)}` } } },
+        scales: {
+          y: { beginAtZero: true, title: { display: true, text: 'KES' }, ticks: { callback: value => formatMoney(value) } },
+          x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true } }
+        }
+      }
+    }));
 
     // 1. Loan Status Chart
     const statusCounts = {
@@ -1192,12 +1243,9 @@ export const renderAnalyticsDashboard = async () => {
     }
 
     // 4. Savings vs Disbursements
-    const savingsData = monthKeys.map(mk => {
-      return fSavings
-        .filter(s => !s.is_reversed)
-        .filter(s => s.date && s.date.startsWith(mk) && getSavingsTransactionType(s) === 'deposit')
-        .reduce((sum, s) => sum + s.amount, 0);
-    });
+    const savingsData = monthKeys.map(mk => calculateSavingsSummary(fSavings.filter(s =>
+      new Date(getSavingsTimestamp(s) + 3 * 60 * 60 * 1000).toISOString().startsWith(mk)
+    )).deposits);
 
     const disbData = monthKeys.map(mk => {
       return fLoans
@@ -1243,13 +1291,7 @@ export const renderAnalyticsDashboard = async () => {
     }
 
     // 5. Loan Growth vs Savings Growth
-    const savingsDepositGrowthBase = monthKeys.map(mk => {
-      return fSavings
-        .filter(s => !s.is_reversed)
-        .filter(s => getSavingsTransactionType(s) === 'deposit')
-        .filter(s => (s.date || s.created || '').startsWith(mk))
-        .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
-    });
+    const savingsDepositGrowthBase = savingsData;
     const calculateGrowthSeries = (values) => values.map((value, index) => {
       if (index === 0) return 0;
       const previous = Number(values[index - 1]) || 0;
@@ -1327,32 +1369,20 @@ export const renderAnalyticsDashboard = async () => {
     if (!document.hidden) debouncedRefresh();
   }, 2 * 60 * 1000);
 
-  const refreshAfterInvalidating = prefix => async () => {
-    await dataCache.invalidatePrefix(prefix);
-    debouncedRefresh();
-  };
+  container.__subscriptions = [observeCachedView(
+    ['savings:', 'members:', 'groups:', 'loans:', 'loan_repayments', 'loan_schedule', 'loan_balance_offs:', 'settings:', 'expenses:'],
+    async () => { if (await refresh()) renderData(); }
+  )];
 
-  container.__subscriptionPromise = Promise.all([
-    pb.collection('loan_repayments').subscribe('*', refreshAfterInvalidating('loan_repayments:dashboard:all')).catch(err => {
-      console.warn('[Analytics] Repayment realtime unavailable, polling will continue:', err.message);
-      return null;
-    }),
-    pb.collection('loan_schedule').subscribe('*', refreshAfterInvalidating('loan_schedule:dashboard:all')).catch(err => {
-      console.warn('[Analytics] Schedule realtime unavailable, polling will continue:', err.message);
-      return null;
-    }),
-    pb.collection('loans').subscribe('*', refreshAfterInvalidating('loans:financial:expanded:v1')).catch(err => {
-      console.warn('[Analytics] Loan realtime unavailable, polling will continue:', err.message);
-      return null;
-    }),
-    pb.collection('savings').subscribe('*', refreshAfterInvalidating('savings:financial:all:v1')).catch(err => {
-      console.warn('[Analytics] Savings realtime unavailable, polling will continue:', err.message);
-      return null;
-    })
-  ]).then(unsubs => [
-    () => clearInterval(pollInterval),
-    ...unsubs.filter(unsub => typeof unsub === 'function')
-  ]);
+  const expenseChanged = debounce(() => {
+    if (!container.__disposed) void dataCache.invalidatePrefix('expenses:').catch(error => console.warn('[Analytics] Expense refresh unavailable:', error.message));
+  }, 200);
+  container.__subscriptionPromise = expenseService.subscribeToChanges(expenseChanged)
+    .then(stop => [stop]).catch(error => { console.warn('[Analytics] Expense stream unavailable:', error.message); return []; });
+  container.__subscriptions.push(() => {
+    clearInterval(pollInterval); debouncedRefresh.cancel(); expenseChanged.cancel();
+    clearTimeout(chartTimer); destroyCharts();
+  });
 
   return container;
 };

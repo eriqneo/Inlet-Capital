@@ -1,4 +1,5 @@
 import { savingsService } from '../../services/savingsService.js';
+import { getSavingsTransactionType } from '../../core/savingsMetrics.js';
 import { memberService } from '../../services/memberService.js';
 import { groupService } from '../../services/groupService.js';
 import { authService } from '../../services/authService.js';
@@ -484,11 +485,11 @@ export const renderSavingsLedger = async (params = {}) => {
       return `
       <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border-color);">
         <div>
-          <div class="font-semibold">${t.type.toUpperCase()}${methodIcon} ${t.is_reversed ? '<span class="badge badge-danger">REVERSED</span>' : ''}</div>
+          <div class="font-semibold">${getSavingsTransactionType(t).toUpperCase()}${methodIcon} ${t.is_reversed ? '<span class="badge badge-danger">REVERSED</span>' : ''}</div>
           <div class="text-xs text-muted">${targetName} | ${formatDate(t.date)}</div>
         </div>
-        <div class="font-semibold" style="color: ${t.type === 'deposit' ? 'var(--success)' : 'var(--danger)'};">
-          ${t.type === 'deposit' ? '+' : '-'}${formatMoney(t.amount)}
+        <div class="font-semibold" style="color: ${getSavingsTransactionType(t) === 'deposit' ? 'var(--success)' : 'var(--danger)'};">
+          ${getSavingsTransactionType(t) === 'deposit' ? '+' : '-'}${formatMoney(t.amount)}
         </div>
       </div>`;
     }).join('');

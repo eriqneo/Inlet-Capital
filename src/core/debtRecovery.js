@@ -107,7 +107,7 @@ export const buildDebtRecoveryRenewal = ({ loan, repayments = [], settlements = 
   const calendarDate = value => new Date(businessDay(value) * 86400000 + 12 * 3600000).toISOString();
   const fines = money(calculateLoanPenaltyState({
     schedules: schedules.map(row => ({ ...row, due_date: calendarDate(row.due_date) })),
-    repayments, settlements, penaltyAmount, referenceDate: calendarDate(referenceDate)
+    repayments, settlements, penaltyAmount, referenceDate: calendarDate(referenceDate), useRecordedSchedulePaid: false
   }).outstandingFine);
   const renewedLiability = money(renewalBase + interest);
   const renewalBusinessDay = businessDay(requestedRenewalDate || referenceDate);

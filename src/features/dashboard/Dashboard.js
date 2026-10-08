@@ -1,16 +1,16 @@
-import { pb } from '../../services/api.js';
-import { dataCache, debounce } from '../../services/dataCache.js';
-import { memberService } from '../../services/memberService.js';
-import { groupService } from '../../services/groupService.js';
-import { loanService } from '../../services/loanService.js';
+import { dataCache, debounce, observeCachedView } from '../../services/dataCache.js';
+import { loanFinancialSnapshotService } from '../../services/loanFinancialSnapshotService.js';
 import { savingsService } from '../../services/savingsService.js';
-import { settingsService } from '../../services/settingsService.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { formatMoney, formatPercent } from '../../core/utils.js';
-import { applyEffectiveSchedulePayments, buildEffectiveSchedulePaidMap, getArrearsTotal, getDaysInArrears, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
+import { getNairobiDay, getScheduleRemaining, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
+import { createLoanArrearsCalculator } from '../../core/loanArrears.js';
+import { getArrearsRatioRating } from '../../core/arrearsRatioRating.js';
+import { getParRating } from '../../core/parRating.js';
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
+import { calculateSavingsSummary, getSavingsTransactionType, selectSavingsRecords } from '../../core/savingsMetrics.js';
 import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
-import { createLoanPortfolioCalculator, isCollectibleLoanRecord } from '../../core/loanPortfolio.js';
+import { createLoanPortfolioCalculator } from '../../core/loanPortfolio.js';
 import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
 import { renderDatabaseLoaderIcon, DATABASE_LOADING_LABEL } from '../../core/uiState.js';
 
@@ -18,6 +18,7 @@ export const renderDashboard = async () => {
   const container = document.createElement('div');
   let currentOfficerFilter = 'all';
   let officerOptions = [];
+  let hasCompleteDashboard = false;
   container.innerHTML = `
     <div style="margin-bottom: 24px;">
       <h1 class="text-xl">Dashboard Overview</h1>
@@ -30,15 +31,6 @@ export const renderDashboard = async () => {
       </div>
     </div>
   `;
-
-  const safe = async (label, fn, fallback) => {
-    try {
-      return await fn();
-    } catch (err) {
-      console.warn(`[Dashboard] ${label} failed:`, err);
-      return fallback;
-    }
-  };
 
   const maybeShowWelcomeTour = () => {
     if (localStorage.getItem('inlet_show_welcome_tour') !== 'true') return;
@@ -152,47 +144,18 @@ export const renderDashboard = async () => {
     try {
     let members, groups, loans, savings, schedules, repayments, settlements, automaticPenaltyAmount;
     const today = new Date();
-    const upcomingThreshold = new Date();
-    upcomingThreshold.setDate(upcomingThreshold.getDate() + 7);
 
-    [
-      members,
-      groups,
-      loans,
-      savings,
-      schedules,
-      repayments,
-      settlements,
-      automaticPenaltyAmount
-    ] = await Promise.all([
-      safe('members', () => memberService.getAll(), []),
-      safe('groups', () => groupService.getAll(), []),
-      safe('loans', () => loanService.getFullListCached(
-        { cacheKey: 'loans:financial:expanded:v1' },
-        () => debouncedRefresh()
-      ), []),
-      safe('savings ledger', () => savingsService.getFullListCached({
-        filter: 'is_reversed=false',
-        expand: 'member,group',
-        cacheKey: 'savings:dashboard:active:v1'
-      }), []),
-      safe('loan schedules', () => dataCache.getLocalFirst(
-        'loan_schedule:dashboard:all',
-        () => pb.collection('loan_schedule').getFullList(),
-        () => debouncedRefresh()
-      ), []),
-      safe('loan repayments', () => dataCache.getLocalFirst(
-        'loan_repayments:dashboard:all',
-        () => pb.collection('loan_repayments').getFullList(),
-        () => debouncedRefresh()
-      ), []),
-      safe('loan balance-offs', () => loanService.getBalanceOffsFullList({ expand: '' }), []),
-      safe('penalty setting', () => settingsService.getNumber('penalty_amount', 500), 500)
+    const [financial, savingsRecords] = await Promise.all([
+      loanFinancialSnapshotService.get(), savingsService.getFinancialRecordsCached()
     ]);
+    ({ loans, schedules, repayments, settlements, penaltyAmount: automaticPenaltyAmount } = financial);
+    members = financial.members.filter(member => !['suspended', 'closed'].includes(member.status));
+    groups = financial.groups.filter(group => !['suspended', 'closed'].includes(group.status));
+    savings = savingsRecords;
 
     const portfolioMemberIds = getPortfolioMemberIds(members);
     loans = filterPortfolioFinancialRecords(loans, portfolioMemberIds);
-    savings = filterPortfolioFinancialRecords(savings, portfolioMemberIds);
+    savings = selectSavingsRecords(filterPortfolioFinancialRecords(savings, portfolioMemberIds), { members });
 
     if (canUseOfficerFilter()) {
       officerOptions = await loadOfficerOptions({ members, groups, loans });
@@ -225,96 +188,40 @@ export const renderDashboard = async () => {
     }).length;
     const activeGroups = groups.length;
     const pendingLoans = loans.filter(l => l.status === 'pending').length;
-    const loansById = new Map(loans.map(loan => [loan.id, loan]));
-    const isCollectibleLoan = isCollectibleLoanRecord;
     const portfolioCalculator = createLoanPortfolioCalculator({
       repayments,
       settlements,
       schedules,
-      penaltyAmount: automaticPenaltyAmount
+      penaltyAmount: automaticPenaltyAmount,
+      referenceDate: today
     });
     const getLoanOutstandingBalance = portfolioCalculator.getOutstanding;
-    const effectiveSchedulePaidMap = buildEffectiveSchedulePaidMap({
-      schedules,
-      repayments,
-      settlements,
-      useRecordedPaid: false
-    });
-    const effectiveSchedules = applyEffectiveSchedulePayments(schedules, effectiveSchedulePaidMap);
-    const overdueSchedules = effectiveSchedules.filter(s => isCollectibleLoan(loansById.get(s.loan)) && isScheduleInArrears(s, today));
-    const alertSchedules = schedules.filter(s => !isSchedulePaid(s) && new Date(s.due_date) <= upcomingThreshold);
+    const arrearsCalculator = createLoanArrearsCalculator({ loans, schedules, repayments, settlements,
+      referenceDate: today, portfolioCalculator });
+    const arrearsSummary = arrearsCalculator.summarize(loans);
+    const alertSchedules = arrearsCalculator.effectiveSchedules.filter(s => !isSchedulePaid(s)
+      && getNairobiDay(s.due_date) <= getNairobiDay(today) + 7);
 
   // calculate savings correctly
-  const totalSavings = savings
-    .reduce((sum, s) => s.type === 'deposit' ? sum + (Number(s.amount) || 0) : sum - (Number(s.amount) || 0), 0);
+  const totalSavings = calculateSavingsSummary(savings).net;
 
-  const totalArrears = getArrearsTotal(overdueSchedules, today);
-  const activeOutstandingLoanPortfolio = loans
-    .filter(isCollectibleLoan)
-    .reduce((sum, loan) => sum + getLoanOutstandingBalance(loan), 0);
-  const parRateNumber = activeOutstandingLoanPortfolio > 0
-    ? (totalArrears / activeOutstandingLoanPortfolio) * 100
-    : 0;
+  const totalArrears = arrearsSummary.total;
+  const activeOutstandingLoanPortfolio = arrearsSummary.outstanding;
+  const parRateNumber = arrearsSummary.arrearsRatio;
   const parRate = formatPercent(parRateNumber);
-  const parHealth = parRateNumber > 20
-    ? { label: 'Critical', detail: 'Severe arrears; urgent recovery action', color: '#991b1b', accent: '#991b1b' }
-    : parRateNumber > 12
-      ? { label: 'High Risk', detail: 'Significant portfolio-quality problem', color: 'var(--danger)', accent: 'var(--danger)' }
-      : parRateNumber > 8
-        ? { label: 'Needs Attention', detail: 'Elevated arrears; management action required', color: '#f97316', accent: '#f97316' }
-        : parRateNumber > 5
-          ? { label: 'Watch', detail: 'Early warning; collections need attention', color: '#ca8a04', accent: '#ca8a04' }
-          : parRateNumber > 2
-            ? { label: 'Healthy', detail: 'Good control; normal monitoring', color: 'var(--success)', accent: 'var(--success)' }
-            : { label: 'Excellent', detail: 'Very strong portfolio quality', color: 'var(--success)', accent: 'var(--success)' };
-  const overdueLoanIds = new Set(overdueSchedules.map(schedule => schedule.loan));
-  const totalOverdueOutstandingLoans = loans
-    .filter(loan => overdueLoanIds.has(loan.id))
-    .reduce((sum, loan) => sum + getLoanOutstandingBalance(loan), 0);
-  const gparRateNumber = activeOutstandingLoanPortfolio > 0
-    ? (totalOverdueOutstandingLoans / activeOutstandingLoanPortfolio) * 100
-    : 0;
+  const parHealth = getArrearsRatioRating(parRateNumber);
+  const totalOverdueOutstandingLoans = arrearsSummary.overdueOutstanding;
+  const gparRateNumber = arrearsSummary.gparRate;
   const gparRate = formatPercent(gparRateNumber);
-  const gparHealth = gparRateNumber >= 41
-    ? { label: 'High Risk / Danger', color: 'var(--danger)', accent: 'var(--danger)' }
-    : gparRateNumber >= 31
-      ? { label: 'Poor', color: 'var(--danger)', accent: 'var(--danger)' }
-      : gparRateNumber >= 21
-        ? { label: 'Needs Attention', color: 'var(--warning)', accent: 'var(--warning)' }
-        : gparRateNumber >= 11
-          ? { label: 'Good', color: 'var(--primary)', accent: 'var(--primary)' }
-          : { label: 'Excellent', color: 'var(--success)', accent: 'var(--success)' };
-  const overdueLoanAges = new Map();
-  overdueSchedules.forEach(schedule => {
-    const daysLate = getDaysInArrears(schedule, today);
-    const current = overdueLoanAges.get(schedule.loan);
-    if (!current || daysLate > current.daysLate) {
-      overdueLoanAges.set(schedule.loan, { daysLate, loan: loansById.get(schedule.loan) });
-    }
-  });
-  const parAging = {
-    par30: { olb: 0, loanCount: 0 },
-    par60: { olb: 0, loanCount: 0 },
-    par90: { olb: 0, loanCount: 0 }
-  };
-  overdueLoanAges.forEach(({ daysLate, loan }) => {
-    if (!loan) return;
-    const bucket = daysLate <= 30
-      ? parAging.par30
-      : (daysLate <= 60 ? parAging.par60 : (daysLate <= 90 ? parAging.par90 : null));
-    if (!bucket) return;
-    bucket.loanCount += 1;
-    bucket.olb += Math.max(0, Number(getLoanOutstandingBalance(loan)) || 0);
-  });
-  const getParAgingRate = (bucket) => activeOutstandingLoanPortfolio > 0
-    ? (bucket.olb / activeOutstandingLoanPortfolio) * 100
-    : 0;
+  const gparHealth = getParRating(gparRateNumber);
+  const parAging = arrearsSummary.buckets;
+  const getParAgingRate = bucket => bucket.rate;
 
   const alertLoanIds = new Set();
   alertSchedules.forEach(s => {
     const loanId = typeof s.loan === 'string' ? s.loan : s.loan?.id;
     const loan = loans.find(l => l.id === loanId);
-    if (!loanId || getScheduleRemaining(s) <= 0 || !isCollectibleLoan(loan)) return;
+    if (!loanId || getScheduleRemaining(s) <= 0 || getLoanOutstandingBalance(loan) <= 0) return;
     alertLoanIds.add(loanId);
   });
   const totalAlerts = alertLoanIds.size;
@@ -366,7 +273,7 @@ export const renderDashboard = async () => {
 
   // Add savings deposits to activity
   savings
-    .filter(s => s.type === 'deposit' && !s.is_reversed)
+    .filter(s => getSavingsTransactionType(s) === 'deposit' && !s.is_reversed)
     .slice()
     .sort((a, b) => new Date(b.date || b.created) - new Date(a.date || a.created))
     .slice(0, 5)
@@ -421,11 +328,13 @@ export const renderDashboard = async () => {
         <p class="text-xs" style="margin-top: 8px; color: ${parHealth.color}; font-weight: 700;">${parHealth.label}</p>
         <p class="text-xs text-muted" style="margin-top: 4px;">${parHealth.detail}</p>
         <p class="text-xs text-muted" style="margin-top: 4px;">Arrears / Outstanding Loan Balance</p>
+        <p class="text-xs text-muted" style="margin-top: 4px;">OLB KES ${formatMoney(activeOutstandingLoanPortfolio)}</p>
       </div>
       <div class="card" style="border-left: 4px solid ${gparHealth.accent};">
         <h3 class="text-sm text-muted" style="margin-bottom: 8px;">Global Portfolio at Risk (GPAR)</h3>
         <p style="font-size: 2.5rem; font-weight: 700; color: ${gparHealth.color};">${gparRate}</p>
         <p class="text-xs" style="margin-top: 8px; color: ${gparHealth.color}; font-weight: 700;">${gparHealth.label}</p>
+        <p class="text-xs text-muted" style="margin-top: 4px;">${gparHealth.detail}</p>
         <p class="text-xs text-muted" style="margin-top: 4px;">Overdue Outstanding / Loan Portfolio</p>
       </div>
       <div class="card" role="button" tabindex="0" aria-label="Open Arrears Aging report" onclick="window.location.hash = '#/reports?tab=arrears'" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); window.location.hash = '#/reports?tab=arrears'; }" style="border-left: 4px solid var(--primary); min-width: 0; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='var(--shadow-md)';" onmouseout="this.style.transform='none'; this.style.boxShadow='var(--shadow-sm)';">
@@ -505,8 +414,16 @@ export const renderDashboard = async () => {
         };
       }
       setTimeout(maybeShowWelcomeTour, 80);
+      hasCompleteDashboard = true;
     } catch (err) {
+      if (err.isCacheObsolete) return;
       console.error('[Dashboard] Refresh failed:', err);
+      if (hasCompleteDashboard) {
+        let notice = container.querySelector('[data-financial-stale]');
+        if (!notice) { notice = document.createElement('p'); notice.dataset.financialStale = ''; notice.className = 'text-warning'; container.prepend(notice); }
+        notice.textContent = 'Updates unavailable - showing previously loaded records';
+        return;
+      }
       container.innerHTML = `
         <div style="margin-bottom: 24px;">
           <h1 class="text-xl">Dashboard Overview</h1>
@@ -525,18 +442,18 @@ export const renderDashboard = async () => {
 
   refresh().catch(err => console.error('[Dashboard] Initial refresh failed:', err));
 
-  // Keep the overview fresh without holding PocketBase realtime SSE streams open.
-  // Realtime over Cloudflare/PocketHost can surface Chrome QUIC errors on long-lived streams.
+  // Realtime invalidation is owned by the session-level financial sync service.
   const debouncedRefresh = debounce(async () => {
     await refresh();
   }, 500);
 
   const pollInterval = setInterval(() => {
-    debouncedRefresh();
-  }, 30000);
+    if (!document.hidden) debouncedRefresh();
+  }, 120000);
 
   container.__subscriptions = [
-    () => clearInterval(pollInterval)
+    () => { clearInterval(pollInterval); debouncedRefresh.cancel(); },
+    observeCachedView(['savings:', 'members:', 'groups:', 'loans:', 'loan_repayments', 'loan_schedule', 'loan_balance_offs:', 'settings:'], refresh)
   ];
 
   return container;

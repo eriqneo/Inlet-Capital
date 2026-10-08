@@ -1,7 +1,10 @@
 import { loanService } from '../../services/loanService.js';
+import { loanFinancialSnapshotService } from '../../services/loanFinancialSnapshotService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate, formatMoney } from '../../core/utils.js';
-import { dataCache, debounce } from '../../services/dataCache.js';
+import { dataCache, debounce, observeCachedView } from '../../services/dataCache.js';
+import { getFinancialTimestamp, getPortfolioCutoff } from '../../core/financialRecords.js';
+import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
 import { renderTableSkeletonRows, setButtonLoading, showDelayedLoading } from '../../core/uiState.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { authService } from '../../services/authService.js';
@@ -217,7 +220,7 @@ export const renderLoanList = async (options = {}) => {
   };
   const toPocketDate = (dateValue) => dateValue ? new Date(`${dateValue}T12:00:00`).toISOString() : '';
   const toPocketDateTime = (value, endOfDay = false) => value
-    ? `${value} ${endOfDay ? '23:59:59.999Z' : '00:00:00.000Z'}`
+    ? new Date(getPortfolioCutoff(value).getTime() - (endOfDay ? 0 : 86399999)).toISOString().replace('T', ' ')
     : '';
   const buildLoanDateFilter = () => {
     const parts = [];
@@ -494,19 +497,15 @@ export const renderLoanList = async (options = {}) => {
       }
 
       if (isUnitMode) {
-        const [allLoans, repayments, settlements, schedules, penaltyAmount] = await Promise.all([
-          loanService.getFullListCached({
-            filter: combineFilters(isRecoveredMode
-              ? '(status="disbursed" || status="completed" || status="closed" || status="approved" || status="partial_approved") && disbursement_date!=""'
-              : 'status="disbursed"', dateFilter),
-            sort: '-application_date',
-            cacheKey: isRecoveredMode ? 'loans:list:recovered:expanded:v2' : 'loans:list:distress-unit:expanded:v1'
-          }),
-          dataCache.get('loan_repayments:loan-list:all:v1', () => pb.collection('loan_repayments').getFullList()),
-          loanService.getBalanceOffsFullList({ expand: '' }),
-          dataCache.get('loan_schedule:loan-list:all:v1', () => pb.collection('loan_schedule').getFullList()),
-          settingsService.getNumber('penalty_amount', 500)
-        ]);
+        const financial = await loanFinancialSnapshotService.get();
+        const { repayments, settlements, schedules, penaltyAmount } = financial;
+        const allLoans = filterPortfolioFinancialRecords(financial.loans, getPortfolioMemberIds(financial.members)).filter(loan => isRecoveredMode
+          ? loan.disbursement_date && ['disbursed', 'completed', 'closed', 'approved', 'partial_approved'].includes(loan.status)
+          : loan.status === 'disbursed').filter(loan => {
+            const timestamp = getFinancialTimestamp(loan.disbursement_date || loan.application_date);
+            return (!dateRange.from || timestamp >= getPortfolioCutoff(dateRange.from).getTime() - 86399999)
+              && (!dateRange.to || timestamp <= getPortfolioCutoff(dateRange.to).getTime());
+          });
         const portfolioCalculator = createLoanPortfolioCalculator({
           repayments,
           settlements,
@@ -809,6 +808,7 @@ export const renderLoanList = async (options = {}) => {
     ...(isUnitMode ? ['loan_repayments', 'loan_balance_offs', 'loan_schedule'].map(name =>
       pb.collection(name).subscribe('*', refreshUnit)) : [])
   ]);
+  container.__subscriptions = [observeCachedView(['loans:financial:snapshot:'], updateUI), () => refreshUnit.cancel()];
 
   return container;
 };

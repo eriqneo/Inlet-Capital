@@ -1,0 +1,199 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Inlet savings reconciliation regression</title>
+<link rel="stylesheet" href="/src/styles/index.css">
+<pre id="result">RUNNING</pre>
+<script type="module">
+  import { dataCache } from '/src/services/dataCache.js';
+  import { pb } from '/src/services/api.js';
+  import { trackPageSubscriptions } from '/src/core/pageSubscriptions.js';
+  if (window.__INLET_CACHE_TEST__ !== true) throw new Error('Isolated browser runner required');
+  const result = document.querySelector('#result');
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  const waitFor = async predicate => {
+    for (let i = 0; i < 150; i++) {
+      if (predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    throw new Error('Timed out waiting for savings view');
+  };
+  const contains = (element, selector, text) => element.querySelector(selector)?.textContent.includes(text);
+  const date = '2026-10-01T10:00:00Z';
+  const group = { id: 'g', name: 'Test Group', group_id: 'GROUP-TEST', status: 'active', meeting_day: 'Monday', created: date, total_savings: 53700 };
+  const individual = { id: 'i', full_name: 'Individual Test', reg_no: 'TEST-I', status: 'active', created: date };
+  const grouped = { id: 'm', full_name: 'Grouped Test', reg_no: 'TEST-M', group: 'g', status: 'active', created: date, expand: { group } };
+  const suspended = { id: 's', full_name: 'Suspended Test', reg_no: 'TEST-S', group: 'g', status: 'suspended', created: date };
+  const members = [individual, grouped, suspended];
+  const loan = { id: 'l', loan_no: 'LN-TEST', member: 'i', status: 'completed', disbursement_date: date, approved_amount: 200, total_liability: 200, expand: { member: individual } };
+  const savings = [
+    { id: 'deposit', member: 'i', amount: 1000, type: 'deposit', date },
+    { id: 'legacy', member: 'i', amount: '400', type: '', date: '2026-09-30T21:00:00Z' },
+    { id: 'withdrawal', member: 'i', amount: 200, type: 'withdrawal', date: '2026-10-01T21:00:00Z', payment_method: 'cash' },
+    { id: 'grouped', member: 'm', group: 'former-group', amount: 1200, type: 'deposit', date },
+    { id: 'later-grouped', member: 'm', amount: 100, type: 'deposit', date: '2026-10-03T10:00:00Z' },
+    { id: 'group-account', group: 'g', amount: 500, type: 'deposit', date },
+    { id: 'reversed', member: 'i', amount: 300, type: 'deposit', date, is_reversed: true },
+    { id: 'suspended', member: 's', group: 'g', amount: 700, type: 'deposit', date },
+    ...Array.from({ length: 12 }, (_, i) => ({ id: `extra-${i}`, member: 'i', amount: 1, type: 'deposit', date, reference: `UNIQUE-REF-${i}` }))
+  ].map(record => ({ ...record, expand: { member: members.find(m => m.id === record.member), group: record.group === 'g' ? group : undefined } }));
+  const settlement = { id: 'b', loan: 'l', savings_transaction: 'withdrawal', amount: 200, status: 'posted', effective_date: date };
+  const rows = name => ({ members, groups: [group], savings, loans: [loan], loan_balance_offs: [settlement] })[name] || [];
+  let requests = 0;
+  let rejectSavings = false;
+  let releaseSavings = null;
+  let savingsGate = null;
+  let summaryAccesses = 0;
+  // No requests, uploads, or updates are allowed to reach a real server.
+  pb.send = async () => { throw new Error('Unexpected network request in savings test'); };
+  pb.collection = name => {
+    if (name === 'group_summary') summaryAccesses++;
+    const selected = (options = {}) => {
+      if (rejectSavings && name === 'savings') throw new Error('Test savings network failure');
+      let data = rows(name);
+      const filter = options.filter || '';
+      if (name === 'savings' && /member="i"/.test(filter)) data = data.filter(record => record.member === 'i');
+      if (name === 'savings' && /group="g"/.test(filter)) data = data.filter(record => record.group === 'g' || members.find(m => m.id === record.member)?.group === 'g');
+      if (name === 'members' && /group="g"/.test(filter)) data = data.filter(record => record.group === 'g');
+      if (name === 'loans' && /group="g"/.test(filter)) data = [];
+      if (name === 'loans' && /member="i"/.test(filter)) data = data.filter(record => record.member === 'i');
+      return structuredClone(data);
+    };
+    return {
+      getFullList: async options => { requests++; if (name === 'savings' && savingsGate) await savingsGate; return selected(options); },
+      getList: async (page, perPage, options) => { requests++; const items = selected(options); return { items, totalItems: items.length, page, perPage, totalPages: 1 }; },
+      getFirstListItem: async filter => {
+        if (name === 'members') return individual;
+        throw Object.assign(new Error('Not found'), { status: 404 });
+      },
+      getOne: async id => rows(name).find(record => record.id === id),
+      update: async (id, payload) => ({ id, ...payload }),
+      create: async payload => ({ id: 'mock-created', ...payload }),
+      subscribe: async () => () => {}, unsubscribe: async () => {}
+    };
+  };
+  pb.authStore.save('savings-test-token', { id: 'savings-test-admin', role: 'super_admin' });
+  window.Chart = class { destroy() {} };
+  window.notify = { error() {}, success() {} };
+  const setRange = (element, prefix) => {
+    element.querySelector(`#${prefix}-from`).value = '2026-10-01';
+    element.querySelector(`#${prefix}-to`).value = '2026-10-01';
+    element.querySelector(`#${prefix}-to`).dispatchEvent(new Event('change'));
+  };
+  let dispose = () => {};
+  let current;
+  const mount = async (renderer, params) => {
+    dispose(); current?.remove();
+    await dataCache.invalidateAll();
+    current = await renderer(params);
+    dispose = trackPageSubscriptions(current);
+    document.body.append(current);
+    return current;
+  };
+  try {
+    const { renderDashboard } = await import('/src/features/dashboard/Dashboard.js');
+    const { renderAnalyticsDashboard } = await import('/src/features/analytics/AnalyticsDashboard.js');
+    const { renderSavingsList } = await import('/src/features/savings/SavingsList.js');
+    const { renderReportsDashboard } = await import('/src/features/reports/ReportsDashboard.js');
+    const { renderMemberProfile } = await import('/src/features/members/MemberProfile.js');
+    const { renderGroupProfile } = await import('/src/features/groups/GroupProfile.js');
+    const { renderGroupList } = await import('/src/features/groups/GroupList.js');
+    let page = await mount(renderDashboard);
+    await waitFor(() => page.textContent.includes('3,012.00'));
+    page = await mount(renderAnalyticsDashboard);
+    await waitFor(() => page.textContent.includes('3,012.00'));
+    setRange(page, 'analytics-date');
+    await waitFor(() => page.textContent.includes('Net Savings Movement') && page.textContent.includes('3,112.00'));
+    await new Promise(resolve => setTimeout(resolve, 150));
+    page = await mount(renderSavingsList);
+    await waitFor(() => contains(page, '#savings-net-total', '3,012.00'));
+    assert(contains(page, '#savings-entry-total', '18'), 'Savings count includes reversals or suspended members');
+    setRange(page, 'savings-date');
+    await waitFor(() => contains(page, '#savings-net-total', '3,112.00'));
+    page = await mount(renderReportsDashboard);
+    await waitFor(() => contains(page, '#individuals-total-savings', '3,012.00'));
+    assert(contains(page, '#individuals-total-savings', '500.00'), 'Group-account reconciliation missing');
+    page.querySelector('[data-tab="cashflow"]').click();
+    assert(contains(page, '#cashflow-summary', '3,012.00'), 'Cash flow savings does not reconcile');
+    assert(contains(page, '#cashflow-summary', '3,212.00'), 'Internal balance-off incorrectly treated as cash payout');
+    assert(contains(page, '#cashflow-summary', '200.00 internal balance-offs'), 'Internal transfer reconciliation missing');
+    let exported;
+    const originalCreate = URL.createObjectURL;
+    const originalClick = HTMLAnchorElement.prototype.click;
+    URL.createObjectURL = blob => { exported = blob; return 'blob:test'; };
+    HTMLAnchorElement.prototype.click = () => {};
+    page.querySelector('#export-excel-btn').click();
+    const file = await exported.text();
+    assert(file.includes('UNIQUE-REF-11') && file.includes('UNIQUE-REF-0'), 'Excel omitted paginated rows');
+    assert(file.includes('SAVINGS BALANCE-OFF'), 'Excel lost internal transfer classification');
+    URL.createObjectURL = originalCreate;
+    HTMLAnchorElement.prototype.click = originalClick;
+    let printedRows = 0;
+    window.print = () => { printedRows = page.querySelectorAll('#cashflow-table-body tr').length; };
+    page.querySelector('#print-report-btn').click();
+    await waitFor(() => printedRows >= 18);
+    window.dispatchEvent(new Event('afterprint'));
+    setRange(page, 'report-date');
+    assert(contains(page, '#cashflow-summary', '3,112.00'), 'Cash flow Nairobi date filter differs');
+    page.querySelector('[data-tab="individuals"]').click();
+    assert(contains(page, '#individuals-total-savings', '3,112.00'), 'Individual savings period differs');
+    page.querySelector('[data-tab="groups"]').click();
+    assert(contains(page, '#groups-total-savings', '1,700.00'), 'Group report current ownership differs');
+    page = await mount(renderMemberProfile, { id: 'TEST-I' });
+    await waitFor(() => contains(page, '#member-total-savings', '1,212.00'));
+    savingsGate = new Promise(resolve => { releaseSavings = resolve; });
+    page = await mount(renderGroupProfile, { id: 'g' });
+    await waitFor(() => page.textContent.includes('Checking...'));
+    assert(!page.textContent.includes('53,700'), 'Profile displayed stale group balance during loading');
+    releaseSavings(); savingsGate = null;
+    await waitFor(() => contains(page, '#group-total-savings-kpi', '1,800.00'));
+    page.querySelector('#global-date-start').value = '2026-10-01';
+    page.querySelector('#global-date-end').value = '2026-10-01';
+    page.querySelector('#global-date-end').dispatchEvent(new Event('change'));
+    assert(contains(page, '#group-total-savings-kpi', '1,700.00'), 'Group profile period differs');
+    assert(!contains(page, '#members-table-body', 'Grouped Test'), 'Last-saved cohort should be separate from savings transaction period');
+    savings.find(record => record.id === 'group-account').amount = 700;
+    await dataCache.invalidatePrefixes(['savings:', 'group_summary:', 'groups:profile:']);
+    await waitFor(() => contains(page, '#group-total-savings-kpi', '1,900.00'));
+    assert(page.querySelector('#global-date-end').value === '2026-10-01', 'Refresh lost active date range');
+    grouped.group = '';
+    grouped.expand = {};
+    await dataCache.invalidatePrefix('members:');
+    await waitFor(() => contains(page, '#group-total-savings-kpi', '700.00'));
+    grouped.group = 'g';
+    grouped.expand = { group };
+    await dataCache.invalidatePrefix('members:');
+    await waitFor(() => contains(page, '#group-total-savings-kpi', '1,900.00'));
+    rejectSavings = true;
+    await dataCache.invalidatePrefixes(['savings:', 'groups:profile:']);
+    await waitFor(() => contains(page, '#group-records-status', 'Updates unavailable'));
+    assert(contains(page, '#group-total-savings-kpi', '1,900.00'), 'Failed refresh replaced previous balance with zero');
+    rejectSavings = false;
+    await dataCache.invalidatePrefix('members:');
+    await waitFor(() => contains(page, '#group-records-status', 'Latest records loaded'));
+    savingsGate = new Promise(resolve => { releaseSavings = resolve; });
+    page = await mount(renderGroupList);
+    await waitFor(() => page.textContent.includes('Checking...'));
+    assert(!page.textContent.includes('53,700'), 'Group card displayed unverified saved balance');
+    releaseSavings(); savingsGate = null;
+    await waitFor(() => page.textContent.includes('2,000.00'));
+    assert(summaryAccesses === 0, 'Opening groups read or wrote an unversioned group_summary snapshot');
+    rejectSavings = true;
+    page = await mount(renderGroupProfile, { id: 'g' });
+    await waitFor(() => page.textContent.includes('Group profile unavailable'));
+    assert(!contains(page, '#group-total-savings-kpi', '0.00'), 'Failed initial load showed a zero balance');
+    page = await mount(renderSavingsList);
+    await waitFor(() => contains(page, '#savings-net-total', 'Unavailable'));
+    location.hash = '#/reports?tab=cashflow';
+    page = await mount(renderReportsDashboard);
+    await waitFor(() => contains(page, '#cashflow-tab [data-savings-status]', 'unavailable'));
+    assert(page.querySelector('#export-excel-btn').disabled && page.querySelector('#print-report-btn').disabled, 'Incomplete savings report can still be exported');
+    assert(requests < 180, `Excessive reads: ${requests}`);
+    result.textContent = 'PASS: savings reconcile across seven views; stale group summaries never render or get rewritten; savings and ownership changes refresh; failure states, dates and full exports verified (mocked PocketBase)';
+  } catch (error) {
+    result.textContent = `FAIL: ${error.stack}`;
+  } finally {
+    dispose();
+    await dataCache.invalidateAll();
+  }
+</script>

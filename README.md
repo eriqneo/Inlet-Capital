@@ -67,6 +67,29 @@ Inlet Capital is a high-fidelity, "Premium Standard" Progressive Web Application
    ```
 4. Open your browser to the URL provided by Vite (typically `http://localhost:3000` or `http://localhost:5173`).
 
+## Financial Definitions
+
+See [Financial Definitions](FINANCIAL_DEFINITIONS.md) for the savings metric
+contract, date and portfolio scope rules, reference examples, and policy decisions
+that need review. This defines the cross-module consistency work; it does not mean
+all modules have already been updated to follow it.
+
+See [Shared Cache and Savings Updates](CACHE_SYNC.md) for the implemented cache
+coordination, savings notifications, remaining scope, and regression-test commands.
+
+See [Savings Consistency](SAVINGS_CONSISTENCY.md) for the shared calculation
+implementation, connected views, cross-module tests, and remaining deployment work.
+
+See [OLB Consistency](OLB_CONSISTENCY.md) for shared outstanding balances,
+financial snapshots, date cutoffs, officer scope and regression/deployment checks.
+
+See [Arrears Consistency](ARREARS_CONSISTENCY.md) for overdue schedule allocation,
+shared PAR denominators, installment rounding and the read-only live audit.
+Contributor requirements for financial changes are in [AGENTS.md](AGENTS.md).
+
+See [Analytics Expenses Chart](ANALYTICS_EXPENSES.md) for expense bar totals,
+date/officer filtering, cache updates and browser verification.
+
 ## Weekly Savings Consistency
 
 Member Profile > Savings History shows weekly contribution coverage and on-time payment history for group members. The requirement is KES 200 per group meeting day; individual members are exempt.

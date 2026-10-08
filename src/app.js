@@ -5,11 +5,17 @@ import { initIdentityPhotoPreview } from './components/IdentityPhoto.js';
 import { initRouter, addRoute } from './core/router.js';
 import { authService } from './services/authService.js';
 import { dataCache } from './services/dataCache.js';
+import { startSavingsSync } from './services/savingsSync.js';
+import { startLoanFinancialSync } from './services/loanFinancialSync.js';
 
 const initApp = async () => {
   initIdentityPhotoPreview();
   // System uses PocketBase which initializes data on server-side
   await dataCache.ensureCurrentEpoch();
+  const stopSavingsSync = startSavingsSync();
+  const stopLoanFinancialSync = startLoanFinancialSync();
+  if (import.meta.hot) import.meta.hot.dispose(stopSavingsSync);
+  if (import.meta.hot) import.meta.hot.dispose(stopLoanFinancialSync);
 
   // Register Service Worker for PWA (Production Only)
   if ('serviceWorker' in navigator && !import.meta.env.DEV) {

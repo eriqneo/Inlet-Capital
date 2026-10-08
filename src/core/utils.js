@@ -1,11 +1,13 @@
+import { getFinancialTimestamp } from './financialRecords.js';
+
 export const formatDate = (dateInput) => {
   if (!dateInput) return '—';
-  const normalizedInput = typeof dateInput === 'string' ? dateInput.replace(' ', 'T') : dateInput;
-  const d = new Date(normalizedInput);
+  const timestamp = getFinancialTimestamp(typeof dateInput === 'number' ? new Date(dateInput) : dateInput);
+  const d = new Date(timestamp + 10800000);
   if (isNaN(d.getTime())) return '—';
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const year = d.getFullYear();
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const year = d.getUTCFullYear();
   return `${day}/${month}/${year}`;
 };
 

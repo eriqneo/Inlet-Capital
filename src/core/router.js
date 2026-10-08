@@ -3,6 +3,7 @@ import { destroyAppShell, ensureAppShell } from '../components/Layout.js';
 import { updateSidebarActiveRoute } from '../components/Sidebar.js';
 import { canAccessModule } from './permissions.js';
 import { renderDatabaseLoaderIcon, DATABASE_LOADING_LABEL } from './uiState.js';
+import { trackPageSubscriptions } from './pageSubscriptions.js';
 // Use Map to guarantee route registration order (prevents :id matching /new or /approve)
 const routes = new Map();
 let rootElement = null;
@@ -140,29 +141,13 @@ const handleRoute = async () => {
 
   try {
     const element = await route.renderFn(params);
-    if (requestId !== routeRequestId) return;
+    const disposePage = trackPageSubscriptions(element);
+    if (requestId !== routeRequestId) { disposePage(); return; }
 
     pageTarget.innerHTML = '';
     pageTarget.appendChild(element);
 
-    // Collect any subscriptions the page registered
-    if (element.__subscriptions) {
-      activeUnsubscribers.push(...element.__subscriptions);
-    }
-
-    if (element.__subscriptionPromise) {
-      element.__subscriptionPromise.then((subscriptions = []) => {
-        if (requestId === routeRequestId) {
-          activeUnsubscribers.push(...subscriptions);
-        } else {
-          subscriptions.forEach(unsub => {
-            if (typeof unsub === 'function') unsub();
-          });
-        }
-      }).catch(error => {
-        console.warn('Subscription setup failed:', error);
-      });
-    }
+    activeUnsubscribers.push(disposePage);
   } catch (error) {
     if (requestId !== routeRequestId) return;
     console.error('Routing Error:', error);

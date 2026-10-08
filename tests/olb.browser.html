@@ -1,0 +1,205 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OLB cross-view regression</title>
+<pre id="result">RUNNING</pre>
+<script type="module">
+  import { pb } from '/src/services/api.js';
+  import { dataCache } from '/src/services/dataCache.js';
+  import { trackPageSubscriptions } from '/src/core/pageSubscriptions.js';
+  if (window.__INLET_CACHE_TEST__ !== true) throw new Error('Isolated browser test runner required');
+  const NativeDate = Date;
+  const testNow = NativeDate.parse('2026-10-07T21:30:00Z');
+  window.Date = class extends NativeDate {
+    constructor(...args) { super(...(args.length ? args : [testNow])); }
+    static now() { return testNow; }
+  };
+  pb.authStore.save('olb-test', { id: 'admin1', role: 'super_admin', name: 'Test Admin' });
+  pb.send = async () => { throw new Error('Live network prohibited'); };
+  window.Chart = class { destroy() {} };
+  const result = document.querySelector('#result');
+  const assert = (value, message) => { if (!value) throw new Error(message); };
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const wait = async (check, label) => {
+    for (let i = 0; i < 150; i++) { if (check()) return; await sleep(20); }
+    throw new Error(`Timed out: ${label}`);
+  };
+  const group = { id: 'g1', name: 'Test Group', status: 'active', assigned_officer: 'o1', meeting_day: 'Monday' };
+  const members = [{ id: 'm1', full_name: 'Grouped Member', reg_no: 'REG-1', group: group.id, status: 'active', assigned_officer: 'o1', expand: { group } },
+    { id: 'm2', full_name: 'Individual Member', reg_no: 'REG-2', group: '', status: 'active', assigned_officer: 'o2' }];
+  const loan = { id: 'l1', loan_no: 'LN-TEST-1', status: 'disbursed', member: 'm1', group: 'g1',
+    amount_applied: 15000, approved_amount: 15000, interest_amount: 3000, interest_rate: 20, total_liability: 18000,
+    application_date: '2026-08-01', disbursement_date: '2026-08-01', period: 6, expand: { member: members[0], group } };
+  const loans = [loan, { ...loan, id: 'l2', loan_no: 'LN-TEST-2', member: 'm2', group: '', amount_applied: 10000,
+    approved_amount: 10000, interest_amount: 2000, total_liability: 12000, expand: { member: members[1] } },
+    { ...loan, id: 'l3', loan_no: 'LN-GROUP', member: '', amount_applied: 5000, approved_amount: 5000, interest_amount: 1000, total_liability: 6000, expand: { group } },
+    { ...loan, id: 'pending', loan_no: 'LN-AWAITING', status: 'approved', disbursement_date: '', total_liability: 18000 }];
+  const repayments = [{ id: 'r1', loan: 'l1', amount: 3500, fine_amount: 500, date: '2026-09-02' },
+    { id: 'r2', loan: 'l2', amount: 2000, fine_amount: 0, date: '2026-09-20' }];
+  const settlements = [{ id: 'b1', loan: 'l1', amount: 2000, status: 'completed', effective_date: '2026-09-20' }];
+  const schedules = [{ id: 's1', loan: 'l1', installment_no: 1, amount: 3000, paid: 3000, status: 'paid', due_date: '2026-09-01' },
+    { id: 's2', loan: 'l1', installment_no: 2, amount: 3000, paid: 3000, status: 'paid', due_date: '2026-10-01' },
+    { id: 's3', loan: 'l2', installment_no: 1, amount: 2000, paid: 2000, status: 'paid', due_date: '2026-10-01' },
+    { id: 's4', loan: 'l3', installment_no: 1, amount: 1000, paid: 0, status: 'pending', due_date: '2026-12-01' }];
+  let reads = 0, failRepayments = false, penalty = 500;
+  const listeners = new Map();
+  pb.collection = name => {
+    const rows = options => {
+      let items = name === 'members' ? members : name === 'groups' ? [group] : name === 'loans' ? loans
+        : name === 'loan_repayments' ? repayments : name === 'loan_schedule' ? schedules : name === 'loan_balance_offs' ? settlements
+        : name === 'settings' ? [{ key: 'penalty_amount', value: String(penalty) }] : [];
+      if (options?.filter?.includes('group="g1"')) {
+        items = items.filter(item => name === 'members' ? item.group === 'g1' : name === 'loans' ? item.group === 'g1'
+          : loans.find(loan => loan.id === item.loan)?.group === 'g1');
+      }
+      const loanFilter = options?.filter?.match(/(?:^|\s)loan\s*=\s*"([^"]+)"/);
+      if (loanFilter) items = items.filter(item => item.loan === loanFilter[1]);
+      return structuredClone(items);
+    };
+    return {
+      getFullList: async options => { reads++; if (name === 'loan_repayments' && failRepayments) throw new Error('Repayment connection unavailable'); return rows(options); },
+      getList: async (page, perPage, options) => { const items = rows(options); return { items, page, perPage, totalItems: items.length, totalPages: 1 }; },
+      getOne: async id => rows().find(row => row.id === id),
+      getFirstListItem: async filter => name === 'loans' ? structuredClone(loans.find(loan => filter.includes(loan.loan_no))) : { value: String(penalty) },
+      subscribe: async (topic, callback) => { const list = listeners.get(name) || new Set(); list.add(callback); listeners.set(name, list); return () => list.delete(callback); }
+    };
+  };
+  const pages = [], disposers = [];
+  let stopSync;
+  const attach = async render => { const element = await render(); document.body.appendChild(element); pages.push(element); disposers.push(trackPageSubscriptions(element)); return element; };
+  const money = value => value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const cardHas = (element, label, value) => [...element.querySelectorAll('.kpi-card, .card')].some(card => card.textContent.includes(label) && card.textContent.includes(money(value)));
+  const dashboardPar = element => [...element.querySelectorAll('.card')].find(card => card.textContent.includes('PAR Aging Analysis'));
+  const ratioCard = element => [...element.querySelectorAll('.card')].find(card => card.querySelector('h3')?.textContent === 'Arrears Ratio');
+  const globalParCard = element => [...element.querySelectorAll('.card')].find(card => card.querySelector('h3')?.textContent === 'Global Portfolio at Risk (GPAR)');
+  const assertRating = (card, label, color, guidance) => {
+    assert(card.textContent.includes(label), `Missing ${label} rating`);
+    assert(card.style.borderLeftColor === color || card.style.borderLeft.includes(color), `${label} border color differs: ${card.style.borderLeft}`);
+    assert(card.textContent.includes(guidance), `${label} follow-up guidance missing`);
+    assert([...card.querySelectorAll('p, div')].some(element => element.textContent === label && element.style.color === color), `${label} text color differs`);
+  };
+  try {
+    await dataCache.invalidateAll();
+    const { startLoanFinancialSync } = await import('/src/services/loanFinancialSync.js');
+    stopSync = startLoanFinancialSync();
+    const dashboard = await attach((await import('/src/features/dashboard/Dashboard.js')).renderDashboard);
+    const analytics = await attach((await import('/src/features/analytics/AnalyticsDashboard.js')).renderAnalyticsDashboard);
+    const reports = await attach((await import('/src/features/reports/ReportsDashboard.js')).renderReportsDashboard);
+    const groupProfile = await attach(() => import('/src/features/groups/GroupProfile.js').then(module => module.renderGroupProfile({ id: 'g1' })));
+    const profile = await attach(() => import('/src/features/loans/LoanDetails.js').then(module => module.renderLoanDetails({ id: 'LN-TEST-1' })));
+    await wait(() => reports.querySelector('#individuals-total-olb')?.textContent.includes(money(29500)), 'initial report OLB');
+    assert(cardHas(dashboard, 'Arrears Ratio', 29500), 'Dashboard OLB denominator differs');
+    assert(cardHas(analytics, 'Active Loan Portfolio', 29500), 'Analytics OLB differs');
+    assert(cardHas(dashboard, 'Total Arrears', 1000), 'Dashboard arrears differ');
+    assert(cardHas(analytics, 'Total Arrears', 1000), 'Analytics arrears differ');
+    assert(reports.querySelector('#individuals-total-arrears').textContent.includes(money(1000)), 'Individual arrears still trust stored paid');
+    await wait(() => groupProfile.querySelector('#group-outstanding-loan-kpi')?.textContent.includes(money(19500)), 'group OLB including fine');
+    await wait(() => profile.textContent.includes(money(13500)), 'Loan Overview OLB');
+    assert(groupProfile.querySelector('#group-total-arrears-kpi').textContent.includes(money(1000)), 'Group arrears still trust stored paid');
+    assertRating(ratioCard(dashboard), 'Healthy', 'var(--success)', 'Good control; normal monitoring');
+    assertRating(globalParCard(dashboard), 'Critical', 'rgb(153, 27, 27)', 'Senior escalation required');
+    assert(globalParCard(dashboard).textContent.includes('45.76%'), 'GPAR formula changed with rating policy');
+    assertRating(groupProfile.querySelector('#group-par-card'), 'Healthy', 'var(--success)', 'emerging arrears early');
+    await wait(() => profile.querySelector('#loan-schedule-body')?.textContent.includes(money(1500)), 'Loan schedule unpaid 1000 plus fine 500');
+    reports.querySelector('[data-tab="arrears"]').click();
+    assert(reports.querySelector('#arrears-total-amount').textContent.includes(money(1000)), 'Arrears Aging differs');
+    assert(reports.querySelector('#arrears-entry-count').textContent === '1', 'Arrears report counts installments instead of loans');
+    assert(dashboardPar(dashboard).textContent.includes(reports.querySelector('#arrears-par-30-rate').textContent), 'PAR denominator differs between Dashboard and Reports');
+    const parBefore = reports.querySelector('#arrears-par-30-rate').textContent;
+    reports.querySelector('[data-tab="alerts"]').click();
+    assert(reports.querySelector('#alerts-container').textContent.includes(money(1000)), 'Alerts ignore partial contract settlement');
+    assert(reports.querySelector('#alerts-container').querySelectorAll('.card').length === 1, 'Alerts duplicate loans');
+    reports.querySelector('[data-tab="groups"]').click();
+    assert(reports.querySelector('#groups-table-body').textContent.includes(money(19500)), 'Group Performance ignores fine or balance-off');
+    reports.querySelector('[data-tab="repayments"]').click();
+    assert(reports.querySelector('#repayments-total-olb').textContent.includes(money(29500)), 'Repayments OLB differs');
+
+    // External repayment event: no loan record event and no page reload.
+    repayments[0].amount = 4500;
+    listeners.get('loan_repayments').forEach(callback => callback({ action: 'update' }));
+    await wait(() => cardHas(dashboard, 'Arrears Ratio', 28000) && cardHas(analytics, 'Active Loan Portfolio', 28000)
+      && reports.querySelector('#repayments-total-olb').textContent.includes(money(28000))
+      && groupProfile.querySelector('#group-outstanding-loan-kpi').textContent.includes(money(18000)), 'cross-view external repayment refresh');
+    assert(cardHas(dashboard, 'Total Arrears', 0) && cardHas(analytics, 'Total Arrears', 0), 'Repayment did not clear global arrears');
+    assert(groupProfile.querySelector('#group-total-arrears-kpi').textContent.includes(money(0)), 'Repayment did not clear group arrears');
+    assertRating(ratioCard(dashboard), 'Excellent', 'var(--success)', 'Very strong portfolio quality');
+    assertRating(globalParCard(dashboard), 'Excellent', 'var(--success)', 'maintain follow-up discipline');
+    assert(globalParCard(dashboard).textContent.includes('0.00%'), 'Cleared arrears did not update GPAR');
+    assertRating(groupProfile.querySelector('#group-par-card'), 'Excellent', 'var(--success)', 'maintain follow-up discipline');
+    settlements[0].amount = 3000;
+    listeners.get('loan_balance_offs').forEach(callback => callback({ action: 'update' }));
+    await wait(() => reports.querySelector('#repayments-total-olb').textContent.includes(money(27000)), 'settlement refresh');
+    schedules[3].due_date = '2026-10-01';
+    listeners.get('loan_schedule').forEach(callback => callback({ action: 'update' }));
+    await wait(() => reports.querySelector('#repayments-total-olb').textContent.includes(money(27500))
+      && cardHas(dashboard, 'Total Arrears', 1000), 'group account arrears event');
+    assertRating(globalParCard(dashboard), 'Critical', 'rgb(153, 27, 27)', 'Senior escalation required');
+    assert(globalParCard(dashboard).textContent.includes('23.64%'), 'GPAR exposure no longer uses overdue-loan OLB');
+    // Changing overdue exposure must update the shared rating in both actual views.
+    schedules[3].amount = 6000;
+    listeners.get('loan_schedule').forEach(callback => callback({ action: 'update' }));
+    await wait(() => ratioCard(dashboard)?.textContent.includes('Critical')
+      && groupProfile.querySelector('#group-par-health')?.textContent === 'Critical', 'critical PAR ratings');
+    assertRating(ratioCard(dashboard), 'Critical', 'rgb(153, 27, 27)', 'Severe arrears; urgent recovery action');
+    assertRating(groupProfile.querySelector('#group-par-card'), 'Critical', 'rgb(153, 27, 27)', 'Senior escalation required');
+    const scope = groupProfile.querySelector('#group-account-scope');
+    scope.value = 'members'; scope.dispatchEvent(new Event('change'));
+    assertRating(groupProfile.querySelector('#group-par-card'), 'Excellent', 'var(--success)', 'maintain follow-up discipline');
+    scope.value = 'all'; scope.dispatchEvent(new Event('change'));
+    assertRating(groupProfile.querySelector('#group-par-card'), 'Critical', 'rgb(153, 27, 27)', 'Senior escalation required');
+    const groupTo = groupProfile.querySelector('#global-date-end');
+    groupTo.value = '2026-09-30'; groupTo.dispatchEvent(new Event('change'));
+    assertRating(groupProfile.querySelector('#group-par-card'), 'Excellent', 'var(--success)', 'maintain follow-up discipline');
+    groupTo.value = ''; groupTo.dispatchEvent(new Event('change'));
+    assertRating(groupProfile.querySelector('#group-par-card'), 'Critical', 'rgb(153, 27, 27)', 'Senior escalation required');
+    schedules[3].amount = 1000;
+    listeners.get('loan_schedule').forEach(callback => callback({ action: 'update' }));
+    await wait(() => ratioCard(dashboard)?.textContent.includes('Healthy')
+      && groupProfile.querySelector('#group-par-health')?.textContent === 'Healthy'
+      && reports.querySelector('#repayments-total-olb').textContent.includes(money(27500)), 'restored PAR ratings');
+    reports.querySelector('[data-tab="individuals"]').click();
+    assert(reports.querySelector('#individuals-total-arrears').textContent.includes(money(1000))
+      && reports.querySelector('#individuals-total-arrears').textContent.includes('Group Acc'), 'Individual KPI omits group account arrears');
+    reports.querySelector('[data-tab="arrears"]').click();
+    assert(dashboardPar(dashboard).textContent.includes(reports.querySelector('#arrears-par-30-rate').textContent), 'Group PAR exposure differs');
+    const stablePar = reports.querySelector('#arrears-par-30-rate').textContent;
+    const ageFilter = [...reports.querySelectorAll('#filter-controls button')].find(button => button.textContent.includes('31-60'));
+    assert(ageFilter, 'Arrears band filter missing');
+    ageFilter.click();
+    assert(reports.querySelector('#arrears-entry-count').textContent === '0', 'Band filter ignored');
+    assert(reports.querySelector('#arrears-par-30-rate').textContent === stablePar, 'Band filter changed PAR denominator');
+
+    // Date-cutoff excludes October penalties while preserving opening contract balance.
+    reports.querySelector('#report-date-to').value = '2026-09-30';
+    reports.querySelector('#report-date-to').dispatchEvent(new Event('change'));
+    reports.querySelector('[data-tab="repayments"]').click();
+    assert(reports.querySelector('#repayments-total-olb').textContent.includes(money(27000)), 'Report historical cutoff differs');
+    analytics.querySelector('#analytics-date-to').value = '2026-09-30';
+    analytics.querySelector('#analytics-date-to').dispatchEvent(new Event('change'));
+    assert(cardHas(analytics, 'Active Loan Portfolio', 27000), 'Analytics historical cutoff differs');
+    reports.querySelector('[data-tab="arrears"]').click();
+    assert(reports.querySelector('#arrears-total-amount').textContent.includes(money(0)), 'Historic Arrears Aging used current overdue date');
+    assert(reports.querySelector('#arrears-par-30-rate').textContent !== parBefore, 'PAR did not respond to historic cutoff');
+    assert(cardHas(analytics, 'Total Arrears', 0), 'Historical analytics arrears differ');
+
+    // Failed required child read must not become a fictitious full loan balance.
+    failRepayments = true;
+    await dataCache.invalidatePrefixes(['loans:', 'groups:profile:']);
+    await wait(() => reports.textContent.includes('Reports unavailable') && groupProfile.textContent.includes('Updates unavailable'), 'required data failure states');
+    assert(reports.querySelector('#print-report-btn').disabled && reports.querySelector('#export-excel-btn').disabled, 'Incomplete report can be exported');
+    const unavailable = await attach(() => import('/src/features/loans/LoanDetails.js').then(module => module.renderLoanDetails({ id: 'LN-TEST-1' })));
+    await wait(() => unavailable.textContent.includes('financial records unavailable'), 'Loan Overview required receipt failure');
+    stopSync(); stopSync = null;
+    disposers.splice(0).forEach(dispose => dispose());
+    failRepayments = false;
+    const { loanFinancialSnapshotService } = await import('/src/services/loanFinancialSnapshotService.js');
+    sessionStorage.setItem('inlet_global_officer_filter', 'o1');
+    const selected = await loanFinancialSnapshotService.get();
+    assert(selected.members.length === 1 && selected.loans.every(loan => loan.member !== 'm2') && selected.repayments.every(record => record.loan !== 'l2'), 'Universal officer scope includes another portfolio');
+    pb.authStore.save('officer-test', { id: 'o2', role: 'loan_officer' });
+    const officer = await loanFinancialSnapshotService.get();
+    assert(officer.members.length === 1 && officer.loans.length === 1 && officer.loans[0].id === 'l2' && officer.repayments.length === 1, 'Officer snapshot leaked admin or other officer data');
+    assert(reads < 180, `Refresh loop: ${reads} reads`);
+    result.textContent = 'PASS: OLB and arrears reconcile across Dashboard, Analytics, Individual/Repayments/Group/Aging reports, Group Profile, alerts and Loan Overview; Dashboard GPAR and Group PAR use the shared PAR bands while Arrears Ratio retains its own policy; ratings/colors/guidance respond to repayments, exposure, scope and dates; PAR denominators, officer scope and incomplete-read export guards verified';
+  } catch (error) { result.textContent = `FAIL: ${error.stack}`; }
+  finally { stopSync?.(); disposers.forEach(dispose => dispose()); }
+</script>

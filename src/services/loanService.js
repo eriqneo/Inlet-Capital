@@ -1,7 +1,9 @@
 import { pb } from './api.js';
 import { reviewSavingsBeforeDisbursement } from './savingsDisbursementReview.js';
 import { dataCache } from './dataCache.js';
+import { calculateSavingsSummary } from '../core/savingsMetrics.js';
 import { getRepaymentScheduleDueDate } from '../core/repaymentSchedule.js';
+import { splitLoanInstallments } from '../core/loanInstallments.js';
 import {
   filterLoansForCurrentOfficer,
   getCurrentOfficerId,
@@ -95,17 +97,8 @@ const buildRelationFilter = (field, ids) => ids.map(id => `${field}="${id}"`).jo
 const combineFilters = (...filters) => filters.filter(Boolean).map(filter => `(${filter})`).join(' && ');
 
 const invalidateLoanFinancialCaches = async () => {
-  await dataCache.invalidate('loan_repayments');
-  await dataCache.invalidatePrefix('loan_repayments:');
-  await dataCache.invalidatePrefix('loan_repayments');
-  await dataCache.invalidatePrefix('loan_balance_offs:');
-  await dataCache.invalidatePrefix('loan_write_offs:');
-  await dataCache.invalidatePrefix('loans:');
-  await dataCache.invalidatePrefix('loans:all:');
-  await dataCache.invalidatePrefix('loans:analytics:');
-  await dataCache.invalidatePrefix('savings:');
-  await dataCache.invalidatePrefix('group_summary:');
-  await dataCache.invalidatePrefix('groups:profile:');
+  await dataCache.invalidatePrefixes(['loan_repayments', 'loan_schedule', 'loan_balance_offs:', 'loan_write_offs:',
+    'loans:', 'savings:', 'group_summary:', 'groups:profile:']);
 };
 
 export const loanService = {
@@ -478,7 +471,7 @@ export const loanService = {
     );
     const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
     const liability = Number(loan.total_liability) || (principal + (Number(loan.interest_amount) || 0));
-    const installmentAmount = liability / period;
+    const installmentAmounts = splitLoanInstallments(liability, period);
     const created = [];
 
     for (let installmentNo = 1; installmentNo <= period; installmentNo += 1) {
@@ -488,7 +481,7 @@ export const loanService = {
         loan: loan.id,
         installment_no: installmentNo,
         due_date: dueDate.toISOString(),
-        amount: installmentAmount,
+        amount: installmentAmounts[installmentNo - 1],
         paid: 0,
         status: 'pending',
         penalty_waived: false
@@ -623,10 +616,7 @@ export const loanService = {
       const memberSavings = await pb.collection('savings').getFullList({
         filter: `member="${loan.member}" && is_reversed=false`
       });
-      savingsBalance = memberSavings.reduce((sum, record) => {
-        const value = Number(record.amount) || 0;
-        return record.type === 'withdrawal' ? sum - value : sum + value;
-      }, 0);
+      savingsBalance = calculateSavingsSummary(memberSavings).net;
     }
     if (totalSavingsDebit > savingsBalance + 0.01) {
       throw new Error(`Insufficient savings. Available balance is KES ${savingsBalance.toLocaleString()}.`);

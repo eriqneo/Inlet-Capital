@@ -1,17 +1,18 @@
-const toDate = value => new Date(typeof value === 'string' ? value.replace(' ', 'T') : value);
+import { financialCents, getFinancialTimestamp, selectFinancialRecords } from './financialRecords.js';
+import { normalizeLoanSchedules } from './loanInstallments.js';
+
+const toDate = value => new Date(getFinancialTimestamp(value));
 
 const startOfLocalDay = (date = new Date()) => {
   const value = toDate(date);
   if (Number.isNaN(value.getTime())) return null;
-  value.setHours(0, 0, 0, 0);
-  return value;
+  return new Date(Math.floor((value.getTime() + 10800000) / 86400000) * 86400000 - 10800000);
 };
 
 const endOfLocalDay = (date = new Date()) => {
   const value = toDate(date);
   if (Number.isNaN(value.getTime())) return null;
-  value.setHours(23, 59, 59, 999);
-  return value;
+  return new Date(startOfLocalDay(value).getTime() + 86400000 - 1);
 };
 
 const sortSchedules = (schedules = []) => schedules.slice().sort((a, b) => {
@@ -44,9 +45,16 @@ export const calculateLoanPenaltyState = ({
   referenceDate = new Date(),
   useRecordedSchedulePaid = true
 } = {}) => {
+  repayments = selectFinancialRecords(repayments, { cutoff: referenceDate });
+  settlements = selectFinancialRecords(settlements, { cutoff: referenceDate, fields: ['effective_date', 'date', 'created'] });
+  schedules = normalizeLoanSchedules(schedules);
+  const penaltyCents = financialCents(penaltyAmount, 'Penalty');
+  schedules.forEach(schedule => {
+    if (Number(schedule.amount) > 0 && !Number.isFinite(getFinancialTimestamp(schedule.due_date))) throw new Error(`Installment due date unavailable on ${schedule.id || 'schedule'}`);
+  });
   const orderedSchedules = sortSchedules(schedules).map(schedule => ({
     schedule,
-    amount: Number(schedule.amount) || 0,
+    amount: financialCents(schedule.amount, 'Installment'),
     paid: 0,
     completedAt: null
   }));
@@ -61,7 +69,7 @@ export const calculateLoanPenaltyState = ({
         settlement_kind: 'balance_off'
       }))
   ]).forEach(repayment => {
-    let remainingPayment = getContractSettlementAmount(repayment);
+    let remainingPayment = financialCents(getContractSettlementAmount(repayment), 'Contract receipt');
     const paidAt = toDate(getContractPaymentDate(repayment));
 
     for (const item of orderedSchedules) {
@@ -77,7 +85,7 @@ export const calculateLoanPenaltyState = ({
 
   if (useRecordedSchedulePaid) {
     orderedSchedules.forEach(item => {
-      const recordedPaid = Number(item.schedule.paid) || 0;
+      const recordedPaid = financialCents(item.schedule.paid, 'Recorded installment payment');
       if (recordedPaid > item.paid) item.paid = Math.min(item.amount, recordedPaid);
     });
   }
@@ -98,28 +106,28 @@ export const calculateLoanPenaltyState = ({
 
     return {
       schedule: item.schedule,
-      paid: item.paid,
-      remainingPrincipal: Math.max(0, item.amount - item.paid),
+      paid: item.paid / 100,
+      remainingPrincipal: Math.max(0, item.amount - item.paid) / 100,
       completedAt: item.completedAt,
       penaltyGenerated,
-      penaltyAmount: (penaltyGenerated ? penaltyAmount : 0) + Math.max(0, Number(item.schedule.carried_fine) || 0)
+      penaltyAmount: ((penaltyGenerated ? penaltyCents : 0) + financialCents(item.schedule.carried_fine, 'Carried fine')) / 100
     };
   });
 
-  const generatedFineTotal = scheduleStates.reduce((sum, item) => sum + item.penaltyAmount, 0);
-  const fineCollected = repayments.reduce((sum, repayment) => sum + (Number(repayment.fine_amount) || 0), 0);
+  const generatedFineTotal = scheduleStates.reduce((sum, item) => sum + financialCents(item.penaltyAmount), 0) / 100;
+  const fineCollected = repayments.reduce((sum, repayment) => sum + financialCents(repayment.fine_amount, 'Collected fine'), 0) / 100;
   const principalPaid = [
     ...repayments,
     ...settlements
       .filter(settlement => settlement?.status !== 'reversed')
       .map(settlement => ({ ...settlement, settlement_kind: 'balance_off' }))
-  ].reduce((sum, repayment) => sum + getContractSettlementAmount(repayment), 0);
+  ].reduce((sum, repayment) => sum + financialCents(getContractSettlementAmount(repayment)), 0) / 100;
 
   return {
     scheduleStates,
     generatedFineTotal,
     fineCollected,
-    outstandingFine: Math.max(0, generatedFineTotal - fineCollected),
+    outstandingFine: Math.max(0, financialCents(generatedFineTotal) - financialCents(fineCollected)) / 100,
     principalPaid
   };
 };

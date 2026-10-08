@@ -1,0 +1,131 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Analytics expenses chart regression</title>
+<link rel="stylesheet" href="/src/styles/index.css">
+<pre id="result">RUNNING</pre>
+<script type="module">
+  import { pb } from '/src/services/api.js';
+  import { dataCache } from '/src/services/dataCache.js';
+  import { trackPageSubscriptions } from '/src/core/pageSubscriptions.js';
+  import { renderAnalyticsDashboard } from '/src/features/analytics/AnalyticsDashboard.js';
+  if (window.__INLET_CACHE_TEST__ !== true) throw new Error('Isolated browser runner required');
+  const result = document.querySelector('#result');
+  const assert = (value, message) => { if (!value) throw new Error(message); };
+  const wait = async (check, label) => {
+    for (let i = 0; i < 150; i++) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 20)); }
+    throw new Error(`Timed out: ${label}`);
+  };
+  const NativeDate = Date, now = NativeDate.parse('2026-10-08T12:00:00+03:00');
+  window.Date = class extends NativeDate {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  };
+  const expenses = [
+    { id: 'e1', date: '2026-09-10', amount: 1200, recorded_by: 'o1' },
+    { id: 'e2', date: '2026-09-30T21:30:00Z', amount: 800.50, recorded_by: 'o1' },
+    { id: 'e3', date: '2026-10-03', amount: 400, recorded_by: 'o2' },
+    { id: 'reversed', date: '2026-10-01', amount: 999, recorded_by: 'o1', is_reversed: true },
+    { id: 'future', date: '2027-01-01', amount: 999, recorded_by: 'o1' }
+  ];
+  let expenseReads = 0, failExpenses = false, expenseListener, expenseFilter = '', stopped = 0;
+  pb.authStore.save('test-admin', { id: 'admin1', role: 'super_admin' });
+  pb.send = async () => { throw new Error('Live network prohibited'); };
+  pb.collection = name => ({
+    getFullList: async options => {
+      if (name === 'expenses') {
+        expenseReads++; expenseFilter = options.filter;
+        if (failExpenses) throw new Error('Test expense read unavailable');
+        return structuredClone([...expenses, expenses[0]]);
+      }
+      if (name === 'settings') return [{ key: 'penalty_amount', value: '500' }];
+      return [];
+    },
+    getFirstListItem: async () => ({ value: '500' }),
+    subscribe: async (topic, listener) => { expenseListener = listener; return () => { stopped++; }; }
+  });
+  const configurations = new Map(), live = new Set();
+  const RealChart = window.Chart;
+  window.Chart = RealChart ? class extends RealChart {
+    constructor(canvas, config) {
+      config.options.animation = false;
+      super(canvas, config); configurations.set(canvas.id, config); live.add(this);
+    }
+    destroy() { live.delete(this); super.destroy(); }
+  } : class {
+    constructor(canvas, config) { this.canvas = canvas; configurations.set(canvas.id, config); live.add(this); }
+    destroy() { live.delete(this); }
+  };
+  let page, dispose = () => {};
+  const mount = async () => {
+    dispose(); page?.remove(); configurations.clear();
+    page = await renderAnalyticsDashboard();
+    document.body.append(page); dispose = trackPageSubscriptions(page);
+    await wait(() => page.querySelector('#expenses-chart-total'), 'analytics render');
+  };
+  const bars = () => configurations.get('expensesBarChart');
+  const range = (from, to) => {
+    page.querySelector('#analytics-date-from').value = from;
+    page.querySelector('#analytics-date-to').value = to;
+    configurations.delete('expensesBarChart');
+    page.querySelector('#analytics-date-to').dispatchEvent(new Event('change'));
+  };
+  try {
+    await dataCache.invalidateAll(); await mount();
+    await wait(() => bars(), 'expense bars');
+    assert(page.querySelector('#expenses-chart-total').textContent === 'KES 2,400.50', 'Initial total differs');
+    assert(JSON.stringify(bars().data.datasets[0].data) === '[1200,1200.5]', 'Nairobi monthly grouping differs');
+    assert(bars().options.plugins.tooltip.callbacks.label({ raw: 800.5 }) === 'Expenses: KES 800.50', 'Tooltip precision differs');
+    const initialReads = expenseReads;
+    range('2026-10-01', '2026-10-01');
+    await wait(() => bars(), 'filtered bars');
+    assert(page.querySelector('#expenses-chart-total').textContent === 'KES 800.50', 'Inclusive date range differs');
+    assert(bars().data.datasets[0].data[0] === 800.5, 'Date-filtered bar differs');
+    range('2026-10-02', '2026-10-02');
+    assert(page.textContent.includes('No expenses recorded for this period.'), 'Empty period missing');
+    assert(expenseReads === initialReads, 'Date filter fetched expenses again');
+    range('', '');
+    expenses[0].amount = 1400;
+    expenseListener({ action: 'update' });
+    await wait(() => page.querySelector('#expenses-chart-total')?.textContent === 'KES 2,600.50', 'realtime amendment');
+    failExpenses = true;
+    await dataCache.invalidatePrefix('expenses:');
+    await wait(() => page.querySelector('#expenses-chart-total')?.textContent === 'Unavailable', 'expense failure state');
+    assert(page.querySelector('#analytics-date-from'), 'Expense failure broke Analytics');
+    failExpenses = false; page.querySelector('#expenses-chart-retry').click();
+    await wait(() => page.querySelector('#expenses-chart-total')?.textContent === 'KES 2,600.50', 'retry');
+    dispose();
+    assert(live.size === 0, 'Charts survive page disposal');
+    assert(stopped > 0, 'Expense stream survives navigation');
+    sessionStorage.setItem('inlet_global_officer_filter', 'o1');
+    await mount();
+    assert(page.querySelector('#expenses-chart-total').textContent === 'KES 2,200.50', 'Admin officer filter leaked expenses');
+    assert(expenseFilter.includes('recorded_by="o1"'), 'Server officer filter absent');
+    pb.authStore.save('test-officer', { id: 'o2', role: 'loan_officer' });
+    await mount();
+    assert(page.querySelector('#expenses-chart-total').textContent === 'KES 400.00', 'Officer sees another officer expenses');
+    assert(expenseFilter.includes('recorded_by="o2"'), 'Officer server scope absent');
+    pb.authStore.save('test-admin', { id: 'admin1', role: 'super_admin' });
+    sessionStorage.removeItem('inlet_global_officer_filter');
+    await mount(); await wait(() => bars(), 'final bars');
+    const card = page.querySelector('.analytics-expenses-chart');
+    const canvas = card.querySelector('canvas');
+    const bounds = card.getBoundingClientRect(), canvasBounds = canvas.getBoundingClientRect();
+    assert(canvasBounds.width > 100 && canvasBounds.height > 100, 'Chart has no stable dimensions');
+    assert(bounds.width <= window.innerWidth, 'Expense card overflows viewport');
+    const heading = card.querySelector('.chart-header').getBoundingClientRect();
+    assert(heading.bottom <= canvasBounds.top, 'Header overlaps chart');
+    if (RealChart) {
+      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      let redPixels = 0;
+      for (let i = 0; i < pixels.length; i += 4) if (pixels[i] > 150 && pixels[i + 1] < 90 && pixels[i + 2] < 90 && pixels[i + 3] > 100) redPixels++;
+      assert(redPixels > 100, 'Expense bars are blank');
+      const image = document.createElement('img'); image.src = canvas.toDataURL();
+      image.style.cssText = 'width:100%;height:100%;object-fit:contain';
+      dispose(); canvas.replaceWith(image);
+    }
+    assert(expenseReads < 20, 'Expense refresh loop');
+    result.textContent = `PASS: expenses bars/totals, Nairobi dates, zero/failed reads, realtime edits, cached filters, admin/officer scope and chart/stream disposal${RealChart ? ', real canvas pixels and responsive layout' : ''}`;
+  } catch (error) { result.textContent = `FAIL: ${error.stack}`; }
+  finally { dispose(); }
+</script>

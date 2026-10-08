@@ -38,6 +38,12 @@ export const getMemberOfficerScopeFilter = (officerId = getOfficerDataScopeId())
 export const getGroupOfficerScopeFilter = (officerId = getOfficerDataScopeId()) => officerId
   ? `(assigned_officer="${officerId}" || (assigned_officer="" && created_by="${officerId}"))`
   : '';
+export const getLoanOfficerDataFilter = (child = false, officerId = getOfficerDataScopeId()) => {
+  if (!officerId) return '';
+  const member = child ? 'loan.member' : 'member';
+  const group = child ? 'loan.group' : 'group';
+  return pb.filter(`((${member}!="" && (${member}.assigned_officer={:officer} || (${member}.assigned_officer="" && ${member}.registered_by={:officer}))) || (${member}="" && (${group}.assigned_officer={:officer} || (${group}.assigned_officer="" && ${group}.created_by={:officer}))))`, { officer: officerId });
+};
 export const getPortfolioRecordOfficerScopeFilter = (officerId = getOfficerDataScopeId()) => officerId
   ? `(member.assigned_officer="${officerId}" || (member.assigned_officer="" && member.registered_by="${officerId}") || group.assigned_officer="${officerId}" || (group.assigned_officer="" && group.created_by="${officerId}"))`
   : '';

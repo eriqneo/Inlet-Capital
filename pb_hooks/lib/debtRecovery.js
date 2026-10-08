@@ -46,19 +46,106 @@ __export(debtRecovery_exports, {
 });
 module.exports = __toCommonJS(debtRecovery_exports);
 
+// src/core/financialRecords.js
+var getFinancialTimestamp = (value) => {
+  if (value instanceof Date) return value.getTime();
+  if (!value) return NaN;
+  let text = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) {
+    const day = text.slice(0, 10);
+    const date = /* @__PURE__ */ new Date(`${day}T00:00:00Z`);
+    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== day) return NaN;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) text += "T00:00:00+03:00";
+  else if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(text) && !/(Z|[+-]\d{2}:?\d{2})$/i.test(text)) text = text.replace(" ", "T") + "Z";
+  return new Date(text).getTime();
+};
+var financialCents = (value, label = "Amount") => {
+  const amount = value === null || value === void 0 || value === "" ? 0 : Number(value);
+  const cents = Math.round(amount * 100);
+  if (value != null && !["number", "string"].includes(typeof value) || !Number.isFinite(amount) || amount < 0 || !Number.isSafeInteger(cents) || Math.abs(amount * 100 - cents) > 1e-5) throw new Error(`${label} requires a valid non-negative amount to two decimals`);
+  return cents;
+};
+var selectFinancialRecords = (records = [], { cutoff, fields = ["date", "effective_date", "created"] } = {}) => {
+  const latest = /* @__PURE__ */ new Map();
+  const anonymous = [];
+  for (const record of records) {
+    if (!(record == null ? void 0 : record.id)) {
+      anonymous.push(record);
+      continue;
+    }
+    const prior = latest.get(record.id);
+    if (!prior || getFinancialTimestamp(record.updated || record.created) > getFinancialTimestamp(prior.updated || prior.created)) latest.set(record.id, record);
+    else if (prior !== record && JSON.stringify(prior) !== JSON.stringify(record) && !(getFinancialTimestamp(prior.updated || prior.created) > getFinancialTimestamp(record.updated || record.created))) throw new Error(`Conflicting financial record ${record.id}`);
+  }
+  const limit = cutoff ? getFinancialTimestamp(cutoff) : Infinity;
+  if (cutoff && !Number.isFinite(limit)) throw new Error("Invalid financial cutoff");
+  return [...latest.values(), ...anonymous].filter((record) => {
+    if ((record == null ? void 0 : record.is_reversed) || (record == null ? void 0 : record.status) === "reversed") return false;
+    const value = fields.map((field) => record == null ? void 0 : record[field]).find(Boolean);
+    if (!value) {
+      if (record.id && cutoff && fields.length) throw new Error(`Effective financial date unavailable on ${record.id}`);
+      return true;
+    }
+    const timestamp = getFinancialTimestamp(value);
+    if (!Number.isFinite(timestamp)) throw new Error(`Invalid financial date on ${record.id || "record"}`);
+    return timestamp <= limit;
+  });
+};
+
+// src/core/loanInstallments.js
+var relationId = (value) => typeof value === "string" ? value : (value == null ? void 0 : value.id) || "";
+var amountValue = (value) => {
+  const amount = Number(value);
+  if (value === null || value === void 0 || value === "" || !["number", "string"].includes(typeof value) || !Number.isFinite(amount) || amount < 0 || !Number.isSafeInteger(Math.round(amount * 100))) {
+    throw new Error("Installment requires a valid non-negative amount");
+  }
+  return amount;
+};
+var normalizeLoanSchedules = (schedules = []) => {
+  const installments = /* @__PURE__ */ new Map();
+  selectFinancialRecords(schedules, { fields: [] }).forEach((schedule, index) => {
+    const loan = relationId(schedule.loan);
+    const number = Number(schedule.installment_no);
+    const key = loan && Number.isInteger(number) && number > 0 ? `${loan}:${number}` : `row:${schedule.id || index}`;
+    const prior = installments.get(key);
+    if (prior) {
+      const time = getFinancialTimestamp(schedule.updated || schedule.created) || 0;
+      const priorTime = getFinancialTimestamp(prior.updated || prior.created) || 0;
+      if (time === priorTime && (Number(schedule.amount) !== Number(prior.amount) || getFinancialTimestamp(schedule.due_date) !== getFinancialTimestamp(prior.due_date) || Boolean(schedule.penalty_waived) !== Boolean(prior.penalty_waived))) {
+        throw new Error(`Conflicting repayment installment ${key}`);
+      }
+      if (time < priorTime || time === priorTime && String(schedule.id) < String(prior.id)) return;
+    }
+    installments.set(key, schedule);
+  });
+  const ordered = [...installments.values()].sort((a, b) => relationId(a.loan).localeCompare(relationId(b.loan)) || (Number(a.installment_no) || 0) - (Number(b.installment_no) || 0) || getFinancialTimestamp(a.due_date) - getFinancialTimestamp(b.due_date));
+  const totals = /* @__PURE__ */ new Map();
+  return ordered.map((schedule, index) => {
+    var _a;
+    const key = relationId(schedule.loan) || `anonymous:${index}`;
+    const previous = totals.get(key) || 0;
+    const next = previous + amountValue(schedule.amount) * 100;
+    if (!Number.isSafeInteger(Math.round(next))) throw new Error("Scheduled total exceeds the supported monetary range");
+    totals.set(key, next);
+    const amount = (Math.round(next) - Math.round(previous)) / 100;
+    if (amount > 0 && !Number.isFinite(getFinancialTimestamp(schedule.due_date))) throw new Error(`Installment due date unavailable on ${schedule.id || "schedule"}`);
+    const paid = Math.min(amount, Math.round(amountValue((_a = schedule.paid) != null ? _a : 0) * 100) / 100);
+    return __spreadProps(__spreadValues({}, schedule), { amount, paid });
+  });
+};
+
 // src/core/loanPenalty.js
-var toDate = (value) => new Date(typeof value === "string" ? value.replace(" ", "T") : value);
+var toDate = (value) => new Date(getFinancialTimestamp(value));
 var startOfLocalDay = (date = /* @__PURE__ */ new Date()) => {
   const value = toDate(date);
   if (Number.isNaN(value.getTime())) return null;
-  value.setHours(0, 0, 0, 0);
-  return value;
+  return new Date(Math.floor((value.getTime() + 108e5) / 864e5) * 864e5 - 108e5);
 };
 var endOfLocalDay = (date = /* @__PURE__ */ new Date()) => {
   const value = toDate(date);
   if (Number.isNaN(value.getTime())) return null;
-  value.setHours(23, 59, 59, 999);
-  return value;
+  return new Date(startOfLocalDay(value).getTime() + 864e5 - 1);
 };
 var sortSchedules = (schedules = []) => schedules.slice().sort((a, b) => {
   const installmentDiff = (Number(a.installment_no) || 0) - (Number(b.installment_no) || 0);
@@ -83,9 +170,16 @@ var calculateLoanPenaltyState = ({
   referenceDate = /* @__PURE__ */ new Date(),
   useRecordedSchedulePaid = true
 } = {}) => {
+  repayments = selectFinancialRecords(repayments, { cutoff: referenceDate });
+  settlements = selectFinancialRecords(settlements, { cutoff: referenceDate, fields: ["effective_date", "date", "created"] });
+  schedules = normalizeLoanSchedules(schedules);
+  const penaltyCents = financialCents(penaltyAmount, "Penalty");
+  schedules.forEach((schedule) => {
+    if (Number(schedule.amount) > 0 && !Number.isFinite(getFinancialTimestamp(schedule.due_date))) throw new Error(`Installment due date unavailable on ${schedule.id || "schedule"}`);
+  });
   const orderedSchedules = sortSchedules(schedules).map((schedule) => ({
     schedule,
-    amount: Number(schedule.amount) || 0,
+    amount: financialCents(schedule.amount, "Installment"),
     paid: 0,
     completedAt: null
   }));
@@ -96,7 +190,7 @@ var calculateLoanPenaltyState = ({
       settlement_kind: "balance_off"
     }))
   ]).forEach((repayment) => {
-    let remainingPayment = getContractSettlementAmount(repayment);
+    let remainingPayment = financialCents(getContractSettlementAmount(repayment), "Contract receipt");
     const paidAt = toDate(getContractPaymentDate(repayment));
     for (const item of orderedSchedules) {
       if (remainingPayment <= 0) break;
@@ -110,7 +204,7 @@ var calculateLoanPenaltyState = ({
   });
   if (useRecordedSchedulePaid) {
     orderedSchedules.forEach((item) => {
-      const recordedPaid = Number(item.schedule.paid) || 0;
+      const recordedPaid = financialCents(item.schedule.paid, "Recorded installment payment");
       if (recordedPaid > item.paid) item.paid = Math.min(item.amount, recordedPaid);
     });
   }
@@ -126,24 +220,24 @@ var calculateLoanPenaltyState = ({
     );
     return {
       schedule: item.schedule,
-      paid: item.paid,
-      remainingPrincipal: Math.max(0, item.amount - item.paid),
+      paid: item.paid / 100,
+      remainingPrincipal: Math.max(0, item.amount - item.paid) / 100,
       completedAt: item.completedAt,
       penaltyGenerated,
-      penaltyAmount: (penaltyGenerated ? penaltyAmount : 0) + Math.max(0, Number(item.schedule.carried_fine) || 0)
+      penaltyAmount: ((penaltyGenerated ? penaltyCents : 0) + financialCents(item.schedule.carried_fine, "Carried fine")) / 100
     };
   });
-  const generatedFineTotal = scheduleStates.reduce((sum, item) => sum + item.penaltyAmount, 0);
-  const fineCollected = repayments.reduce((sum, repayment) => sum + (Number(repayment.fine_amount) || 0), 0);
+  const generatedFineTotal = scheduleStates.reduce((sum, item) => sum + financialCents(item.penaltyAmount), 0) / 100;
+  const fineCollected = repayments.reduce((sum, repayment) => sum + financialCents(repayment.fine_amount, "Collected fine"), 0) / 100;
   const principalPaid = [
     ...repayments,
     ...settlements.filter((settlement) => (settlement == null ? void 0 : settlement.status) !== "reversed").map((settlement) => __spreadProps(__spreadValues({}, settlement), { settlement_kind: "balance_off" }))
-  ].reduce((sum, repayment) => sum + getContractSettlementAmount(repayment), 0);
+  ].reduce((sum, repayment) => sum + financialCents(getContractSettlementAmount(repayment)), 0) / 100;
   return {
     scheduleStates,
     generatedFineTotal,
     fineCollected,
-    outstandingFine: Math.max(0, generatedFineTotal - fineCollected),
+    outstandingFine: Math.max(0, financialCents(generatedFineTotal) - financialCents(fineCollected)) / 100,
     principalPaid
   };
 };
@@ -185,10 +279,34 @@ var getSettlementContractAmount = (settlement) => {
 };
 
 // src/core/loanPortfolio.js
+var getLoanAtCutoff = (loan, { asOf, loans = [] } = {}) => {
+  var _a;
+  if (!loan || !asOf) return loan;
+  const cutoff = getFinancialTimestamp(asOf);
+  const disbursedAt = getFinancialTimestamp(loan.disbursement_date);
+  if (!Number.isFinite(cutoff)) throw new Error("Invalid OLB cutoff");
+  if (!Number.isFinite(disbursedAt) || disbursedAt > cutoff) return null;
+  let result = loan;
+  if (loan.status === "written_off") {
+    const writtenOffAt = getFinancialTimestamp(loan.written_off_at);
+    if (!Number.isFinite(writtenOffAt)) throw new Error(`Write-off date unavailable for ${loan.loan_no || loan.id}`);
+    if (writtenOffAt <= cutoff) return null;
+    result = __spreadProps(__spreadValues({}, result), { status: "disbursed" });
+  }
+  if (loan.renewed_to) {
+    const targetId = typeof loan.renewed_to === "string" ? loan.renewed_to : loan.renewed_to.id;
+    const target = loans.find((item) => item.id === targetId) || ((_a = loan.expand) == null ? void 0 : _a.renewed_to);
+    const renewalDate = getFinancialTimestamp((target == null ? void 0 : target.renewal_date) || (target == null ? void 0 : target.disbursement_date));
+    if (!Number.isFinite(renewalDate)) throw new Error(`Renewal date unavailable for ${loan.loan_no || loan.id}`);
+    if (renewalDate <= cutoff) return null;
+    result = __spreadProps(__spreadValues({}, result), { status: "disbursed", renewed_to: "" });
+  }
+  return result;
+};
 var isDisbursedLoanRecord = (loan) => Boolean(loan == null ? void 0 : loan.disbursement_date) && ["disbursed", "approved", "partial_approved", "completed", "closed"].includes(loan == null ? void 0 : loan.status);
 var isCollectibleLoanRecord = (loan) => Boolean(loan == null ? void 0 : loan.disbursement_date) && ["disbursed", "approved", "partial_approved"].includes(loan == null ? void 0 : loan.status);
 var isWrittenOffLoanRecord = (loan) => (loan == null ? void 0 : loan.status) === "written_off";
-var calculateLoanOutstandingBalance = ({
+var calculateLoanBalanceBreakdown = ({
   loan,
   repayments = [],
   settlements = [],
@@ -196,28 +314,53 @@ var calculateLoanOutstandingBalance = ({
   penaltyAmount = 0,
   includeOutstandingFines = true,
   referenceDate = /* @__PURE__ */ new Date(),
-  useRecordedSchedulePaid = true
+  useRecordedSchedulePaid = false,
+  asOf,
+  loans = []
 } = {}) => {
-  var _a;
-  if (!loan || !isDisbursedLoanRecord(loan)) return 0;
-  if (isWrittenOffLoanRecord(loan) || ((_a = loan.renewed_to) == null ? void 0 : _a.id) || loan.renewed_to) return 0;
-  const liability = getLoanLiabilityAmount(loan);
-  const contractPaid = repayments.reduce(
-    (sum, repayment) => sum + getRepaymentContractAmount(repayment),
-    0
-  ) + settlements.reduce((sum, settlement) => sum + getSettlementContractAmount(settlement), 0);
+  const empty = { liability: 0, contractPaid: 0, contractBalance: 0, outstandingFine: 0, outstanding: 0 };
+  loan = getLoanAtCutoff(loan, { asOf, loans });
+  if (!loan || !isDisbursedLoanRecord(loan) || isWrittenOffLoanRecord(loan) || loan.renewed_to) return empty;
+  const cutoff = asOf || referenceDate;
+  const disbursedAt = getFinancialTimestamp(loan.disbursement_date);
+  if (!Number.isFinite(disbursedAt)) throw new Error(`Invalid disbursement date on ${loan.id || "loan"}`);
+  if (disbursedAt > getFinancialTimestamp(cutoff)) return empty;
+  for (const field of ["approved_amount", "amount_applied", "interest_amount", "total_liability"]) financialCents(loan[field], `Loan ${field}`);
+  repayments = selectFinancialRecords(repayments, { cutoff });
+  settlements = selectFinancialRecords(settlements, { cutoff, fields: ["effective_date", "date", "created"] });
+  const liability = financialCents(getLoanLiabilityAmount(loan), "Loan liability");
+  if (liability <= 0) throw new Error(`Disbursed liability unavailable for ${loan.loan_no || loan.id}`);
+  const contractPaid = repayments.reduce((sum, repayment) => {
+    const amount = financialCents(repayment.amount, "Receipt");
+    if (amount <= 0) throw new Error(`Receipt amount unavailable on ${repayment.id || "repayment"}`);
+    const fine2 = financialCents(repayment.fine_amount, "Collected fine");
+    if (fine2 > amount) throw new Error(`Fine exceeds receipt on ${repayment.id || "repayment"}`);
+    return sum + amount - fine2;
+  }, 0) + settlements.reduce((sum, settlement) => {
+    const amount = financialCents(settlement.amount, "Balance-off");
+    if (amount <= 0) throw new Error(`Balance-off amount unavailable on ${settlement.id || "settlement"}`);
+    return sum + amount;
+  }, 0);
   const contractBalance = Math.max(0, liability - contractPaid);
-  if (!includeOutstandingFines) return contractBalance;
+  if (!Number.isSafeInteger(contractPaid)) throw new Error("Contract payment total exceeds the supported monetary range");
   const penaltyState = calculateLoanPenaltyState({
     schedules,
     repayments,
     settlements,
     penaltyAmount,
-    referenceDate,
+    referenceDate: cutoff,
     useRecordedSchedulePaid
   });
-  return Math.max(0, contractBalance + penaltyState.outstandingFine);
+  const fine = includeOutstandingFines ? financialCents(penaltyState.outstandingFine) : 0;
+  return {
+    liability: liability / 100,
+    contractPaid: contractPaid / 100,
+    contractBalance: contractBalance / 100,
+    outstandingFine: fine / 100,
+    outstanding: (contractBalance + fine) / 100
+  };
 };
+var calculateLoanOutstandingBalance = (options) => calculateLoanBalanceBreakdown(options).outstanding;
 
 // src/core/repaymentSchedule.js
 var toValidDate = (value) => {
@@ -405,7 +548,8 @@ var buildDebtRecoveryRenewal = ({
     repayments,
     settlements,
     penaltyAmount,
-    referenceDate: calendarDate(referenceDate)
+    referenceDate: calendarDate(referenceDate),
+    useRecordedSchedulePaid: false
   }).outstandingFine);
   const renewedLiability = money(renewalBase + interest);
   const renewalBusinessDay = businessDay(requestedRenewalDate || referenceDate);

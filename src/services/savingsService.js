@@ -1,5 +1,7 @@
 import { pb } from './api.js';
 import { dataCache } from './dataCache.js';
+import { invalidateSavings, observeSavings } from './savingsSync.js';
+import { calculateSavingsSummary } from '../core/savingsMetrics.js';
 import {
   filterSavingsForCurrentOfficer,
   getCurrentOfficerId,
@@ -53,9 +55,7 @@ export const savingsService = {
     console.log('[savingsService] Recording transaction:', payload);
     try {
       const result = await pb.collection('savings').create(payload);
-      await dataCache.invalidatePrefix('savings:');
-      await dataCache.invalidatePrefix('group_summary:');
-      await dataCache.invalidatePrefix('groups:profile:');
+      await invalidateSavings();
       return result;
     } catch (err) {
       console.error('[savingsService] Transaction failed:', err);
@@ -140,11 +140,7 @@ export const savingsService = {
       expand: 'member,member.group,group'
     }));
     
-    return records.reduce((sum, record) => {
-      return record.type === 'deposit' 
-        ? sum + record.amount 
-        : sum - record.amount;
-    }, 0);
+    return calculateSavingsSummary(records).net;
   },
 
   /**
@@ -172,18 +168,14 @@ export const savingsService = {
   async update(id, data) {
     requireAdminRecordManager();
     const record = await pb.collection('savings').update(id, data);
-    await dataCache.invalidatePrefix('savings:');
-    await dataCache.invalidatePrefix('group_summary:');
-    await dataCache.invalidatePrefix('groups:profile:');
+    await invalidateSavings();
     return record;
   },
 
   async delete(id) {
     requireAdminRecordManager();
     await pb.collection('savings').delete(id);
-    await dataCache.invalidatePrefix('savings:');
-    await dataCache.invalidatePrefix('group_summary:');
-    await dataCache.invalidatePrefix('groups:profile:');
+    await invalidateSavings();
     return true;
   },
   
@@ -194,17 +186,11 @@ export const savingsService = {
     const record = await pb.collection('savings').update(id, {
       is_reversed: true
     });
-    await dataCache.invalidatePrefix('savings:');
-    await dataCache.invalidatePrefix('group_summary:');
-    await dataCache.invalidatePrefix('groups:profile:');
+    await invalidateSavings();
     return record;
   },
 
   subscribeToChanges(callback) {
-    return pb.collection('savings').subscribe('*', callback);
-  },
-
-  unsubscribe() {
-    pb.collection('savings').unsubscribe('*');
+    return Promise.resolve(observeSavings(callback));
   }
 };

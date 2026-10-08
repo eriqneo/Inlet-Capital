@@ -1,0 +1,115 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Inlet cache browser regression</title>
+<pre id="result">RUNNING</pre>
+<script type="module">
+  // Run with an isolated browser profile against the local Vite server.
+  // Synthetic fetch functions only: this harness never calls PocketHost.
+  import { dataCache, observeCachedView } from '/src/services/dataCache.js';
+  import { pb } from '/src/services/api.js';
+  import { trackPageSubscriptions } from '/src/core/pageSubscriptions.js';
+  if (window.__INLET_CACHE_TEST__ !== true) {
+    document.querySelector('#result').textContent = 'Run this harness through scripts/test_cache_browser.mjs in its isolated browser profile.';
+    throw new Error('Isolated cache test runner required');
+  }
+  pb.authStore.save('cache-test-token', { id: 'cache-test-user', role: 'super_admin', name: 'Cache Test' });
+  const result = document.querySelector('#result');
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const waitFor = async predicate => {
+    for (let index = 0; index < 100; index += 1) {
+      if (predicate()) return;
+      await sleep(20);
+    }
+    throw new Error('Timed out waiting for browser event');
+  };
+  if (location.search === '?peer') {
+    window.testCache = dataCache;
+    result.textContent = 'PEER READY';
+  } else {
+    try {
+      await dataCache.invalidateAll();
+      const iframe = document.createElement('iframe');
+      iframe.src = '/tests/cache.browser.html?peer';
+      document.body.appendChild(iframe);
+      await waitFor(() => iframe.contentWindow?.testCache);
+      const peer = iframe.contentWindow.testCache;
+      let finishOld, started = false;
+      const old = dataCache.refresh('savings:browser', () => {
+        started = true;
+        return new Promise(resolve => { finishOld = resolve; });
+      }).then(() => false, error => error.isCacheObsolete === true);
+      await waitFor(() => started);
+      await peer.invalidatePrefix('savings:');
+      await peer.refresh('savings:browser', async () => [600]);
+      finishOld([400]);
+      assert(await old, 'Old request was not rejected');
+      const read = await dataCache.getLocalFirst('savings:browser', () => { throw new Error('Unexpected network read'); });
+      assert(read[0] === 600, 'Stale data overwrote current IndexedDB value');
+
+      let notifications = 0;
+      const stop = observeCachedView(['savings:'], () => { notifications += 1; }, { delay: 1 });
+      await peer.invalidatePrefix('savings:');
+      await waitFor(() => notifications > 0);
+      stop();
+      const count = notifications;
+      await peer.invalidatePrefix('savings:');
+      await sleep(100);
+      assert(notifications === count, 'Disposed observer still refreshed');
+
+      let calls = 0;
+      const values = await Promise.all([
+        dataCache.get('savings:dedupe', async () => { calls += 1; return [700]; }),
+        dataCache.getLocalFirst('savings:dedupe', async () => { calls += 1; return [700]; })
+      ]);
+      assert(calls === 1 && values.every(value => value[0] === 700), 'Browser requests were not deduplicated');
+      iframe.remove();
+      await dataCache.invalidateAll();
+
+      const member = { id: 'test-member', reg_no: 'TEST-001', name: 'Test Member', full_name: 'Test Member', status: 'active', group: '' };
+      let amount = 1000;
+      let requests = 0;
+      // Exercise the actual four page renderers and savings mutation service
+      // using an in-memory PocketBase substitute, never the live database.
+      pb.collection = name => {
+        const rows = () => name === 'members' ? [member] : name === 'savings' ? [{
+          id: 'test-saving', member: member.id, type: 'deposit', amount,
+          date: new Date().toISOString(), is_reversed: false, expand: { member }
+        }] : [];
+        return {
+          getFullList: async () => { requests += 1; return rows(); },
+          getList: async () => { requests += 1; const items = rows(); return { items, page: 1, perPage: 50, totalItems: items.length, totalPages: 1 }; },
+          getFirstListItem: async () => { throw Object.assign(new Error('Not found'), { status: 404 }); },
+          getOne: async () => rows()[0],
+          update: async (id, data) => { if (name === 'savings') amount = data.amount; return { ...rows()[0], ...data, id }; },
+          subscribe: async () => () => {}
+        };
+      };
+      window.Chart = class { destroy() {} };
+      const { savingsService } = await import('/src/services/savingsService.js');
+      const renderers = [
+        [(await import('/src/features/dashboard/Dashboard.js')).renderDashboard, element => element.textContent.includes('Total Savings (KES)') && element.textContent.includes(amount.toLocaleString('en-US', { minimumFractionDigits: 2 }))],
+        [(await import('/src/features/analytics/AnalyticsDashboard.js')).renderAnalyticsDashboard, element => element.textContent.includes('Total Savings Base') && element.textContent.includes(amount.toLocaleString('en-US', { minimumFractionDigits: 2 }))],
+        [(await import('/src/features/reports/ReportsDashboard.js')).renderReportsDashboard, element => element.querySelector('#individuals-total-savings')?.textContent.includes(amount.toLocaleString('en-US', { minimumFractionDigits: 2 }))],
+        [(await import('/src/features/savings/SavingsList.js')).renderSavingsList, element => element.textContent.includes(amount.toLocaleString('en-US', { minimumFractionDigits: 2 }))]
+      ];
+      for (const [render, matches] of renderers) {
+        await dataCache.invalidateAll();
+        const element = await render();
+        const dispose = trackPageSubscriptions(element);
+        document.body.appendChild(element);
+        await waitFor(() => matches(element));
+        amount += 100;
+        await savingsService.update('test-saving', { amount });
+        await waitFor(() => matches(element));
+        dispose();
+        element.remove();
+      }
+      assert(requests < 150, `Refresh loop detected: ${requests} mocked requests`);
+      await dataCache.invalidateAll();
+      result.textContent = 'PASS: real IndexedDB, cross-tab notifications, disposal, deduplication; Dashboard, Analytics, Reports and Savings update after a saved amendment (mocked PocketBase)';
+    } catch (error) {
+      result.textContent = `FAIL: ${error.stack}`;
+    }
+  }
+</script>

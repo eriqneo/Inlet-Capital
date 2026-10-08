@@ -1,21 +1,25 @@
 import { groupService } from '../../services/groupService.js';
 import { memberService } from '../../services/memberService.js';
+import { calculateSavingsSummary, getSavingsDateBounds, getSavingsTransactionType, selectSavingsRecords, isSavingsInDateRange } from '../../core/savingsMetrics.js';
 import { loanService } from '../../services/loanService.js';
-import { savingsService } from '../../services/savingsService.js';
-import { groupSummaryService } from '../../services/groupSummaryService.js';
 import { authService } from '../../services/authService.js';
 import { navigate } from '../../core/router.js';
 import { formatDate, formatMoney, formatPercent } from '../../core/utils.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { pb } from '../../services/api.js';
-import { dataCache } from '../../services/dataCache.js';
+import { dataCache, debounce, observeCachedView } from '../../services/dataCache.js';
 import { setButtonLoading, renderDatabaseLoaderIcon, DATABASE_LOADING_LABEL } from '../../core/uiState.js';
 import { withReturnTo } from '../../core/navigation.js';
-import { getArrearsTotal, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
-import { getOfficerScopeCacheKey } from '../../core/officerScope.js';
-import { getRepaymentContractAmount, getSettlementContractAmount } from '../../core/repaymentAllocation.js';
+import { buildEffectiveSchedulePaidMap } from '../../core/loanScheduleMetrics.js';
+import { normalizeLoanSchedules } from '../../core/loanInstallments.js';
+import { createLoanArrearsCalculator } from '../../core/loanArrears.js';
+import { getParRating } from '../../core/parRating.js';
+import { getOfficerScopeCacheKey, getLoanOfficerDataFilter, getMemberOfficerScopeFilter, filterMembersForCurrentOfficer, filterLoansForCurrentOfficer } from '../../core/officerScope.js';
+import { getRepaymentContractAmount } from '../../core/repaymentAllocation.js';
 import { calculateGroupSavingsPerformance } from '../../core/groupSavingsPerformance.js';
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
+import { createLoanPortfolioCalculator } from '../../core/loanPortfolio.js';
+import { getFinancialTimestamp, getPortfolioCutoff, formatPortfolioDate } from '../../core/financialRecords.js';
 
 export const renderGroupProfile = async (params) => {
   const { id } = params;
@@ -62,20 +66,7 @@ export const renderGroupProfile = async (params) => {
     `;
     return;
   }
-  let quickSummary = null;
-  try {
-    quickSummary = await groupSummaryService.getByGroup(id);
-  } catch (err) {
-    console.warn('[GroupProfile] Summary unavailable:', err.message);
-  }
-
-  const renderQuickShell = (summary) => {
-    const totalSavings = Number(summary?.total_savings) || Number(group.total_savings) || 0;
-    const outstandingLoan = Number(summary?.outstanding_loan) || 0;
-    const memberCount = Number(summary?.member_count) || Number(group.member_count) || 0;
-    const totalArrears = Number(summary?.total_arrears) || 0;
-    const membersInArrears = Number(summary?.members_in_arrears) || 0;
-    const inactiveMembers = Number(summary?.inactive_members) || 0;
+  const renderQuickShell = () => {
     container.innerHTML = `
       <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center;">
         <div style="display: flex; align-items: center; gap: 16px;">
@@ -89,77 +80,56 @@ export const renderGroupProfile = async (params) => {
       </div>
 
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px;">
-        <div class="card" style="padding: 16px; border-left: 3px solid var(--success);"><div class="text-xs text-muted">Total Savings</div><div class="text-lg font-semibold text-success">KES ${formatMoney(totalSavings)}</div></div>
-        <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">Outstanding Loan</div><div class="text-lg font-semibold text-primary">KES ${formatMoney(outstandingLoan)}</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--success);"><div class="text-xs text-muted">Total Savings</div><div class="text-lg font-semibold text-success">Checking...</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">Outstanding Loan</div><div class="text-lg font-semibold text-primary">Checking...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--success);"><div class="text-xs text-muted">Total Repayments</div><div class="text-lg font-semibold text-success">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">This Month Collections Expected</div><div class="text-lg font-semibold" style="color: var(--primary);">Syncing...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--success);"><div class="text-xs text-muted">Total Fees</div><div class="text-lg font-semibold text-success">Syncing...</div></div>
-        <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">Total Members</div><div class="text-lg font-semibold text-primary">${memberCount}</div></div>
-        <div class="card" style="padding: 16px; border-left: 3px solid ${totalArrears > 0 ? 'var(--danger)' : 'var(--border-color)'};"><div class="text-xs text-muted">Total Arrears</div><div class="text-lg font-semibold" style="color: ${totalArrears > 0 ? 'var(--danger)' : 'inherit'};">KES ${formatMoney(totalArrears)}</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--primary);"><div class="text-xs text-muted">Total Members</div><div class="text-lg font-semibold text-primary">Checking...</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);"><div class="text-xs text-muted">Total Arrears</div><div class="text-lg font-semibold">Checking...</div></div>
         <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);"><div class="text-xs text-muted">Portfolio at Risk (PAR)</div><div class="text-lg font-semibold" style="color: var(--warning);">Syncing...</div></div>
-        <div class="card" style="padding: 16px; border-left: 3px solid ${membersInArrears > 0 ? 'var(--warning)' : 'var(--border-color)'};"><div class="text-xs text-muted">Members in Arrears</div><div class="text-lg font-semibold" style="color: ${membersInArrears > 0 ? 'var(--warning)' : 'inherit'};">${membersInArrears}</div></div>
-        <div class="card" style="padding: 16px; border-left: 3px solid ${inactiveMembers > 0 ? 'var(--danger)' : 'var(--border-color)'};"><div class="text-xs text-muted">Inactive Members</div><div class="text-lg font-semibold" style="color: ${inactiveMembers > 0 ? 'var(--danger)' : 'inherit'};">${inactiveMembers} <span class="text-xs text-muted" style="font-weight:normal;">(no deposit in 3 months)</span></div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--warning);"><div class="text-xs text-muted">Members in Arrears</div><div class="text-lg font-semibold">Checking...</div></div>
+        <div class="card" style="padding: 16px; border-left: 3px solid var(--danger);"><div class="text-xs text-muted">Inactive Members</div><div class="text-lg font-semibold">Checking...</div></div>
       </div>
 
       <div class="card text-center" style="padding: 36px;">
         <div class="spinner" style="margin: 0 auto 14px;"></div>
         <div class="font-semibold">Preparing detailed tables...</div>
-        <p class="text-sm text-muted" style="margin-top: 6px;">KPIs are shown from the group summary while members, table banking, and savings sync in the background.</p>
       </div>
     `;
   };
 
-  renderQuickShell(quickSummary);
+  renderQuickShell();
 
   const scopedGroupRecordFilter = `group="${id}" || member.group="${id}"`;
   let currentStartDate = null, currentEndDate = null;
-  const calculateSavingsTotal = (records) => records
-    .filter(s => !s.is_reversed)
-    .reduce((sum, s) => {
-      const amount = Number(s.amount) || 0;
-      return s.type === 'deposit' ? sum + amount : sum - amount;
-    }, 0);
-  const calculateSavingsMovement = (records) => records
-    .filter(s => !s.is_reversed)
-    .reduce((totals, s) => {
-      const amount = Number(s.amount) || 0;
-      if (s.type === 'deposit') totals.deposits += amount;
-      if (s.type === 'withdrawal') totals.withdrawals += amount;
-      return totals;
-    }, { deposits: 0, withdrawals: 0 });
-  const isDisbursedLoanForBalance = (loan) => Boolean(loan?.disbursement_date)
-    && ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status);
-  const isCollectibleLoan = (loan) => loan?.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
-  const getLoanLiability = (loan) => {
-    const storedLiability = Number(loan?.total_liability) || 0;
-    if (storedLiability > 0) return storedLiability;
-    const principal = Number(loan?.approved_amount || loan?.amount_applied) || 0;
-    return principal + (Number(loan?.interest_amount) || 0);
+  let financialPenaltyAmount = 500, groupCalculator = null, groupCalculatorRefs = [];
+  const getGroupPortfolioCalculator = () => {
+    const refs = [groupLoans, allRepayments, allBalanceOffs, allSchedules, currentEndDate, financialPenaltyAmount];
+    if (!groupCalculator || refs.some((ref, index) => ref !== groupCalculatorRefs[index])) {
+      groupCalculatorRefs = refs;
+      groupCalculator = createLoanPortfolioCalculator({ loans: groupLoans, repayments: allRepayments, settlements: allBalanceOffs,
+        schedules: allSchedules, penaltyAmount: financialPenaltyAmount, referenceDate: currentEndDate || new Date(),
+        asOf: currentEndDate || undefined, useRecordedSchedulePaid: false });
+    }
+    return groupCalculator;
   };
-  const calculateLoanBalance = (loan, repayments, settlements = []) => {
-    if (!isDisbursedLoanForBalance(loan) || loan?.renewed_to?.id || loan?.renewed_to) return 0;
-    const liability = getLoanLiability(loan);
-    const paid = repayments
-      .filter(r => r.loan === loan.id)
-      .reduce((repaymentSum, r) => repaymentSum + getRepaymentContractAmount(r), 0)
-      + settlements
-        .filter(s => s.loan === loan.id && s.status !== 'reversed')
-        .reduce((settlementSum, s) => settlementSum + getSettlementContractAmount(s), 0);
-    return Math.max(0, liability - paid);
+  let groupArrearsCalculator = null, groupArrearsPortfolioRef = null;
+  const getGroupArrearsCalculator = () => {
+    const portfolioCalculator = getGroupPortfolioCalculator();
+    if (!groupArrearsCalculator || groupArrearsPortfolioRef !== portfolioCalculator) {
+      groupArrearsPortfolioRef = portfolioCalculator;
+      groupArrearsCalculator = createLoanArrearsCalculator({ loans: groupLoans, schedules: allSchedules,
+        repayments: allRepayments, settlements: allBalanceOffs, referenceDate: currentEndDate || new Date(), portfolioCalculator });
+    }
+    return groupArrearsCalculator;
   };
-  const calculateActiveLoanPortfolio = (loans) => loans
-    .filter(isCollectibleLoan)
-    .reduce((sum, loan) => sum + getLoanLiability(loan), 0);
-  const getParHealth = (parRate) => parRate >= 16
-    ? { label: 'High Risk', color: 'var(--danger)', accent: 'var(--danger)' }
-    : parRate >= 11
-      ? { label: 'Needs Attention', color: 'var(--warning)', accent: 'var(--warning)' }
-      : parRate >= 6
-        ? { label: 'Good', color: 'var(--primary)', accent: 'var(--primary)' }
-        : { label: 'Excellent', color: 'var(--success)', accent: 'var(--success)' };
-  const calculateOutstandingLoanBalance = (loans, repayments, settlements = []) => loans
-    .filter(isDisbursedLoanForBalance)
-    .reduce((sum, loan) => sum + calculateLoanBalance(loan, repayments, settlements), 0);
+  const calculateSavingsTotal = (records) => calculateSavingsSummary(records).net;
+  const calculateSavingsMovement = calculateSavingsSummary;
+  const isCollectibleLoan = loan => getGroupPortfolioCalculator().getOutstanding(loan) > 0;
+  const calculateLoanBalance = loan => getGroupPortfolioCalculator().getOutstanding(loan);
+  const calculateActiveLoanPortfolio = loans => getGroupPortfolioCalculator().sumOutstanding(loans);
+  const calculateOutstandingLoanBalance = loans => getGroupPortfolioCalculator().sumOutstanding(loans);
   const calculateRepaymentsTotal = (repayments) => repayments
     .reduce((sum, repayment) => sum + getRepaymentContractAmount(repayment), 0);
   const getRegistrationFeeDate = (member) => member.registration_fee_details?.date
@@ -188,67 +158,6 @@ export const renderGroupProfile = async (params) => {
       .reduce((sum, loan) => sum + (Number(loan.processing_fee) || 0), 0);
     return registrationFees + processingFees;
   };
-  const buildEffectiveSchedulePaidMap = (schedules, repayments, settlements = []) => {
-    const schedulesByLoan = new Map();
-    schedules.forEach(schedule => {
-      if (!schedule.loan) return;
-      if (!schedulesByLoan.has(schedule.loan)) schedulesByLoan.set(schedule.loan, []);
-      schedulesByLoan.get(schedule.loan).push(schedule);
-    });
-    schedulesByLoan.forEach(loanSchedules => {
-      loanSchedules.sort((a, b) => {
-        const installmentDiff = (Number(a.installment_no) || 0) - (Number(b.installment_no) || 0);
-        if (installmentDiff !== 0) return installmentDiff;
-        return new Date(a.due_date || 0) - new Date(b.due_date || 0);
-      });
-    });
-
-    const repaymentsByLoan = new Map();
-    [
-      ...repayments.map(repayment => ({
-        ...repayment,
-        amount: getRepaymentContractAmount(repayment)
-      })),
-      ...settlements
-        .filter(settlement => settlement.status !== 'reversed')
-        .map(settlement => ({
-          ...settlement,
-          amount: getSettlementContractAmount(settlement),
-          date: settlement.effective_date || settlement.created
-        }))
-    ].forEach(repayment => {
-      if (!repayment.loan) return;
-      if (!repaymentsByLoan.has(repayment.loan)) repaymentsByLoan.set(repayment.loan, []);
-      repaymentsByLoan.get(repayment.loan).push(repayment);
-    });
-    repaymentsByLoan.forEach(loanRepayments => {
-      loanRepayments.sort((a, b) => new Date(a.date || a.created || 0) - new Date(b.date || b.created || 0));
-    });
-
-    const paidMap = new Map();
-    schedulesByLoan.forEach((loanSchedules, loanId) => {
-      const allocated = new Map(loanSchedules.map(schedule => [schedule.id, 0]));
-      (repaymentsByLoan.get(loanId) || []).forEach(repayment => {
-        let remainingPayment = Number(repayment.amount) || 0;
-        for (const schedule of loanSchedules) {
-          if (remainingPayment <= 0) break;
-          const scheduleAmount = Number(schedule.amount) || 0;
-          const currentPaid = allocated.get(schedule.id) || 0;
-          const openAmount = Math.max(0, scheduleAmount - currentPaid);
-          if (openAmount <= 0) continue;
-          const applied = Math.min(openAmount, remainingPayment);
-          allocated.set(schedule.id, currentPaid + applied);
-          remainingPayment -= applied;
-        }
-      });
-      loanSchedules.forEach(schedule => {
-        const recordedPaid = Number(schedule.paid) || 0;
-        const allocatedPaid = allocated.get(schedule.id) || 0;
-        paidMap.set(schedule.id, Math.min(Number(schedule.amount) || 0, Math.max(recordedPaid, allocatedPaid)));
-      });
-    });
-    return paidMap;
-  };
   const getMemberGroupJoinedDate = (member) => member.group_joined_at
     || member.updated
     || member.registration_date
@@ -263,16 +172,16 @@ export const renderGroupProfile = async (params) => {
     return String(a.full_name || '').localeCompare(String(b.full_name || ''));
   });
   const calculateThisMonthCollectionsExpected = (loans, schedules, repayments, settlements = []) => {
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
-    const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0, 23, 59, 59, 999);
+    const cutoff = currentEndDate || new Date();
+    const civilDate = new Date(cutoff.getTime() + 10800000);
+    const monthStart = new Date(Date.UTC(civilDate.getUTCFullYear(), civilDate.getUTCMonth(), 1) - 10800000);
+    const monthEnd = new Date(Date.UTC(civilDate.getUTCFullYear(), civilDate.getUTCMonth() + 1, 1) - 10800000 - 1);
     const activeLoanIds = new Set(loans.filter(isCollectibleLoan).map(loan => loan.id));
-    const effectivePaidMap = buildEffectiveSchedulePaidMap(schedules, repayments, settlements);
+    const effectivePaidMap = buildEffectiveSchedulePaidMap({ schedules, repayments, settlements, referenceDate: cutoff });
     return schedules
       .filter(schedule => activeLoanIds.has(schedule.loan))
       .filter(schedule => {
-        const dueDate = new Date(schedule.due_date);
+        const dueDate = new Date(getFinancialTimestamp(schedule.due_date));
         return !Number.isNaN(dueDate.getTime()) && dueDate >= monthStart && dueDate <= monthEnd;
       })
       .reduce((sum, schedule) => {
@@ -289,89 +198,49 @@ export const renderGroupProfile = async (params) => {
     "'": '&#039;'
   }[char]));
 
-  // Fetch group data in cached batches. This avoids a per-member/per-loan network waterfall.
   let allGroupMembers = [], groupLoans = [], groupSavings = [], allRepayments = [], allSchedules = [], allBalanceOffs = [];
-  try {
-    allGroupMembers = await dataCache.getLocalFirst(
-      `groups:profile:${officerScopeKey}:${id}:members:v3`,
-      async () => sortMembersByGroupJoinedAsc(await pb.collection('members').getFullList({
-        filter: `group="${id}" && status!="closed"`,
-        sort: 'group_joined_at,created',
-        expand: 'group'
-      })),
-      null,
-      { minRefreshInterval: 20 * 1000 }
-    );
-  } catch (e) { console.warn('[GroupProfile] Batch profile fetch:', e.message); }
-
-  try {
-    [groupLoans, groupSavings] = await Promise.all([
-      dataCache.getLocalFirst(
-        `groups:profile:${officerScopeKey}:${id}:loans:v3`,
-        () => pb.collection('loans').getFullList({
-          filter: scopedGroupRecordFilter,
-          sort: '-application_date',
-          expand: 'member,member.group,group,processed_by'
-        }),
-        null,
-        { minRefreshInterval: 10 * 1000 }
-      ),
-      dataCache.getLocalFirst(
-        `groups:profile:${officerScopeKey}:${id}:savings:v3`,
-        () => pb.collection('savings').getFullList({
-          filter: scopedGroupRecordFilter,
-          sort: '-date',
-          expand: 'member,member.group,group,recorded_by'
-        }),
-        null,
-        { minRefreshInterval: 10 * 1000 }
-      )
+  const pendingCacheUpdates = new Map();
+  let applyCacheUpdates = null;
+  const bundleKey = `groups:profile:${officerScopeKey}:${id}:records:arrears-v1`;
+  const loadGroupRecords = async () => {
+    const childFilter = `loan.group="${id}" || loan.member.group="${id}"`;
+    const scoped = (filter, ownerFilter) => ownerFilter ? `(${filter}) && (${ownerFilter})` : filter;
+    const [members, loans, savings, repayments, schedules, balanceoffs, settings] = await Promise.all([
+      pb.collection('members').getFullList({ filter: scoped(`group="${id}" && status!="closed"`, getMemberOfficerScopeFilter()), sort: 'group_joined_at,created', expand: 'group' }),
+      pb.collection('loans').getFullList({ filter: scoped(scopedGroupRecordFilter, getLoanOfficerDataFilter()), sort: '-application_date', expand: 'member,member.group,group,processed_by,renewed_to' }),
+      pb.collection('savings').getFullList({ filter: scoped(scopedGroupRecordFilter, getLoanOfficerDataFilter()), sort: '-date', expand: 'member,member.group,group,recorded_by' }),
+      pb.collection('loan_repayments').getFullList({ filter: scoped(childFilter, getLoanOfficerDataFilter(true)), sort: '-date' }),
+      pb.collection('loan_schedule').getFullList({ filter: scoped(childFilter, getLoanOfficerDataFilter(true)), sort: 'installment_no' }),
+      pb.collection('loan_balance_offs').getFullList({ filter: scoped(childFilter, getLoanOfficerDataFilter(true)) }),
+      pb.collection('settings').getFullList()
     ]);
-  } catch (e) { console.warn('[GroupProfile] Batch loans/savings fetch:', e.message); }
-
-  const isSuspendedMember = (member) => String(member?.status || '').toLowerCase() === 'suspended';
+    const setting = settings.find(record => record.key === 'penalty_amount');
+    const penalty = setting?.value === undefined || setting.value === '' ? 500 : Number(setting.value);
+    if (!Number.isFinite(penalty) || penalty < 0) throw new Error('Invalid penalty setting');
+    const calculator = createLoanPortfolioCalculator({ loans, repayments, settlements: balanceoffs, schedules, penaltyAmount: penalty });
+    loans.forEach(loan => calculator.getOutstanding(loan));
+    calculateSavingsSummary(savings);
+    return { members: filterMembersForCurrentOfficer(members), loans: filterLoansForCurrentOfficer(loans, { members, groups: [group] }), savings, repayments, schedule: normalizeLoanSchedules(schedules), balanceoffs, penalty };
+  };
+  const publishGroupRecords = records => {
+    pendingCacheUpdates.clear();
+    for (const [name, value] of Object.entries(records)) pendingCacheUpdates.set(name, value);
+    applyCacheUpdates?.();
+  };
+  const initialRecords = await dataCache.getLocalFirst(bundleKey, loadGroupRecords, publishGroupRecords, { minRefreshInterval: 120000 });
+  allGroupMembers = sortMembersByGroupJoinedAsc(initialRecords.members);
+  groupLoans = initialRecords.loans;
+  groupSavings = initialRecords.savings;
+  allRepayments = initialRecords.repayments;
+  allSchedules = initialRecords.schedule;
+  allBalanceOffs = initialRecords.balanceoffs;
+  financialPenaltyAmount = initialRecords.penalty;
+  const isSuspendedMember = member => ['suspended', 'closed', 'exited'].includes(String(member?.status || '').toLowerCase());
   const activeGroupMembers = allGroupMembers.filter(member => !isSuspendedMember(member));
   const activeGroupMemberIds = new Set(activeGroupMembers.map(member => member.id));
-  const isActiveMemberFinancialRecord = (record) => !record.member || activeGroupMemberIds.has(record.member);
+  const isActiveMemberFinancialRecord = record => !record.member || activeGroupMemberIds.has(record.member);
   const financialGroupLoans = groupLoans.filter(isActiveMemberFinancialRecord);
-  const financialGroupSavings = groupSavings.filter(isActiveMemberFinancialRecord);
-
-  const activeLoansForProfile = financialGroupLoans.filter(l => isCollectibleLoan(l) || ['completed', 'closed'].includes(l.status));
-  const activeLoanIds = new Set(activeLoansForProfile.map(l => l.id));
-
-  if (activeLoanIds.size > 0) {
-    try {
-      [allRepayments, allSchedules, allBalanceOffs] = await Promise.all([
-        dataCache.getLocalFirst(
-          `groups:profile:${id}:repayments:v2`,
-          () => pb.collection('loan_repayments').getFullList({
-            filter: `loan.group="${id}" || loan.member.group="${id}"`,
-            sort: '-date'
-          }),
-          null,
-          { minRefreshInterval: 10 * 1000 }
-        ),
-        dataCache.getLocalFirst(
-          `groups:profile:${id}:schedule:v2`,
-          () => pb.collection('loan_schedule').getFullList({
-            filter: `loan.group="${id}" || loan.member.group="${id}"`,
-            sort: 'installment_no'
-          }),
-          null,
-          { minRefreshInterval: 10 * 1000 }
-        ),
-        dataCache.getLocalFirst(
-          `groups:profile:${id}:balanceoffs:v1`,
-          () => loanService.getBalanceOffsFullList({
-            filter: `loan.group="${id}" || loan.member.group="${id}"`,
-            expand: ''
-          }),
-          null,
-          { minRefreshInterval: 10 * 1000 }
-        )
-      ]);
-    } catch (e) { console.warn('[GroupProfile] Batch repayment/schedule fetch:', e.message); }
-  }
+  const financialGroupSavings = selectSavingsRecords(groupSavings.filter(isActiveMemberFinancialRecord), { members: allGroupMembers, group: id });
 
   // For each member, fetch their savings/loans for the enriched table
   let totalGroupArrears = 0;
@@ -382,9 +251,6 @@ export const renderGroupProfile = async (params) => {
     enrichedMembers = sortMembersByGroupJoinedAsc(allGroupMembers).map((member) => {
       const memberSavings = groupSavings.filter(saving => saving.member === member.id);
       const memberLoans = groupLoans.filter(loan => loan.member === member.id);
-      const activeLoans = memberLoans.filter(isCollectibleLoan);
-      const memberLoanIds = new Set(activeLoans.map(loan => loan.id));
-      const overdue = allSchedules.filter(schedule => memberLoanIds.has(schedule.loan) && isScheduleInArrears(schedule));
       const lastSavingsDate = getLatestSavingsDate(memberSavings);
       const activityStatus = getMemberActivityStatus(member, lastSavingsDate);
 
@@ -392,7 +258,7 @@ export const renderGroupProfile = async (params) => {
         ...member,
         totalSavings: calculateSavingsTotal(memberSavings),
         olBalance: calculateOutstandingLoanBalance(memberLoans, allRepayments, allBalanceOffs),
-        totalArrears: getArrearsTotal(overdue),
+        totalArrears: getGroupArrearsCalculator().summarize(memberLoans).total,
         isActive: activityStatus.isActive,
         lastSavingsDate
       };
@@ -402,17 +268,12 @@ export const renderGroupProfile = async (params) => {
 
   // Aggregate group savings
   const activeEnrichedMembers = enrichedMembers.filter(member => !isSuspendedMember(member));
-  const totalMemberSavings = activeEnrichedMembers.reduce((sum, m) => sum + m.totalSavings, 0);
-  const groupAccountSavings = calculateSavingsTotal(financialGroupSavings.filter(s => !s.member));
-  let totalGroupSavings = totalMemberSavings + groupAccountSavings;
+  let totalGroupSavings = calculateSavingsTotal(financialGroupSavings);
   const initialSavingsMovement = calculateSavingsMovement(financialGroupSavings);
 
   // Group-level loan arrears
   const activeGroupLoans = financialGroupLoans.filter(l => !l.member && isCollectibleLoan(l));
-  const activeGroupLoanIds = new Set(activeGroupLoans.map(gl => gl.id));
-  const groupLevelArrears = allSchedules
-    .filter(s => activeGroupLoanIds.has(s.loan) && isScheduleInArrears(s))
-    .reduce((sum, s) => sum + getArrearsTotal([s]), 0);
+  const groupLevelArrears = getGroupArrearsCalculator().summarize(activeGroupLoans).total;
   totalGroupArrears += groupLevelArrears;
 
   // Calculate totals from enrichedMembers
@@ -425,7 +286,7 @@ export const renderGroupProfile = async (params) => {
   const thisMonthCollectionsExpected = calculateThisMonthCollectionsExpected(financialGroupLoans, allSchedules, allRepayments, allBalanceOffs);
   const activeLoanPortfolio = calculateActiveLoanPortfolio(financialGroupLoans);
   const groupParRateNumber = activeLoanPortfolio > 0 ? (totalGroupArrears / activeLoanPortfolio) * 100 : 0;
-  const groupParHealth = getParHealth(groupParRateNumber);
+  const groupParHealth = getParRating(groupParRateNumber);
   const savingsPerformance = calculateGroupSavingsPerformance({
     group,
     members: activeEnrichedMembers,
@@ -447,14 +308,6 @@ export const renderGroupProfile = async (params) => {
       : rating > 0
         ? 'var(--danger)'
         : 'var(--text-muted)';
-  const computedSummarySnapshot = {
-    member_count: activeGroupMembers.length,
-    total_savings: totalGroupSavings,
-    outstanding_loan: totalOutstandingLoan,
-    total_arrears: totalGroupArrears,
-    members_in_arrears: membersInArrearsCount,
-    inactive_members: inactiveMembersCount
-  };
 
   // All unassigned members for add-member modal. Load only when the modal is opened.
   let unassignedMembers = [];
@@ -529,6 +382,7 @@ export const renderGroupProfile = async (params) => {
             <div class="text-xs text-muted">Portfolio at Risk (PAR)</div>
             <div class="text-lg font-semibold" id="group-par-kpi" style="color: ${groupParHealth.color};">${formatPercent(groupParRateNumber)}</div>
             <div class="text-xs" id="group-par-health" style="margin-top: 4px; color: ${groupParHealth.color}; font-weight: 700;">${groupParHealth.label}</div>
+            <div class="text-xs text-muted" id="group-par-detail" style="margin-top: 4px;">${groupParHealth.detail}</div>
           </div>
           <div class="card" style="padding: 16px; border-left: 3px solid ${membersInArrearsCount > 0 ? 'var(--warning)' : 'var(--border-color)'};">
             <div class="text-xs text-muted">Members in Arrears</div>
@@ -565,6 +419,7 @@ export const renderGroupProfile = async (params) => {
             <button class="btn btn-outline btn-sm" id="clear-date-filter-btn" style="height: 38px;">Clear</button>
           </div>
           <div id="group-filter-summary" class="text-xs text-muted" style="margin-top: 10px;"></div>
+          <div id="group-records-status" class="text-xs text-muted" role="status" style="margin-top: 6px;">Based on loaded records</div>
         </div>
 
         <div class="card" style="padding: 0;">
@@ -806,7 +661,7 @@ export const renderGroupProfile = async (params) => {
       await groupService.update(group.id, { member_count: group.member_count });
       await Promise.all([
         dataCache.invalidate('members:unassigned:v2'),
-        dataCache.invalidatePrefix(`groups:profile:${id}:`)
+        dataCache.invalidatePrefix(`groups:profile:${officerScopeKey}:${id}:`)
       ]);
       modal.style.display = 'none';
       if (window.notify) window.notify.success('Member added successfully!');
@@ -821,6 +676,7 @@ export const renderGroupProfile = async (params) => {
   const accountScopeSelect = container.querySelector('#group-account-scope');
   const dateStartInput = container.querySelector('#global-date-start');
   const dateEndInput = container.querySelector('#global-date-end');
+  let savingsDateRange = { from: '', to: '' };
   const filterSummary = container.querySelector('#group-filter-summary');
   let currentMemberStatusFilter = 'all';
   let loanPage = 1, savingsPage = 1;
@@ -834,7 +690,7 @@ export const renderGroupProfile = async (params) => {
   const getLoanRemarks = (loan) => loan.remarks || loan.purpose || '';
 
   const formatSavingsReference = (saving) => {
-    const type = saving.type || 'deposit';
+    const type = getSavingsTransactionType(saving);
     const method = saving.payment_method || (type === 'withdrawal' ? 'cash' : 'mpesa');
     const reference = String(saving.reference || '');
     const methodLabel = method === 'mpesa' ? 'M-Pesa' : (method === 'bank' ? 'Bank' : (method === 'card' ? 'Card' : 'Cash'));
@@ -850,10 +706,7 @@ export const renderGroupProfile = async (params) => {
       if (scope === 'groups') return false;
       if (currentStartDate || currentEndDate) {
         if (!m.lastSavingsDate) return false;
-        const lastSaved = new Date(m.lastSavingsDate);
-        if (Number.isNaN(lastSaved.getTime())) return false;
-        if (currentStartDate && lastSaved < currentStartDate) return false;
-        if (currentEndDate && lastSaved > currentEndDate) return false;
+        if (!isSavingsInDateRange({ date: m.lastSavingsDate }, { from: dateStartInput.value, to: dateEndInput.value })) return false;
       }
       if (currentMemberStatusFilter === 'arrears' && getMemberArrears(m) <= 0) return false;
       if (currentMemberStatusFilter === 'inactive' && m.isActive) return false;
@@ -900,23 +753,10 @@ export const renderGroupProfile = async (params) => {
   };
 
   const getMemberLoans = (member) => groupLoans.filter(l => l.member === member.id);
-  const getMemberActiveLoanIds = (member) => new Set(
-    getMemberLoans(member)
-      .filter(isCollectibleLoan)
-      .map(l => l.id)
-  );
-  const getMemberArrears = (member) => {
-    const memberLoanIds = getMemberActiveLoanIds(member);
-    return getArrearsTotal(allSchedules.filter(s => memberLoanIds.has(s.loan)));
-  };
+  const getMemberArrears = member => getGroupArrearsCalculator().summarize(getMemberLoans(member)).total;
   const getMemberOlBalance = (member) => calculateOutstandingLoanBalance(getMemberLoans(member), allRepayments, allBalanceOffs);
   const getGroupLevelArrears = () => {
-    const activeGroupLoanIds = new Set(
-      groupLoans
-        .filter(l => !l.member && isCollectibleLoan(l))
-        .map(l => l.id)
-    );
-    return getArrearsTotal(allSchedules.filter(s => activeGroupLoanIds.has(s.loan)));
+    return getGroupArrearsCalculator().summarize(groupLoans.filter(l => !l.member)).total;
   };
 
   const applyDateFilters = (records, dateField) => records.filter(r => {
@@ -942,7 +782,14 @@ export const renderGroupProfile = async (params) => {
   };
 
   const getFilteredLoans = () => applyDateFilters(allFinancialLoansSorted.filter(recordMatchesScope), 'application_date');
-  const getFilteredSavings = () => applyDateFilters(allFinancialSavingsSorted.filter(recordMatchesScope), 'date');
+  const getFilteredSavings = () => {
+    const allowedMemberIds = new Set(getPerformanceMembers().map(member => member.id));
+    return selectSavingsRecords(allFinancialSavingsSorted.filter(record => record.member
+      ? allowedMemberIds.has(record.member)
+      : scopeIncludesGroupAccount()), {
+      members: allGroupMembers, group: id, from: dateStartInput.value, to: dateEndInput.value
+    });
+  };
   const getFilteredRepayments = () => {
     const loansById = new Map(groupLoans.map(loan => [loan.id, loan]));
     return applyDateFilters(
@@ -989,23 +836,24 @@ export const renderGroupProfile = async (params) => {
     const inactiveCount = filteredMembers.filter(m => !m.isActive).length;
     const savingsTotal = calculateSavingsTotal(filteredSavings);
     const savingsMovement = calculateSavingsMovement(filteredSavings);
-    const outstandingLoan = calculateOutstandingLoanBalance(filteredLoans, allRepayments, allBalanceOffs);
-    const filteredActiveLoanPortfolio = calculateActiveLoanPortfolio(filteredLoans);
+    const outstandingLoan = calculateOutstandingLoanBalance(allFinancialLoansSorted.filter(recordMatchesScope));
+    const filteredActiveLoanPortfolio = outstandingLoan;
     const parRate = filteredActiveLoanPortfolio > 0 ? (arrearsAmount / filteredActiveLoanPortfolio) * 100 : 0;
-    const parHealth = getParHealth(parRate);
+    const parHealth = getParRating(parRate);
     const repaymentsTotal = calculateRepaymentsTotal(filteredRepayments);
     const feesTotal = calculateFeesTotal(feeKpiMembers, groupLoans);
     const thisMonthExpected = calculateThisMonthCollectionsExpected(scopedLoansForCurrentMonthCollections, allSchedules, allRepayments, allBalanceOffs);
     const scopedSavingsPerformance = calculateGroupSavingsPerformance({
       group,
       members: performanceMembers,
-      savings: financialGroupSavings,
+      savings: selectSavingsRecords(groupSavings.filter(isActiveMemberFinancialRecord), { members: allGroupMembers, group: id }),
       referenceDate: currentEndDate || new Date(),
       periodStartDate: currentStartDate
     });
     renderSavingsPerformanceRating(scopedSavingsPerformance);
 
     container.querySelector('#group-total-savings-kpi').textContent = `KES ${formatMoney(savingsTotal)}`;
+    container.querySelector('#group-total-savings-kpi').previousElementSibling.textContent = currentStartDate || currentEndDate ? 'Net Savings Movement' : 'Total Savings Balance';
     const savingsMovementKpi = container.querySelector('#group-savings-movement-kpi');
     if (savingsMovementKpi) {
       savingsMovementKpi.innerHTML = `
@@ -1014,6 +862,7 @@ export const renderGroupProfile = async (params) => {
       `;
     }
     container.querySelector('#group-outstanding-loan-kpi').textContent = `KES ${formatMoney(outstandingLoan)}`;
+    container.querySelector('#group-outstanding-loan-kpi').previousElementSibling.textContent = `Outstanding Loan as at ${formatPortfolioDate(currentEndDate || new Date())}`;
     container.querySelector('#group-total-repayments-kpi').textContent = `KES ${formatMoney(repaymentsTotal)}`;
     const thisMonthExpectedKpi = container.querySelector('#group-this-month-expected-kpi');
     if (thisMonthExpectedKpi) thisMonthExpectedKpi.textContent = `KES ${formatMoney(thisMonthExpected)}`;
@@ -1021,6 +870,7 @@ export const renderGroupProfile = async (params) => {
     container.querySelector('#group-total-members-kpi').textContent = filteredMembers.length;
     const totalArrearsKpi = container.querySelector('#group-total-arrears-kpi');
     totalArrearsKpi.textContent = `KES ${formatMoney(arrearsAmount)}`;
+    totalArrearsKpi.previousElementSibling.textContent = `Arrears as at ${formatPortfolioDate(currentEndDate || new Date())}`;
     totalArrearsKpi.style.color = arrearsAmount > 0 ? 'var(--danger)' : 'inherit';
     const parCard = container.querySelector('#group-par-card');
     const parKpi = container.querySelector('#group-par-kpi');
@@ -1034,6 +884,8 @@ export const renderGroupProfile = async (params) => {
       parHealthEl.textContent = parHealth.label;
       parHealthEl.style.color = parHealth.color;
     }
+    const parDetailEl = container.querySelector('#group-par-detail');
+    if (parDetailEl) parDetailEl.textContent = parHealth.detail;
     container.querySelector('#group-arrears-kpi').textContent = arrearsCount;
     container.querySelector('#group-inactive-members-kpi').innerHTML = `${inactiveCount} <span class="text-xs text-muted" style="font-weight:normal;">(no deposit in 3 months)</span>`;
 
@@ -1042,7 +894,7 @@ export const renderGroupProfile = async (params) => {
     const dateLabel = currentStartDate || currentEndDate
       ? `, ${dateStartInput.value || 'start'} to ${dateEndInput.value || 'today'}`
       : '';
-    if (filterSummary) filterSummary.textContent = `Showing ${scopeLabel}${dateLabel}. KPIs reflect this filter.`;
+    if (filterSummary) filterSummary.textContent = `Showing ${scopeLabel}${dateLabel}.${currentStartDate || currentEndDate ? ' Members: last saved date. Savings: transaction date.' : ''}`;
   };
 
   const refreshFilteredViews = () => {
@@ -1148,10 +1000,10 @@ export const renderGroupProfile = async (params) => {
     const tbody = container.querySelector('#group-savings-body');
     tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="6" class="text-center text-muted">No savings found for this filter.</td></tr>' : paginated.map(s => `
       <tr>
-        <td>${formatDate(s.date)}</td>
+        <td>${formatDate(s.date || s.created)}</td>
         <td><div class="font-semibold">${getOwnerName(s)}</div><div class="text-xs text-muted">${s.member ? 'Member' : 'Group account'}</div></td>
-        <td><span class="badge" style="background: ${s.type === 'deposit' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'}; color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type.toUpperCase()}</span></td>
-        <td class="font-semibold" style="color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type === 'deposit' ? '+' : '-'}${formatMoney(s.amount)}</td>
+        <td><span class="badge ${getSavingsTransactionType(s) === 'deposit' ? 'badge-success' : 'badge-danger'}">${getSavingsTransactionType(s).toUpperCase()}</span></td>
+        <td class="font-semibold" style="color: ${getSavingsTransactionType(s) === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${getSavingsTransactionType(s) === 'deposit' ? '+' : '-'}${formatMoney(s.amount)}</td>
         <td class="text-xs text-muted">${formatSavingsReference(s)}</td>
         <td class="text-xs text-muted">${s.remarks || '-'}</td>
       </tr>`).join('');
@@ -1162,9 +1014,16 @@ export const renderGroupProfile = async (params) => {
   };
 
   const syncDateFilter = () => {
-    currentStartDate = dateStartInput.value ? new Date(dateStartInput.value) : null;
-    currentEndDate = dateEndInput.value ? new Date(dateEndInput.value) : null;
-    if (currentEndDate) currentEndDate.setHours(23, 59, 59, 999);
+    const nextRange = { from: dateStartInput.value, to: dateEndInput.value };
+    try { getSavingsDateBounds(nextRange); } catch (error) {
+      dateStartInput.value = savingsDateRange.from;
+      dateEndInput.value = savingsDateRange.to;
+      window.notify?.error(error.message);
+      return;
+    }
+    savingsDateRange = nextRange;
+    currentStartDate = dateStartInput.value ? new Date(getFinancialTimestamp(dateStartInput.value)) : null;
+    currentEndDate = dateEndInput.value ? getPortfolioCutoff(dateEndInput.value) : null;
     refreshFilteredViews();
   };
 
@@ -1176,6 +1035,7 @@ export const renderGroupProfile = async (params) => {
     memberSearchInput.value = '';
     accountScopeSelect.value = 'all';
     dateStartInput.value = ''; dateEndInput.value = '';
+    savingsDateRange = { from: '', to: '' };
     currentStartDate = null; currentEndDate = null;
     currentMemberStatusFilter = 'all';
     updateActiveFilterBtn('all');
@@ -1183,93 +1043,60 @@ export const renderGroupProfile = async (params) => {
   };
 
   refreshFilteredViews();
-  groupSummaryService.saveSnapshot(id, computedSummarySnapshot)
-    .catch(err => console.warn('[GroupProfile] Could not save group summary snapshot:', err.message));
 
-  // Real-time updates
-  const fetchAndRenderMembers = async () => {
+  let refreshRevision = 0;
+  const refreshProfileRecords = async () => {
+    const revision = ++refreshRevision;
+    const status = container.querySelector('#group-records-status');
+    status.textContent = 'Checking latest records...';
     try {
-      const freshMembers = sortMembersByGroupJoinedAsc(await pb.collection('members').getFullList({
-        filter: `group="${id}" && status!="closed"`,
-        sort: 'group_joined_at,created',
-        expand: 'group'
-      }));
-      // update count in UI
-      const countEl = container.querySelector('#group-total-members-kpi');
-      if (countEl) countEl.textContent = freshMembers.length;
-      
-      const membersTabBtn = container.querySelector('[data-tab="members"]');
-      if (membersTabBtn) membersTabBtn.textContent = `Members (${freshMembers.length})`;
-      
-      // We don't do full enrichment here for performance, but we trigger table reload
-      // This is a minimal update approach for real-time
-    } catch(e) { console.warn('[GroupProfile] Members refresh:', e.message); }
+      const fresh = await dataCache.refresh(bundleKey, loadGroupRecords);
+      if (revision !== refreshRevision || container.__disposed) return;
+      // Publish one complete view, never a mix of old ownership and new savings.
+      publishGroupRecords(fresh);
+      pendingCacheUpdates.set('checked', true);
+      applyCacheUpdates();
+    } catch (error) {
+      if (revision !== refreshRevision || container.__disposed || error.isCacheObsolete) return;
+      status.textContent = 'Updates unavailable - showing previously loaded records';
+      console.warn('[GroupProfile] Record refresh unavailable:', error.message);
+    }
   };
 
-  const fetchAndRenderLoans = async () => {
-    try {
-      groupLoans = await pb.collection('loans').getFullList({
-        filter: scopedGroupRecordFilter,
-        sort: '-application_date',
-        expand: 'member,member.group,group,processed_by'
-      });
-      const activeLoanIds = groupLoans
-        .filter(isActiveMemberFinancialRecord)
-        .filter(l => isCollectibleLoan(l) || ['completed', 'closed'].includes(l.status))
-        .map(l => l.id);
-      allRepayments = activeLoanIds.length > 0
-        ? await pb.collection('loan_repayments').getFullList({
-            filter: `loan.group="${id}" || loan.member.group="${id}"`,
-            sort: '-date'
-          })
-        : [];
-      allSchedules = activeLoanIds.length > 0
-        ? await pb.collection('loan_schedule').getFullList({
-            filter: `loan.group="${id}" || loan.member.group="${id}"`,
-            sort: 'installment_no'
-          })
-        : [];
-      allBalanceOffs = activeLoanIds.length > 0
-        ? await loanService.getBalanceOffsFullList({
-            filter: `loan.group="${id}" || loan.member.group="${id}"`,
-            expand: ''
-          })
-        : [];
-      await Promise.all([
-        dataCache.set(`groups:profile:${id}:loans:v3`, groupLoans),
-        dataCache.set(`groups:profile:${id}:repayments:v2`, allRepayments),
-        dataCache.set(`groups:profile:${id}:schedule:v2`, allSchedules),
-        dataCache.set(`groups:profile:${id}:balanceoffs:v1`, allBalanceOffs)
-      ]);
-      totalOutstandingLoan = calculateOutstandingLoanBalance(groupLoans.filter(isActiveMemberFinancialRecord), allRepayments, allBalanceOffs);
-      allFinancialLoansSorted.length = 0;
-      allFinancialLoansSorted.push(...groupLoans.sort((a, b) => new Date(b.application_date) - new Date(a.application_date)));
-      refreshFilteredViews();
-    } catch(e) {}
-  };
+  applyCacheUpdates = debounce(() => {
+    if (container.__disposed) return;
+    const checked = pendingCacheUpdates.has('checked');
+    if (pendingCacheUpdates.has('members')) {
+      allGroupMembers = pendingCacheUpdates.get('members');
+      activeGroupMembers.splice(0, activeGroupMembers.length, ...allGroupMembers.filter(member => !isSuspendedMember(member)));
+      activeGroupMemberIds.clear();
+      activeGroupMembers.forEach(member => activeGroupMemberIds.add(member.id));
+    }
+    if (pendingCacheUpdates.has('loans')) groupLoans = pendingCacheUpdates.get('loans');
+    if (pendingCacheUpdates.has('savings')) groupSavings = pendingCacheUpdates.get('savings');
+    if (pendingCacheUpdates.has('repayments')) allRepayments = pendingCacheUpdates.get('repayments');
+    if (pendingCacheUpdates.has('schedule')) allSchedules = pendingCacheUpdates.get('schedule');
+    if (pendingCacheUpdates.has('balanceoffs')) allBalanceOffs = pendingCacheUpdates.get('balanceoffs');
+    if (pendingCacheUpdates.has('penalty')) financialPenaltyAmount = pendingCacheUpdates.get('penalty');
+    pendingCacheUpdates.clear();
+    rebuildEnrichedMembers();
+    allFinancialLoansSorted.splice(0, allFinancialLoansSorted.length, ...[...groupLoans].sort((a, b) => new Date(b.application_date) - new Date(a.application_date)));
+    allFinancialSavingsSorted.splice(0, allFinancialSavingsSorted.length, ...[...groupSavings].sort((a, b) => new Date(b.date) - new Date(a.date)));
+    refreshFilteredViews();
+    container.querySelector('#group-records-status').textContent = checked ? 'Latest records loaded' : 'Based on loaded records';
+    const membersTabBtn = container.querySelector('[data-tab="members"]');
+    if (membersTabBtn) membersTabBtn.textContent = `Members (${allGroupMembers.length})`;
+  }, 200);
+  const queueProfileRefresh = debounce(refreshProfileRecords, 250);
+  container.__subscriptions = [
+    () => { refreshRevision++; applyCacheUpdates.cancel(); queueProfileRefresh.cancel(); },
+    observeCachedView(['savings:', 'members:', 'groups:profile:', 'group_summary:', 'loans:', 'loan_repayments', 'loan_schedule', 'loan_balance_offs:', 'settings:'], refreshProfileRecords, { updates: [] })
+  ];
+  if (pendingCacheUpdates.size) applyCacheUpdates();
 
-  const fetchAndRenderSavings = async () => {
-    try {
-      groupSavings = await pb.collection('savings').getFullList({
-        filter: scopedGroupRecordFilter,
-        sort: '-date',
-        expand: 'member,member.group,group,recorded_by'
-      });
-      await dataCache.set(`groups:profile:${id}:savings:v3`, groupSavings);
-      rebuildEnrichedMembers();
-      allFinancialSavingsSorted.length = 0;
-      allFinancialSavingsSorted.push(...groupSavings.sort((a, b) => new Date(b.date) - new Date(a.date)));
-      totalGroupSavings = calculateSavingsTotal(groupSavings.filter(isActiveMemberFinancialRecord));
-      refreshFilteredViews();
-    } catch(e) {}
-  };
-
-  container.__subscriptionPromise = Promise.all([
-    memberService.subscribeToChanges(fetchAndRenderMembers),
-    loanService.subscribeToChanges(fetchAndRenderLoans),
-    savingsService.subscribeToChanges(fetchAndRenderSavings)
-  ]);
-
-  })();
+  })().catch(error => {
+    console.error('[GroupProfile] Profile unavailable:', error);
+    container.textContent = `Group profile unavailable: ${error.message}`;
+  });
   return container;
 };

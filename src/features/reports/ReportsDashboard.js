@@ -1,15 +1,20 @@
 import { memberService } from '../../services/memberService.js';
 import { groupService } from '../../services/groupService.js';
 import { loanService } from '../../services/loanService.js';
+import { loanFinancialSnapshotService } from '../../services/loanFinancialSnapshotService.js';
+import { getFinancialTimestamp, getPortfolioCutoff, formatPortfolioDate } from '../../core/financialRecords.js';
 import { savingsService } from '../../services/savingsService.js';
+import { calculateSavingsSummary, getSavingsDateBounds, getSavingsRecords, getSavingsTimestamp, getSavingsTransactionType, getSavingsTransactionDate, isActiveSavingsTransaction, isSavingsInDateRange, selectSavingsRecords, getInternalSavingsTransactionIds } from '../../core/savingsMetrics.js';
 import { expenseService } from '../../services/expenseService.js';
 import { pb } from '../../services/api.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate, formatMoney, formatPercent } from '../../core/utils.js';
-import { dataCache } from '../../services/dataCache.js';
+import { dataCache, observeCachedView } from '../../services/dataCache.js';
 import { renderCardSkeleton, renderInlineSyncStatus, renderTableSkeletonRows, setButtonLoading } from '../../core/uiState.js';
 import { settingsService } from '../../services/settingsService.js';
-import { applyEffectiveSchedulePayments, buildEffectiveSchedulePaidMap, getArrearsTotal, getDaysInArrears, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
+import { getNairobiDay, getScheduleRemaining, isScheduleInArrears, isSchedulePaid } from '../../core/loanScheduleMetrics.js';
+import { normalizeLoanSchedules } from '../../core/loanInstallments.js';
+import { createLoanArrearsCalculator } from '../../core/loanArrears.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { getLatestSavingsDate, getMemberActivityStatus } from '../../core/memberActivity.js';
 import {
@@ -20,7 +25,7 @@ import {
   getRepaymentContractAmount
 } from '../../core/repaymentAllocation.js';
 import { canUseOfficerFilter, createOfficerScope, getGroupOfficerId, getMemberOfficerId, getOfficerScopeCacheKey, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
-import { createLoanPortfolioCalculator, isCollectibleLoanRecord, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
+import { createLoanPortfolioCalculator, isDisbursedLoanRecord } from '../../core/loanPortfolio.js';
 import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
 import { buildDebtManagementRows, getDebtReportDate, summarizeDebtManagement } from '../../core/debtManagement.js';
 
@@ -29,6 +34,8 @@ export const renderReportsDashboard = async () => {
   let members = [], groups = [], loans = [], expenses = [], schedules = [], savings = [], repayments = [], settlements = [];
   let lifecycleGroups = [], lifecycleMembers = [];
   let sourceMembers = [], sourceGroups = [], sourceLoans = [], sourceSchedules = [], sourceSavings = [], sourceRepayments = [], sourceSettlements = [];
+  const savingsReportState = { ready: false, error: null, settlementsReady: false };
+  const loanReportState = { ready: false, error: null };
   let sourceLifecycleGroups = [], sourceLifecycleMembers = [];
   let officerFilter = 'all';
   let repaymentsLoaded = false;
@@ -45,7 +52,7 @@ export const renderReportsDashboard = async () => {
   const orgName = orgSettings.org_name || 'Inlet Capital';
   const orgLogo = orgSettings.org_logo || '';
   const configuredPenaltyAmount = Number(orgSettings.penalty_amount);
-  const automaticPenaltyAmount = orgSettings.penalty_amount === null
+  let automaticPenaltyAmount = orgSettings.penalty_amount === null
     || orgSettings.penalty_amount === undefined
     || orgSettings.penalty_amount === ''
     || !Number.isFinite(configuredPenaltyAmount)
@@ -283,7 +290,7 @@ export const renderReportsDashboard = async () => {
               <tr>
                 <th>Group Name / ID</th>
                 <th>Phone</th>
-                <th>A.Savings <span title="Accumulated Savings — total deposits by all group members" style="cursor:help; opacity:0.6;">ⓘ</span></th>
+                <th>A.Savings <span title="Deposits minus withdrawals for current members and the group account; transaction dates apply" style="cursor:help; opacity:0.6;">ⓘ</span></th>
                 <th>OL Balance</th>
                 <th style="color: var(--success);">Active 🟢</th>
                 <th style="color: var(--danger);">Inactive 🔴</th>
@@ -710,57 +717,6 @@ export const renderReportsDashboard = async () => {
   const getLoanGroupId = (loan) => getRelationId(loan?.group) || loan?.expand?.group?.id || '';
   const getRepaymentLoanId = (repayment) => getRelationId(repayment?.loan) || repayment?.expand?.loan?.id || '';
   const getScheduleLoanId = (schedule) => getRelationId(schedule?.loan) || schedule?.expand?.loan?.id || '';
-  const getScheduleTimestamp = (schedule) => {
-    const date = new Date(schedule?.updated || schedule?.created || 0);
-    return Number.isNaN(date.getTime()) ? 0 : date.getTime();
-  };
-  const normalizeLoanSchedules = (items = []) => {
-    const byLoanInstallment = new Map();
-    const passthrough = [];
-
-    items.forEach(schedule => {
-      const loanId = getScheduleLoanId(schedule);
-      const installmentNo = Number(schedule?.installment_no);
-      if (!loanId || !Number.isFinite(installmentNo)) {
-        passthrough.push(schedule);
-        return;
-      }
-
-      const key = `${loanId}:${installmentNo}`;
-      const existing = byLoanInstallment.get(key);
-      if (!existing) {
-        byLoanInstallment.set(key, schedule);
-        return;
-      }
-
-      const newer = getScheduleTimestamp(schedule) >= getScheduleTimestamp(existing) ? schedule : existing;
-      const older = newer === schedule ? existing : schedule;
-      const amount = Math.max(Number(existing.amount) || 0, Number(schedule.amount) || 0);
-      const paid = Math.max(Number(existing.paid) || 0, Number(schedule.paid) || 0);
-
-      byLoanInstallment.set(key, {
-        ...older,
-        ...newer,
-        amount,
-        paid: Math.min(amount, paid),
-        status: amount > 0 && paid >= amount ? 'paid' : (paid > 0 ? 'partial' : (newer.status || older.status || 'pending'))
-      });
-    });
-
-    return [...byLoanInstallment.values(), ...passthrough].sort((a, b) => {
-      const loanDiff = getScheduleLoanId(a).localeCompare(getScheduleLoanId(b));
-      if (loanDiff !== 0) return loanDiff;
-      const installmentDiff = (Number(a.installment_no) || 0) - (Number(b.installment_no) || 0);
-      if (installmentDiff !== 0) return installmentDiff;
-      return new Date(a.due_date || 0) - new Date(b.due_date || 0);
-    });
-  };
-  const isActiveSavingsTransaction = (saving) => !saving?.is_reversed;
-  const getSavingsTransactionDate = (saving) => saving?.date || saving?.created;
-  const getSavingsSignedAmount = (saving) => {
-    const amount = Number(saving?.amount) || 0;
-    return saving?.type === 'withdrawal' ? -amount : amount;
-  };
   const getLoanPrincipalAmount = (loan) => {
     const approved = Number(loan?.approved_amount) || 0;
     if (approved > 0) return approved;
@@ -790,29 +746,47 @@ export const renderReportsDashboard = async () => {
   let portfolioRepaymentsRef = null;
   let portfolioSettlementsRef = null;
   let portfolioSchedulesRef = null;
+  let portfolioDateRef = null, portfolioPenaltyRef = null;
   const getPortfolioCalculator = () => {
-    if (!portfolioCalculatorCache || portfolioRepaymentsRef !== repayments || portfolioSettlementsRef !== settlements || portfolioSchedulesRef !== schedules) {
+    if (!portfolioCalculatorCache || portfolioRepaymentsRef !== repayments || portfolioSettlementsRef !== settlements || portfolioSchedulesRef !== schedules || portfolioDateRef !== dateRange.to || portfolioPenaltyRef !== automaticPenaltyAmount) {
       portfolioRepaymentsRef = repayments;
       portfolioSettlementsRef = settlements;
       portfolioSchedulesRef = schedules;
+      portfolioDateRef = dateRange.to;
+      portfolioPenaltyRef = automaticPenaltyAmount;
       portfolioCalculatorCache = createLoanPortfolioCalculator({
         repayments,
         settlements,
         schedules,
-        penaltyAmount: automaticPenaltyAmount
+        penaltyAmount: automaticPenaltyAmount,
+        referenceDate: getPortfolioCutoff(dateRange.to),
+        asOf: dateRange.to ? getPortfolioCutoff(dateRange.to) : undefined,
+        loans: sourceLoans,
+        useRecordedSchedulePaid: false
       });
     }
     return portfolioCalculatorCache;
   };
   const getLoanOutstandingBalanceWithFines = (loan) => getPortfolioCalculator().getOutstanding(loan);
+  let arrearsCalculatorCache = null, arrearsPortfolioRef = null;
+  const getArrearsCalculator = () => {
+    const portfolioCalculator = getPortfolioCalculator();
+    if (!arrearsCalculatorCache || arrearsPortfolioRef !== portfolioCalculator) {
+      arrearsPortfolioRef = portfolioCalculator;
+      arrearsCalculatorCache = createLoanArrearsCalculator({ loans: sourceLoans, schedules, repayments, settlements,
+        referenceDate: getPortfolioCutoff(dateRange.to), portfolioCalculator });
+    }
+    return arrearsCalculatorCache;
+  };
+  const getOlbDateLabel = () => `Portfolio OLB as at ${formatPortfolioDate(dateRange.to || new Date())}`;
   const toValidDate = (value) => {
     if (!value) return null;
-    const date = new Date(value);
+    const date = new Date(getFinancialTimestamp(value));
     return Number.isNaN(date.getTime()) ? null : date;
   };
   const getDateRangeBounds = () => {
-    const fromDate = dateRange.from ? new Date(`${dateRange.from}T00:00:00`) : null;
-    const toDate = dateRange.to ? new Date(`${dateRange.to}T23:59:59.999`) : null;
+    const fromDate = dateRange.from ? new Date(getPortfolioCutoff(dateRange.from).getTime() - 86399999) : null;
+    const toDate = dateRange.to ? getPortfolioCutoff(dateRange.to) : null;
     return { fromDate, toDate };
   };
   const isWithinDateRange = (value) => {
@@ -972,7 +946,42 @@ export const renderReportsDashboard = async () => {
 
   setReportLoadingRows();
 
+  const requireSavingsReportData = (tab) => {
+    const section = container.querySelector(`#${tab}-tab`);
+    let notice = section.querySelector('[data-savings-status]');
+    if (!notice) {
+      notice = document.createElement('p');
+      notice.dataset.savingsStatus = '';
+      notice.className = 'text-muted';
+      notice.setAttribute('role', 'status');
+      section.prepend(notice);
+    }
+    const needsSettlements = tab === 'cashflow' || tab === 'withdrawals';
+    const ready = savingsReportState.ready && !savingsReportState.error && (!needsSettlements || savingsReportState.settlementsReady);
+    Array.from(section.children).forEach(child => { child.hidden = child.matches('[data-loan-status]') ? true : child === notice ? ready : !ready; });
+    notice.textContent = savingsReportState.error
+      ? `Savings report unavailable: ${savingsReportState.error.message}`
+      : (needsSettlements && savingsReportState.ready && !savingsReportState.settlementsReady
+        ? 'Savings cash classification unavailable. Balance-off records could not be loaded.'
+        : 'Loading savings records...');
+    return ready;
+  };
+
+  const requireLoanReportData = (tab, calculationError = null) => {
+    const section = container.querySelector(`#${tab}-tab`);
+    if (!section) return false;
+    let notice = section.querySelector('[data-loan-status]');
+    if (!notice) { notice = document.createElement('p'); notice.dataset.loanStatus = ''; notice.className = 'text-muted'; notice.setAttribute('role', 'status'); section.prepend(notice); }
+    const ready = loanReportState.ready && !loanReportState.error && !calculationError;
+    Array.from(section.children).forEach(child => { child.hidden = child.matches('[data-savings-status]') ? true : child === notice ? ready : !ready; });
+    const error = calculationError || loanReportState.error;
+    notice.textContent = error ? `Reports unavailable: ${error.message}` : 'Loading financial records...';
+    return ready;
+  };
+
   const updateIndividuals = () => {
+    if (!requireLoanReportData('individuals')) return;
+    if (!requireSavingsReportData('individuals')) return;
     const filtered = members.filter(m => {
       if (activeFilters.individuals === 'all') return true;
       const isGroupMember = Boolean(getRelationId(m.group) || m.expand?.group?.id);
@@ -981,7 +990,7 @@ export const renderReportsDashboard = async () => {
       return true;
     });
     const individualRows = filtered.map(m => {
-      const allMemberLoans = loans.filter(l => getLoanMemberId(l) === m.id && isLoanPortfolioRecord(l));
+      const allMemberLoans = loans.filter(l => getLoanMemberId(l) === m.id && (isLoanPortfolioRecord(l) || getLoanOutstandingBalanceWithFines(l) > 0));
       const runningLoans = allMemberLoans.filter(l => getLoanOutstandingBalanceWithFines(l) > 0);
       const completedLoans = allMemberLoans.filter(l => getLoanOutstandingBalanceWithFines(l) <= 0 || ['completed', 'closed'].includes(l.status));
       const mLoans = runningLoans.length > 0 ? runningLoans : completedLoans;
@@ -992,14 +1001,12 @@ export const renderReportsDashboard = async () => {
       const olBalance = mLoans.reduce((sum, l) => sum + getLoanOutstandingBalanceWithFines(l), 0);
       const percentRepaid = totalLiability > 0 ? (principalPaid / totalLiability) * 100 : (mLoans.length > 0 ? 100 : 0);
       const percentRepaidLabel = formatPercent(percentRepaid);
-      const overdueSchedules = schedules.filter(s => collectibleLoans.some(ml => ml.id === getScheduleLoanId(s)) && isScheduleInArrears(s));
-      const onTrack = overdueSchedules.length === 0;
-      const totalArrears = getArrearsTotal(overdueSchedules);
+      const arrears = getArrearsCalculator().summarize(collectibleLoans);
+      const onTrack = arrears.loanCount === 0;
+      const totalArrears = arrears.total;
       const allMemberSavings = savings.filter(s => getSavingMemberId(s) === m.id && isActiveSavingsTransaction(s));
-      const mSavings = allMemberSavings.filter(s => isWithinDateRange(getSavingsTransactionDate(s)));
-      const deposits = mSavings.filter(s => s.type === 'deposit').reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
-      const withdrawals = mSavings.filter(s => s.type === 'withdrawal').reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
-      const totalSav = mSavings.reduce((sum, s) => sum + getSavingsSignedAmount(s), 0);
+      const mSavings = allMemberSavings.filter(s => isSavingsInDateRange(s, dateRange));
+      const { deposits, withdrawals, net: totalSav } = calculateSavingsSummary(mSavings);
       const lastSavingsDate = getLatestSavingsDate(allMemberSavings);
       const activityStatus = getMemberActivityStatus(m, lastSavingsDate);
       const groupName = m.expand?.group?.name || 'Individual';
@@ -1020,29 +1027,21 @@ export const renderReportsDashboard = async () => {
         activityStatus
       };
     });
-    const totalIndividualSavings = individualRows.reduce((sum, row) => sum + (Number(row.totalSav) || 0), 0);
-    const totalIndividualDeposits = individualRows.reduce((sum, row) => sum + (Number(row.deposits) || 0), 0);
-    const totalIndividualWithdrawals = individualRows.reduce((sum, row) => sum + (Number(row.withdrawals) || 0), 0);
+    const selectedMemberIds = new Set(filtered.map(member => member.id));
+    const memberSavings = savings.filter(s => selectedMemberIds.has(getSavingMemberId(s)) && isSavingsInDateRange(s, dateRange));
+    const { net: totalIndividualSavings } = calculateSavingsSummary(memberSavings);
     const groupAccountSavings = savings.filter(s => {
       if (!isActiveSavingsTransaction(s)) return false;
-      if (!isWithinDateRange(getSavingsTransactionDate(s))) return false;
+      if (!isSavingsInDateRange(s, dateRange)) return false;
       const hasGroup = Boolean(getSavingGroupId(s));
       const hasMember = Boolean(getSavingMemberId(s));
       if (!hasGroup || hasMember) return false;
       return activeFilters.individuals === 'all' || activeFilters.individuals === 'group';
     });
-    const groupAccountDeposits = groupAccountSavings
-      .filter(s => s.type === 'deposit')
-      .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
-    const groupAccountWithdrawals = groupAccountSavings
-      .filter(s => s.type === 'withdrawal')
-      .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
-    const groupAccountNet = groupAccountSavings.reduce((sum, s) => sum + getSavingsSignedAmount(s), 0);
-    const savingsAnalysisTotal = totalIndividualSavings + groupAccountNet;
-    const savingsAnalysisDeposits = totalIndividualDeposits + groupAccountDeposits;
-    const savingsAnalysisWithdrawals = totalIndividualWithdrawals + groupAccountWithdrawals;
+    const { net: groupAccountNet } = calculateSavingsSummary(groupAccountSavings);
+    const { net: savingsAnalysisTotal, deposits: savingsAnalysisDeposits, withdrawals: savingsAnalysisWithdrawals } = calculateSavingsSummary([...memberSavings, ...groupAccountSavings]);
     const memberLoanOlb = loans
-      .filter(loan => isLoanPortfolioRecord(loan) && getLoanMemberId(loan))
+      .filter(loan => (isLoanPortfolioRecord(loan) || getLoanOutstandingBalanceWithFines(loan) > 0) && getLoanMemberId(loan))
       .filter(loan => {
         if (activeFilters.individuals === 'all') return true;
         const member = loan.expand?.member || members.find(item => item.id === getLoanMemberId(loan));
@@ -1051,15 +1050,22 @@ export const renderReportsDashboard = async () => {
       })
       .reduce((sum, loan) => sum + getLoanOutstandingBalanceWithFines(loan), 0);
     const groupAccountOlb = loans
-      .filter(loan => isLoanPortfolioRecord(loan) && !getLoanMemberId(loan) && getLoanGroupId(loan))
+      .filter(loan => (isLoanPortfolioRecord(loan) || getLoanOutstandingBalanceWithFines(loan) > 0) && !getLoanMemberId(loan) && getLoanGroupId(loan))
       .filter(() => activeFilters.individuals === 'all' || activeFilters.individuals === 'group')
       .reduce((sum, loan) => sum + getLoanOutstandingBalanceWithFines(loan), 0);
     const olbAnalysisTotal = memberLoanOlb + groupAccountOlb;
-    const totalIndividualArrears = individualRows.reduce((sum, row) => sum + (Number(row.totalArrears) || 0), 0);
+    const memberArrearsLoans = loans.filter(loan => selectedMemberIds.has(getLoanMemberId(loan)));
+    const groupArrearsLoans = loans.filter(loan => !getLoanMemberId(loan) && getLoanGroupId(loan)
+      && ['all', 'group'].includes(activeFilters.individuals));
+    const arrearsCalculator = getArrearsCalculator();
+    const memberArrears = arrearsCalculator.summarize(memberArrearsLoans).total;
+    const groupAccountArrears = arrearsCalculator.summarize(groupArrearsLoans).total;
+    const arrearsAnalysisTotal = arrearsCalculator.summarize([...memberArrearsLoans, ...groupArrearsLoans]).total;
     const savingsKpiEl = container.querySelector('#individuals-total-savings');
     const olbKpiEl = container.querySelector('#individuals-total-olb');
     const arrearsKpiEl = container.querySelector('#individuals-total-arrears');
     if (savingsKpiEl) {
+      savingsKpiEl.previousElementSibling.textContent = dateRange.from || dateRange.to ? 'Net Savings Movement' : 'Total Savings Balance';
       savingsKpiEl.innerHTML = `
         <div>KES ${formatMoney(savingsAnalysisTotal)}</div>
         <div class="text-xs" style="margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap;">
@@ -1071,6 +1077,7 @@ export const renderReportsDashboard = async () => {
       `;
     }
     if (olbKpiEl) {
+      olbKpiEl.previousElementSibling.textContent = getOlbDateLabel();
       olbKpiEl.innerHTML = `
         <div>KES ${formatMoney(olbAnalysisTotal)}</div>
         <div class="text-xs" style="margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap;">
@@ -1079,7 +1086,16 @@ export const renderReportsDashboard = async () => {
         </div>
       `;
     }
-    if (arrearsKpiEl) arrearsKpiEl.textContent = `KES ${formatMoney(totalIndividualArrears)}`;
+    if (arrearsKpiEl) {
+      arrearsKpiEl.previousElementSibling.textContent = `Arrears as at ${formatPortfolioDate(dateRange.to || new Date())}`;
+      arrearsKpiEl.innerHTML = `
+        <div>KES ${formatMoney(arrearsAnalysisTotal)}</div>
+        <div class="text-xs" style="margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap;">
+          <span style="color: var(--text-muted); font-weight: 700;">Members ${formatMoney(memberArrears)}</span>
+          ${groupAccountArrears !== 0 ? `<span style="color: var(--danger); font-weight: 700;">Group Acc ${formatMoney(groupAccountArrears)}</span>` : ''}
+        </div>
+      `;
+    }
     const entriesCountEl = container.querySelector('#individuals-entry-count');
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
 
@@ -1135,9 +1151,9 @@ export const renderReportsDashboard = async () => {
   };
 
   const updateGroups = () => {
-    const isOutstandingLoan = (loan) => Boolean(loan.disbursement_date)
-      && ['disbursed', 'approved', 'partial_approved', 'completed', 'closed'].includes(loan.status);
-    const isCollectibleLoan = (loan) => loan.status === 'disbursed' || (['approved', 'partial_approved'].includes(loan.status) && loan.disbursement_date);
+    if (!requireLoanReportData('groups')) return;
+    if (!requireSavingsReportData('groups')) return;
+    const isCollectibleLoan = loan => getLoanOutstandingBalanceWithFines(loan) > 0;
     const dormantCutoff = new Date();
     dormantCutoff.setMonth(dormantCutoff.getMonth() - 6);
     const toValidDate = (value) => {
@@ -1149,16 +1165,7 @@ export const renderReportsDashboard = async () => {
       .map(toValidDate)
       .filter(Boolean)
       .sort((a, b) => b - a)[0] || null;
-    const calculateOutstandingLoanBalance = (groupLoans) => groupLoans
-      .filter(loan => isOutstandingLoan(loan) && !(loan?.renewed_to?.id || loan?.renewed_to))
-      .reduce((sum, loan) => {
-        const principal = Number(loan.approved_amount || loan.amount_applied) || 0;
-        const liability = Number(loan.total_liability) || (principal + (Number(loan.interest_amount) || 0));
-        const paid = repayments
-          .filter(r => r.loan === loan.id)
-          .reduce((repaymentSum, r) => repaymentSum + getRepaymentContractAmount(r), 0);
-        return sum + Math.max(0, liability - paid);
-      }, 0);
+    const calculateOutstandingLoanBalance = groupLoans => getPortfolioCalculator().sumOutstanding(groupLoans);
 
     const groupData = groups.map(g => {
       const gMembers = members.filter(m => m.group === g.id);
@@ -1169,14 +1176,15 @@ export const renderReportsDashboard = async () => {
       let arrearsCount = 0;
       let arrearsAmount = 0;
       const groupAccountSavings = savings.filter(s => getSavingGroupId(s) === g.id && !getSavingMemberId(s) && isActiveSavingsTransaction(s));
-      let gTotalSavings = groupAccountSavings.reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
+      const gTotalSavings = calculateSavingsSummary(selectSavingsRecords(savings, {
+        members, group: g.id, ...dateRange
+      })).net;
       const groupActivityDates = [
         ...groupAccountSavings.map(s => s.date || s.created)
       ];
 
       gMembers.forEach(m => {
         const mSavings = savings.filter(s => getSavingMemberId(s) === m.id && isActiveSavingsTransaction(s));
-        gTotalSavings += mSavings.reduce((sum, s) => s.type === 'deposit' ? sum + s.amount : sum - s.amount, 0);
         groupActivityDates.push(...mSavings.map(s => s.date || s.created));
         const activityStatus = getMemberActivityStatus(m, getLatestSavingsDate(mSavings));
         const isInactive = !activityStatus.isActive;
@@ -1184,19 +1192,17 @@ export const renderReportsDashboard = async () => {
         if (isInactive) inactiveCount++; else activeCount++;
 
         const mLoans = loans.filter(l => l.member === m.id && isCollectibleLoan(l));
-        const overdueSchedules = schedules.filter(s => mLoans.some(ml => ml.id === s.loan) && isScheduleInArrears(s));
-        const hasArrears = overdueSchedules.length > 0;
+        const memberArrears = getArrearsCalculator().summarize(mLoans);
+        const hasArrears = memberArrears.loanCount > 0;
         if (hasArrears) arrearsCount++;
-        arrearsAmount += getArrearsTotal(overdueSchedules);
+        arrearsAmount += memberArrears.total;
       });
       
       const gl = loans.filter(l => l.group === g.id && !l.member && isCollectibleLoan(l));
       const allGroupRelatedLoans = loans.filter(l => (l.group === g.id && !l.member) || groupMemberIds.has(l.member));
       groupActivityDates.push(...allGroupRelatedLoans.flatMap(l => [l.application_date, l.disbursement_date, l.created]));
       const gOutstanding = calculateOutstandingLoanBalance(allGroupRelatedLoans);
-      arrearsAmount += schedules
-        .filter(s => gl.some(loan => loan.id === s.loan) && isScheduleInArrears(s))
-        .reduce((sum, s) => sum + getArrearsTotal([s]), 0);
+      arrearsAmount += getArrearsCalculator().summarize(gl).total;
       const lastActivityDate = getMostRecentDate(groupActivityDates);
       const isDormant = !lastActivityDate || lastActivityDate < dormantCutoff;
 
@@ -1204,7 +1210,6 @@ export const renderReportsDashboard = async () => {
     });
 
     const filtered = groupData.filter(g => {
-      if (!isWithinDateRange(g.lastActivityDate || g.registration_date || g.created)) return false;
       if (activeFilters.groups === 'all') return true;
       if (activeFilters.groups === 'active') return !g.isDormant;
       if (activeFilters.groups === 'inactive' || activeFilters.groups === 'dormant') return g.isDormant;
@@ -1214,7 +1219,14 @@ export const renderReportsDashboard = async () => {
     if (entriesCountEl) entriesCountEl.textContent = filtered.length.toLocaleString();
     const totalSavingsEl = container.querySelector('#groups-total-savings');
     if (totalSavingsEl) {
-      const filteredTotalSavings = filtered.reduce((sum, group) => sum + (Number(group.totalSavings) || 0), 0);
+      totalSavingsEl.previousElementSibling.textContent = dateRange.from || dateRange.to ? 'Net Savings Movement' : 'Total Savings Balance';
+      const selectedGroupIds = new Set(filtered.map(group => group.id));
+      const membersById = new Map(members.map(member => [member.id, member]));
+      const filteredTotalSavings = calculateSavingsSummary(savings.filter(s => {
+        const memberId = getSavingMemberId(s);
+        const currentGroupId = memberId ? getRelationId(membersById.get(memberId)?.group) : getSavingGroupId(s);
+        return selectedGroupIds.has(currentGroupId) && isSavingsInDateRange(s, dateRange);
+      })).net;
       totalSavingsEl.textContent = `KES ${formatMoney(filteredTotalSavings)}`;
     }
 
@@ -1382,6 +1394,7 @@ export const renderReportsDashboard = async () => {
   };
 
   const updateCashFlow = () => {
+    if (!requireSavingsReportData('cashflow')) return;
     const membersById = new Map(members.map(member => [member.id, member]));
     const groupsById = new Map(groups.map(group => [group.id, group]));
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
@@ -1419,20 +1432,23 @@ export const renderReportsDashboard = async () => {
       return { client: saving.reference || '-', clientName: 'Unknown', groupName: 'Unassigned' };
     };
 
-    // Aggregate all money-in
+    const internalSavingsIds = getInternalSavingsTransactionIds(settlements);
+    // Internal savings settlements affect balances, not cash received or paid out.
     let entries = [
-      ...savings.filter(isActiveSavingsTransaction).map(s => {
+      ...getSavingsRecords(savings).filter(s => isSavingsInDateRange(s, dateRange)).map(s => {
         const owner = resolveSavingsOwner(s);
-        const isWithdrawal = s.type === 'withdrawal';
+        const isWithdrawal = getSavingsTransactionType(s) === 'withdrawal';
+        const isInternal = isWithdrawal && internalSavingsIds.has(s.id);
         return {
           date: getSavingsTransactionDate(s),
-          type: isWithdrawal ? 'Savings Withdrawal' : 'Savings Deposit',
+          type: isInternal ? 'Savings Balance-Off' : (isWithdrawal ? 'Savings Withdrawal' : 'Savings Deposit'),
           ...owner,
           ref: s.reference || (isWithdrawal ? 'SAVE-W' : 'SAVE-D'),
           amount: Number(s.amount) || 0,
-          direction: isWithdrawal ? 'out' : 'in',
+          direction: isInternal ? 'internal' : (isWithdrawal ? 'out' : 'in'),
           savingsType: isWithdrawal ? 'withdrawal' : 'deposit',
-          method: s.payment_method || 'Cash/Transfer'
+          saving: s,
+          method: isInternal ? 'Internal transfer' : (s.payment_method || 'Cash/Transfer')
         };
       }),
       ...repayments.map(r => {
@@ -1481,37 +1497,37 @@ export const renderReportsDashboard = async () => {
         direction: 'in',
         method: l.processing_fee_details?.method || 'Cash'
       }))
-    ].filter(e => isWithinDateRange(e.date)).sort((a, b) => new Date(b.date) - new Date(a.date));
+    ].filter(e => e.saving || isWithinDateRange(e.date)).sort((a, b) => new Date(b.date) - new Date(a.date));
 
     const filtered = entries.filter(e => {
       if (activeFilters.cashflow === 'all') return true;
-      if (activeFilters.cashflow === 'savings') return e.type === 'Savings Deposit' || e.type === 'Savings Withdrawal';
+      if (activeFilters.cashflow === 'savings') return Boolean(e.saving);
       if (activeFilters.cashflow === 'repayments') return e.type === 'Loan Repayment';
       if (activeFilters.cashflow === 'fees') return e.type.includes('Fee') || e.type.includes('Fine');
       return true;
     });
 
     // Summary Cards
-    const total = filtered.reduce((sum, e) => sum + (e.direction === 'out' ? -(e.amount || 0) : (e.amount || 0)), 0);
-    const savingsRows = filtered.filter(e => e.type === 'Savings Deposit' || e.type === 'Savings Withdrawal');
-    const savingsDeposits = savingsRows.filter(e => e.savingsType === 'deposit').reduce((sum, e) => sum + (e.amount || 0), 0);
-    const savingsWithdrawals = savingsRows.filter(e => e.savingsType === 'withdrawal').reduce((sum, e) => sum + (e.amount || 0), 0);
-    const sTotal = savingsDeposits - savingsWithdrawals;
+    const total = filtered.filter(e => e.direction !== 'internal').reduce((sum, e) => sum + (e.direction === 'out' ? -(e.amount || 0) : (e.amount || 0)), 0);
+    const savingsRows = filtered.filter(e => e.saving);
+    const { deposits: savingsDeposits, withdrawals: savingsWithdrawals, net: sTotal } = calculateSavingsSummary(savingsRows.map(e => e.saving));
+    const internalTotal = calculateSavingsSummary(savingsRows.filter(e => e.direction === 'internal').map(e => e.saving)).withdrawals;
     const rTotal = filtered.filter(e => e.type === 'Loan Repayment').reduce((sum, e) => sum + (e.amount || 0), 0);
     const fTotal = filtered.filter(e => e.type.includes('Fee') || e.type.includes('Fine')).reduce((sum, e) => sum + (e.amount || 0), 0);
 
     container.querySelector('#cashflow-summary').innerHTML = `
       <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--primary);">
-        <div class="text-xs text-muted">Total Cash-In</div>
+        <div class="text-xs text-muted">Net Cash Movement</div>
         <div class="text-lg font-bold">KES ${formatMoney(total)}</div>
       </div>
       <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--success);">
-        <div class="text-xs text-muted">Savings Net</div>
+        <div class="text-xs text-muted">${dateRange.from || dateRange.to ? 'Net Savings Movement' : 'Total Savings Balance'}</div>
         <div class="text-lg font-bold">KES ${formatMoney(sTotal)}</div>
         <div class="text-xs" style="margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap;">
           <span style="color: var(--success); font-weight: 700;">DEP ${formatMoney(savingsDeposits)}</span>
           <span style="color: var(--danger); font-weight: 700;">WIT ${formatMoney(savingsWithdrawals)}</span>
         </div>
+        ${internalTotal > 0 ? `<div class="text-xs text-muted" style="margin-top: 6px;">Includes ${formatMoney(internalTotal)} internal balance-offs; cash movement ${formatMoney((Math.round(sTotal * 100) + Math.round(internalTotal * 100)) / 100)}.</div>` : ''}
       </div>
       <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--secondary);">
         <div class="text-xs text-muted">Repayments</div>
@@ -1540,7 +1556,7 @@ export const renderReportsDashboard = async () => {
           </td>
           <td><span class="badge badge-outline" style="font-size: 0.65rem;">${e.groupName}</span></td>
           <td>${e.ref || '-'}</td>
-          <td class="font-bold ${e.direction === 'out' ? 'text-danger' : 'text-success'}">${e.direction === 'out' ? '-' : ''}${formatMoney(e.amount)}</td>
+          <td class="font-bold ${e.direction === 'internal' ? 'text-muted' : (e.direction === 'out' ? 'text-danger' : 'text-success')}">${e.direction === 'out' || e.direction === 'internal' ? '-' : ''}${formatMoney(e.amount)}</td>
           <td><span class="text-xs">${e.method}</span></td>
         </tr>`;
     }).join('');
@@ -1550,32 +1566,36 @@ export const renderReportsDashboard = async () => {
   };
 
   const updateWithdrawals = () => {
-    const withdrawalRows = savings
-      .filter(s => s.type === 'withdrawal' && isActiveSavingsTransaction(s))
+    if (!requireSavingsReportData('withdrawals')) return;
+    const internalSavingsIds = getInternalSavingsTransactionIds(settlements);
+    const withdrawalRows = getSavingsRecords(savings)
+      .filter(s => getSavingsTransactionType(s) === 'withdrawal' && isSavingsInDateRange(s, dateRange))
       .map(s => {
         const member = s.expand?.member || members.find(m => m.id === getSavingMemberId(s));
-        const group = s.expand?.group || member?.expand?.group || groups.find(g => g.id === getSavingGroupId(s));
+        const group = member
+          ? (groups.find(g => g.id === getRelationId(member.group)) || member.expand?.group)
+          : (groups.find(g => g.id === getSavingGroupId(s)) || s.expand?.group);
         const isGroupAccount = Boolean(getSavingGroupId(s) && !getSavingMemberId(s));
         const isGroupMember = Boolean(member && group);
         return {
           name: member?.full_name || group?.name || 'Unknown',
           groupName: group?.name || (member ? 'Individual' : '-'),
           accountScope: isGroupAccount ? 'group_account' : (isGroupMember ? 'group_member' : 'independent'),
-          remarks: s.remarks || '-',
+          remarks: `${internalSavingsIds.has(s.id) ? 'Internal balance-off. ' : ''}${s.remarks || '-'}`,
           amount: Number(s.amount) || 0,
+          saving: s,
           date: s.date || s.created
         };
       })
       .sort((a, b) => new Date(b.date) - new Date(a.date));
 
     const filtered = withdrawalRows.filter(row => {
-      if (!isWithinDateRange(row.date)) return false;
       if (activeFilters.withdrawals === 'individual') return row.accountScope === 'independent';
       if (activeFilters.withdrawals === 'group_members') return row.accountScope === 'group_member';
       if (activeFilters.withdrawals === 'group') return row.accountScope === 'group_account';
       return true;
     });
-    const totalWithdrawalsAmount = filtered.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+    const totalWithdrawalsAmount = calculateSavingsSummary(filtered.map(row => row.saving)).withdrawals;
     const totalEl = container.querySelector('#withdrawals-total-amount');
     if (totalEl) totalEl.textContent = `KES ${formatMoney(totalWithdrawalsAmount)}`;
     const entriesCountEl = container.querySelector('#withdrawals-entry-count');
@@ -1600,10 +1620,11 @@ export const renderReportsDashboard = async () => {
   };
 
   const updateRepayments = () => {
+    if (!requireLoanReportData('repayments')) return;
     const membersById = new Map(members.map(member => [member.id, member]));
     const groupsById = new Map(groups.map(group => [group.id, group]));
     const loansById = new Map(loans.map(loan => [loan.id, loan]));
-    const isCollectibleLoan = (loan) => isLoanPortfolioRecord(loan) && getLoanOutstandingBalanceWithFines(loan) > 0;
+    const isCollectibleLoan = (loan) => getLoanOutstandingBalanceWithFines(loan) > 0;
     const getLoanOwner = (loan) => {
       const member = loan?.expand?.member || membersById.get(getLoanMemberId(loan));
       const group = loan?.expand?.group || groupsById.get(getLoanGroupId(loan)) || member?.expand?.group || groupsById.get(member?.group);
@@ -1613,13 +1634,13 @@ export const renderReportsDashboard = async () => {
       };
     };
 
-    const repaymentRows = schedules
+    const repaymentRows = getArrearsCalculator().effectiveSchedules
       .map(schedule => {
         const loan = loansById.get(getScheduleLoanId(schedule));
         if (!loan || !isCollectibleLoan(loan)) return null;
         const paid = Number(schedule.paid) || 0;
         const olb = getLoanOutstandingBalanceWithFines(loan);
-        const isArrears = isScheduleInArrears(schedule);
+        const isArrears = isScheduleInArrears(schedule, getPortfolioCutoff(dateRange.to));
         const isPaid = isSchedulePaid(schedule);
         const owner = getLoanOwner(loan);
         return {
@@ -1646,15 +1667,14 @@ export const renderReportsDashboard = async () => {
       .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
 
     const totalPaid = repaymentRows.reduce((sum, row) => sum + row.paid, 0);
-    const totalOlb = loans
-      .filter(isLoanPortfolioRecord)
-      .reduce((sum, loan) => sum + getLoanOutstandingBalanceWithFines(loan), 0);
+    const totalOlb = getPortfolioCalculator().sumOutstanding(loans);
 
     const totalPaidEl = container.querySelector('#repayments-total-paid');
     const totalOlbEl = container.querySelector('#repayments-total-olb');
     const entriesCountEl = container.querySelector('#repayments-entry-count');
     if (totalPaidEl) totalPaidEl.textContent = `KES ${formatMoney(totalPaid)}`;
     if (totalOlbEl) totalOlbEl.textContent = `KES ${formatMoney(totalOlb)}`;
+    if (totalOlbEl) totalOlbEl.previousElementSibling.textContent = getOlbDateLabel();
     if (entriesCountEl) entriesCountEl.textContent = repaymentRows.length.toLocaleString();
 
     const sortedRows = sortReportRows('repayments', repaymentRows);
@@ -1685,15 +1705,7 @@ export const renderReportsDashboard = async () => {
   const updateArrears = () => {
     const membersById = new Map(members.map(member => [member.id, member]));
     const groupsById = new Map(groups.map(group => [group.id, group]));
-    const loansById = new Map(loans.map(loan => [loan.id, loan]));
-    const isCollectibleLoan = isCollectibleLoanRecord;
-    const effectiveSchedulePaidMap = buildEffectiveSchedulePaidMap({
-      schedules,
-      repayments,
-      settlements,
-      useRecordedPaid: false
-    });
-    const effectiveSchedules = applyEffectiveSchedulePayments(schedules, effectiveSchedulePaidMap);
+    const summary = getArrearsCalculator().summarize(loans);
     const getLoanOwner = (loan) => {
       const member = loan?.expand?.member || membersById.get(loan?.member);
       const group = loan?.expand?.group || groupsById.get(loan?.group) || member?.expand?.group || groupsById.get(member?.group);
@@ -1713,49 +1725,11 @@ export const renderReportsDashboard = async () => {
       return { id: '1_30', label: '1-30 days', color: '#10b981', badgeClass: 'badge-success' };
     };
 
-    const allArrearsRows = effectiveSchedules
-      .map(schedule => {
-        const loan = loansById.get(schedule.loan);
-        if (!loan || !isCollectibleLoan(loan) || !isScheduleInArrears(schedule)) return null;
-        const daysLate = getDaysInArrears(schedule);
-        const ageBand = getAgeBand(daysLate);
-        const arrearsAmount = getScheduleRemaining(schedule);
-        if (arrearsAmount <= 0) return null;
-        const owner = getLoanOwner(loan);
-        const olb = getLoanOutstandingBalanceWithFines(loan);
-        return {
-          schedule,
-          loan,
-          ...owner,
-          dueDate: schedule.due_date,
-          daysLate,
-          ageBand,
-          arrearsAmount,
-          olb
-        };
-      })
-      .filter(Boolean)
-      .filter(row => isWithinDateRange(row.dueDate))
-      .sort((a, b) => b.daysLate - a.daysLate);
-    const arrearsLoansById = new Map();
-    allArrearsRows.forEach(row => {
-      const current = arrearsLoansById.get(row.loan.id);
-      if (!current) {
-        arrearsLoansById.set(row.loan.id, { ...row });
-        return;
-      }
-
-      current.arrearsAmount += row.arrearsAmount;
-      if (row.daysLate > current.daysLate) {
-        current.schedule = row.schedule;
-        current.dueDate = row.dueDate;
-        current.daysLate = row.daysLate;
-        current.ageBand = row.ageBand;
-      }
-    });
-    const allArrearsLoanRows = Array.from(arrearsLoansById.values())
+    const allArrearsLoanRows = summary.rows.map(row => ({ ...row,
+      ...getLoanOwner(row.loan), ageBand: getAgeBand(row.daysLate) }))
       .sort((a, b) => b.daysLate - a.daysLate);
     const arrearsRows = allArrearsLoanRows.filter(row => {
+      if (!isWithinDateRange(row.dueDate)) return false;
       if (activeFilters.arrears === '1_30') return row.ageBand.id === '1_30';
       if (activeFilters.arrears === '31_60') return row.ageBand.id === '31_60';
       if (activeFilters.arrears === '61_plus') return row.ageBand.id === '61_plus';
@@ -1763,35 +1737,11 @@ export const renderReportsDashboard = async () => {
     });
 
     const totalArrearsAmount = arrearsRows.reduce((sum, row) => sum + row.arrearsAmount, 0);
-    const parLoans = new Map();
-    allArrearsLoanRows.forEach(row => {
-      parLoans.set(row.loan.id, {
-        daysLate: row.daysLate,
-        olb: getLoanOutstandingBalanceWithFines(row.loan)
-      });
-    });
-    const parBuckets = {
-      par30: { loanCount: 0, olb: 0 },
-      par60: { loanCount: 0, olb: 0 },
-      par90: { loanCount: 0, olb: 0 },
-      par90Plus: { loanCount: 0, olb: 0 }
-    };
-    parLoans.forEach(({ daysLate, olb }) => {
-      const bucket = daysLate <= 30
-        ? parBuckets.par30
-        : (daysLate <= 60 ? parBuckets.par60 : (daysLate <= 90 ? parBuckets.par90 : parBuckets.par90Plus));
-      bucket.loanCount += 1;
-      bucket.olb += Math.max(0, Number(olb) || 0);
-    });
-    const activeOutstandingLoanPortfolio = loans
-      .filter(isCollectibleLoan)
-      .reduce((sum, loan) => sum + getLoanOutstandingBalanceWithFines(loan), 0);
+    const parBuckets = summary.buckets;
     const count1To30 = parBuckets.par30.loanCount;
     const count31To60 = parBuckets.par60.loanCount;
     const count61To90 = parBuckets.par90.loanCount;
-    const getParRate = (bucket) => activeOutstandingLoanPortfolio > 0
-      ? (bucket.olb / activeOutstandingLoanPortfolio) * 100
-      : 0;
+    const getParRate = bucket => bucket.rate;
     const renderParDetail = (element, label, bucket) => {
       if (element) element.textContent = `${label} · ${bucket.loanCount} ${bucket.loanCount === 1 ? 'loan' : 'loans'}`;
     };
@@ -1813,6 +1763,7 @@ export const renderReportsDashboard = async () => {
     const par90PlusDetailEl = container.querySelector('#arrears-par-90-plus-detail');
     const entriesCountEl = container.querySelector('#arrears-entry-count');
     if (totalAmountEl) totalAmountEl.textContent = `KES ${formatMoney(totalArrearsAmount)}`;
+    if (totalAmountEl) totalAmountEl.previousElementSibling.textContent = `Displayed Arrears as at ${formatPortfolioDate(dateRange.to || new Date())}`;
     if (count1To30El) count1To30El.textContent = count1To30.toLocaleString();
     if (count31To60El) count31To60El.textContent = count31To60.toLocaleString();
     if (count61To90El) count61To90El.textContent = count61To90.toLocaleString();
@@ -1852,7 +1803,7 @@ export const renderReportsDashboard = async () => {
         </tr>
       `).join('');
 
-    container.querySelector('#filter-count').textContent = `Showing ${arrearsRows.length} of ${allArrearsLoanRows.length} overdue loans`;
+    container.querySelector('#filter-count').textContent = `Showing ${arrearsRows.length} of ${allArrearsLoanRows.length} overdue loans · PAR portfolio OLB ${formatMoney(summary.outstanding)} as at ${formatPortfolioDate(dateRange.to || new Date())}`;
     renderReportPagination('#arrears-pagination', arrearsRows.length, pageSize, (p) => { pages.arrears = p; updateArrears(); });
   };
 
@@ -2032,30 +1983,23 @@ export const renderReportsDashboard = async () => {
   };
 
   const updateAlerts = () => {
-    const now = new Date();
-    const upcomingThreshold = new Date();
-    upcomingThreshold.setDate(now.getDate() + 7);
+    const now = getPortfolioCutoff(dateRange.to);
 
     const alertItemsByLoan = new Map();
-    schedules.filter(s => !isSchedulePaid(s)).forEach(s => {
+    getArrearsCalculator().effectiveSchedules.filter(s => !isSchedulePaid(s)).forEach(s => {
       if (!isWithinDateRange(s.due_date)) return;
       const loanId = getScheduleLoanId(s);
       const loan = loans.find(l => l.id === loanId);
-      const collectibleLoan = loan?.status === 'disbursed'
-        || (['approved', 'partial_approved'].includes(loan?.status) && loan?.disbursement_date);
-      if (!collectibleLoan) return;
+      if (!loan || getLoanOutstandingBalanceWithFines(loan) <= 0) return;
 
       const remainingAmount = getScheduleRemaining(s);
       if (remainingAmount <= 0) return;
 
-      const dueDate = new Date(s.due_date);
+      const dueDate = new Date(getFinancialTimestamp(s.due_date));
       if (Number.isNaN(dueDate.getTime())) return;
 
-      const diffDays = isScheduleInArrears(s, now)
-        ? getDaysInArrears(s, now)
-        : Math.floor((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate())) / (1000 * 60 * 60 * 24));
-
-      if (diffDays < 0 && dueDate > upcomingThreshold) return;
+      const diffDays = getNairobiDay(now) - getNairobiDay(s.due_date);
+      if (diffDays < -7) return;
 
       const member = loan.expand?.member;
       const groupName = member?.expand?.group?.name || loan.expand?.group?.name || 'Individual';
@@ -2241,6 +2185,12 @@ export const renderReportsDashboard = async () => {
 
   const refreshActiveReport = () => {
     const tab = getActiveTab();
+    if (!requireLoanReportData(tab)) {
+      container.querySelector('#export-excel-btn').disabled = true;
+      container.querySelector('#print-report-btn').disabled = true;
+      return;
+    }
+    try {
     if (tab === 'pl') updatePLSummary();
     if (tab === 'individuals') updateIndividuals();
     if (tab === 'groups') updateGroups();
@@ -2254,9 +2204,15 @@ export const renderReportsDashboard = async () => {
     if (tab === 'lifecycle') updateLifecycle();
     if (tab === 'alerts') updateAlerts();
     const debtUnavailable = tab === 'debt' && (!debtDataReady || Boolean(debtDataError) || Boolean(dateRange.from && dateRange.to && dateRange.from > dateRange.to));
-    container.querySelector('#export-excel-btn').disabled = debtUnavailable;
-    container.querySelector('#print-report-btn').disabled = debtUnavailable;
+    const savingsUnavailable = ['individuals', 'groups', 'cashflow', 'withdrawals'].includes(tab) && !requireSavingsReportData(tab);
+    container.querySelector('#export-excel-btn').disabled = debtUnavailable || savingsUnavailable;
+    container.querySelector('#print-report-btn').disabled = debtUnavailable || savingsUnavailable;
     updatePrintHeader();
+    } catch (error) {
+      requireLoanReportData(tab, error);
+      container.querySelector('#export-excel-btn').disabled = true;
+      container.querySelector('#print-report-btn').disabled = true;
+    }
   };
   const applyOfficerScope = () => {
     const scope = createOfficerScope({ members: sourceMembers, groups: sourceGroups });
@@ -2268,7 +2224,11 @@ export const renderReportsDashboard = async () => {
     lifecycleMembers = sourceLifecycleMembers.filter(member => matchesOfficer(getMemberOfficerId(member), officerFilter));
     lifecycleGroups = sourceLifecycleGroups.filter(group => matchesOfficer(getGroupOfficerId(group), officerFilter));
     loans = portfolioLoans.filter(loan => matchesOfficer(scope.getLoanOfficerId(loan), officerFilter));
-    savings = portfolioSavings.filter(saving => matchesOfficer(scope.getSavingOfficerId(saving), officerFilter));
+    savings = selectSavingsRecords(portfolioSavings, { members: sourceMembers, groups: sourceLifecycleGroups, officer: officerFilter });
+    if (savingsReportState.ready) {
+      calculateSavingsSummary(savings);
+      savings.forEach(getSavingsTimestamp);
+    }
     const loanIds = new Set(loans.map(loan => loan.id));
     schedules = normalizeLoanSchedules(sourceSchedules.filter(schedule => loanIds.has(getScheduleLoanId(schedule))));
     repayments = sourceRepayments.filter(repayment => loanIds.has(getRepaymentLoanId(repayment)));
@@ -2496,10 +2456,17 @@ export const renderReportsDashboard = async () => {
   });
 
   const applyDateRangeChange = () => {
-    dateRange = {
+    const nextRange = {
       from: dateFromInput?.value || '',
       to: dateToInput?.value || ''
     };
+    try { getSavingsDateBounds(nextRange); } catch (error) {
+      dateFromInput.value = dateRange.from;
+      dateToInput.value = dateRange.to;
+      window.notify?.error(error.message);
+      return;
+    }
+    dateRange = nextRange;
     Object.keys(pages).forEach(key => { pages[key] = 1; });
     refreshActiveReport();
   };
@@ -2587,48 +2554,31 @@ export const renderReportsDashboard = async () => {
 
   const loadReportsData = async () => {
     try {
-      [sourceMembers, sourceGroups, sourceLifecycleGroups, sourceLifecycleMembers, sourceLoans, expenses] = await Promise.all([
-        memberService.getAll(),
-        groupService.getAll(),
-        groupService.getAllIncludingLifecycle(),
-        memberService.getAllIncludingLifecycle(),
-        loanService.getFullListFresh({ expand: 'member,member.group,member.assigned_officer,member.registered_by,group,group.assigned_officer,group.created_by,processed_by', cacheKey: 'loans:financial:expanded:v1' }),
+      const [financial, expenseRecords] = await Promise.all([
+        loanFinancialSnapshotService.get(),
         dataCache.get(`expenses:reports:${getOfficerScopeCacheKey()}`, () => expenseService.getFullList())
       ]);
-
-      applyOfficerScope();
-      if (reportOfficerSelect) {
-        const options = await loadOfficerOptions({ members: sourceMembers, groups: sourceGroups, loans: sourceLoans });
-        populateOfficerSelect(reportOfficerSelect, options, officerFilter);
-      }
-
-      updatePLSummary();
-      updateDisbursements();
-      updateRegistrations();
-
-      const [scheduleResult, savingsResult, repaymentResult, settlementResult] = await Promise.allSettled([
-        pb.collection('loan_schedule').getFullList(),
-        savingsService.getFullListCached({ expand: 'member,member.group,group', cacheKey: 'savings:reports:expanded:v2' }),
-        pb.collection('loan_repayments').getFullList({ expand: 'loan,loan.member,loan.group' }),
-        loanService.getBalanceOffsFullList({ expand: '' })
-      ]);
-
-      if (scheduleResult.status === 'fulfilled') sourceSchedules = scheduleResult.value;
-      else console.warn('[Reports] Loan schedules unavailable:', scheduleResult.reason?.message);
-      if (savingsResult.status === 'fulfilled') sourceSavings = savingsResult.value;
-      else console.warn('[Reports] Savings unavailable:', savingsResult.reason?.message);
-      if (repaymentResult.status === 'fulfilled') {
-        sourceRepayments = repaymentResult.value;
-        repaymentsLoaded = true;
-        repaymentLoadError = null;
-      } else {
-        repaymentLoadError = repaymentResult.reason || new Error('Repayments could not be loaded');
-        console.warn('[Reports] Loan repayments unavailable:', repaymentLoadError.message);
-      }
-      if (settlementResult.status === 'fulfilled') sourceSettlements = settlementResult.value.filter(item => item.status !== 'reversed');
-      else console.warn('[Reports] Loan balance-offs unavailable:', settlementResult.reason?.message);
-      debtDataError = [scheduleResult, repaymentResult, settlementResult].find(result => result.status === 'rejected')?.reason || null;
+      sourceLifecycleMembers = financial.members;
+      sourceLifecycleGroups = financial.groups;
+      sourceMembers = financial.members.filter(member => !['suspended', 'closed'].includes(member.status));
+      sourceGroups = financial.groups.filter(group => !['suspended', 'closed'].includes(group.status));
+      sourceLoans = financial.loans;
+      sourceSchedules = financial.schedules;
+      sourceRepayments = financial.repayments;
+      sourceSettlements = financial.settlements;
+      automaticPenaltyAmount = financial.penaltyAmount;
+      expenses = expenseRecords;
+      loanReportState.ready = true;
+      loanReportState.error = null;
+      repaymentsLoaded = true;
+      repaymentLoadError = null;
       debtDataReady = true;
+      debtDataError = null;
+      savingsReportState.settlementsReady = true;
+      const [savingsResult] = await Promise.allSettled([savingsService.getFinancialRecordsCached()]);
+      savingsReportState.ready = savingsResult.status === 'fulfilled';
+      savingsReportState.error = savingsResult.status === 'rejected' ? savingsResult.reason : null;
+      if (savingsReportState.ready) sourceSavings = savingsResult.value;
 
       applyOfficerScope();
 
@@ -2645,10 +2595,12 @@ export const renderReportsDashboard = async () => {
       if (activeTab === 'debt') refreshActiveReport();
       if (activeTab === 'lifecycle') updateLifecycle();
       if (activeTab === 'alerts') updateAlerts();
+      refreshActiveReport();
     } catch (err) {
+      if (err.isCacheObsolete) return;
       console.error('Error loading report data:', err);
-      const activeSection = container.querySelector('.report-section[style*="block"]') || container.querySelector('#pl-tab');
-      activeSection.innerHTML = `<div class="card text-center text-danger">Failed to load reports: ${err.message}</div>`;
+      loanReportState.error = err;
+      refreshActiveReport();
     }
   };
 
@@ -2661,7 +2613,17 @@ export const renderReportsDashboard = async () => {
     };
   }
 
-  loadReportsData();
+  let reportLoad = Promise.resolve();
+  const refreshReports = () => {
+    reportLoad = reportLoad.catch(() => {}).then(loadReportsData);
+    return reportLoad;
+  };
+  container.__subscriptions = [observeCachedView(
+    ['savings:', 'members:', 'groups:', 'loans:', 'loan_repayments', 'loan_schedule', 'loan_balance_offs:', 'expenses:', 'settings:'],
+    refreshReports,
+    { updates: ['loans:financial:snapshot:', 'savings:', 'members:', 'groups:all:', 'expenses:'] }
+  )];
+  refreshReports();
 
   return container;
 };

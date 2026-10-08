@@ -2,7 +2,7 @@ import { createLoanPortfolioCalculator } from './loanPortfolio.js';
 import { isDebtRecoveryLoan, isRecoveredLoan } from './debtRecovery.js';
 import { getLoanEndDate, isDistressUnitLoan } from './distressUnit.js';
 import { calculateLoanPenaltyState } from './loanPenalty.js';
-import { getArrearsTotal } from './loanScheduleMetrics.js';
+import { createLoanArrearsCalculator } from './loanArrears.js';
 import { getLoanLiabilityAmount, getRepaymentContractAmount, getSettlementContractAmount } from './repaymentAllocation.js';
 
 const toDate = value => new Date(typeof value === 'string' ? value.replace(' ', 'T') : value);
@@ -31,6 +31,8 @@ export const buildDebtManagementRows = ({ loans = [], repayments = [], settlemen
   const activeSettlements = settlements.filter(row => row.status !== 'reversed');
   const calculator = createLoanPortfolioCalculator({ repayments: activeRepayments, settlements: activeSettlements,
     schedules, penaltyAmount, referenceDate });
+  const arrears = createLoanArrearsCalculator({ loans, repayments: activeRepayments, settlements: activeSettlements,
+    schedules, referenceDate, portfolioCalculator: calculator });
   return loans.flatMap(loan => {
     const paymentRecords = calculator.getRepayments(loan.id);
     const settlementRecords = calculator.getSettlements(loan.id);
@@ -54,9 +56,7 @@ export const buildDebtManagementRows = ({ loans = [], repayments = [], settlemen
       du: endDate ? addDays(endDate, 1) : null,
       rl: paymentDates.length ? new Date(Math.max(...paymentDates.map(Number))) : null
     };
-    const penalty = calculateLoanPenaltyState({ ...context, schedules: loanSchedules });
-    const effectiveSchedules = penalty.scheduleStates.map(item => ({ ...item.schedule, paid: item.paid,
-      status: item.remainingPrincipal > 0 ? 'pending' : 'paid' }));
+    const penalty = calculateLoanPenaltyState({ ...context, schedules: loanSchedules, useRecordedSchedulePaid: false });
     const contractPaid = paymentRecords.reduce((sum, row) => sum + getRepaymentContractAmount(row), 0)
       + settlementRecords.reduce((sum, row) => sum + getSettlementContractAmount(row), 0);
     const expected = getLoanLiabilityAmount(loan);
@@ -80,7 +80,7 @@ export const buildDebtManagementRows = ({ loans = [], repayments = [], settlemen
       + recoverySettlements.reduce((sum, row) => sum + getSettlementContractAmount(row), 0));
     return [{ loan, categories, categoryDates, endDate, olb, expected, contractCollected,
       recoveryExpected, recoveryCollected,
-      arrears: recovered ? 0 : getArrearsTotal(effectiveSchedules, referenceDate),
+      arrears: recovered ? 0 : arrears.getArrears(loan),
       fines: penalty.outstandingFine,
       collected: contractCollected + penalty.fineCollected }];
   });

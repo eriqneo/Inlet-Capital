@@ -4,6 +4,7 @@ import { groupService } from '../../services/groupService.js';
 import { loanService } from '../../services/loanService.js';
 import { savingsService } from '../../services/savingsService.js';
 import { calculateSavingsConsistency } from '../../core/savingsConsistency.js';
+import { calculateSavingsSummary, getSavingsTransactionType } from '../../core/savingsMetrics.js';
 import { renderSavingsConsistency } from '../../components/SavingsConsistency.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate, formatMoney, initDateMask, initDobAgeLabel, parseInputDate, formatToInputDate } from '../../core/utils.js';
@@ -61,10 +62,14 @@ export const renderMemberProfile = async (params) => {
   // Calculate totals from PB data
   const calculateTotalBorrowed = () => memberLoans.reduce((sum, l) => sum + (Number(l.amount_applied) || 0), 0);
   const totalBorrowed = calculateTotalBorrowed();
-  const calculateSavingsBalance = () => memberSavings.filter(s => !s.is_reversed).reduce((sum, s) => {
-    const amount = Number(s.amount) || 0;
-    return s.type === 'deposit' ? sum + amount : sum - amount;
-  }, 0);
+  const calculateSavingsBalance = () => {
+    if (savingsLoadFailed) return null;
+    try { return calculateSavingsSummary(memberSavings).net; } catch (error) {
+      savingsLoadFailed = true;
+      console.warn('[MemberProfile] Savings balance unavailable:', error.message);
+      return null;
+    }
+  };
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
     '&': '&amp;',
     '<': '&lt;',
@@ -250,7 +255,7 @@ export const renderMemberProfile = async (params) => {
           <h3 style="font-size: 1rem; margin-bottom: 12px;">Financial Summary</h3>
           <div style="margin-bottom: 8px; display: flex; justify-content: space-between;">
             <span class="text-muted">Total Savings:</span>
-            <span class="font-semibold text-success" id="member-total-savings">KES ${formatMoney(totalSavings)}</span>
+            <span class="font-semibold text-success" id="member-total-savings">${totalSavings === null ? 'Unavailable' : `KES ${formatMoney(totalSavings)}`}</span>
           </div>
           <div style="margin-bottom: 8px; display: flex; justify-content: space-between;">
             <span class="text-muted">Total Loans:</span>
@@ -529,7 +534,8 @@ export const renderMemberProfile = async (params) => {
 
   const updateSavingsSummary = () => {
     const totalSavingsEl = container.querySelector('#member-total-savings');
-    if (totalSavingsEl) totalSavingsEl.textContent = `KES ${formatMoney(calculateSavingsBalance())}`;
+    const balance = calculateSavingsBalance();
+    if (totalSavingsEl) totalSavingsEl.textContent = balance === null ? 'Unavailable' : `KES ${formatMoney(balance)}`;
     container.querySelector('#member-savings-consistency').innerHTML = renderSavingsConsistency(
       savingsLoadFailed ? null : calculateSavingsConsistency({ member, group: currentGroup, savings: memberSavings }),
       { history: true }
@@ -702,9 +708,9 @@ export const renderMemberProfile = async (params) => {
     const tbody = container.querySelector('#member-savings-body');
     tbody.innerHTML = paginated.length === 0 ? '<tr><td colspan="6" class="text-center text-muted">No savings history found.</td></tr>' : paginated.map(s => `
       <tr>
-        <td>${formatDate(s.date)}</td>
-        <td><span class="badge" style="background: ${s.type === 'deposit' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'}; color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type.toUpperCase()}</span></td>
-        <td class="font-semibold" style="color: ${s.type === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${s.type === 'deposit' ? '+' : '-'}${formatMoney(s.amount)}</td>
+        <td>${formatDate(s.date || s.created)}</td>
+        <td><span class="badge ${getSavingsTransactionType(s) === 'deposit' ? 'badge-success' : 'badge-danger'}">${getSavingsTransactionType(s).toUpperCase()}${s.is_reversed ? ' (REVERSED)' : ''}</span></td>
+        <td class="font-semibold" style="color: ${getSavingsTransactionType(s) === 'deposit' ? 'var(--success)' : 'var(--danger)'}">${getSavingsTransactionType(s) === 'deposit' ? '+' : '-'}${formatMoney(s.amount)}</td>
         <td class="text-xs text-muted">${escapeHtml(formatSavingsReference(s))}</td>
         <td class="text-xs text-muted">${escapeHtml(s.remarks || '-')}</td>
         <td style="white-space: nowrap;">
@@ -1074,6 +1080,9 @@ export const renderMemberProfile = async (params) => {
     savingsService.subscribeToChanges(fetchAndRenderSavings)
   ]);
 
-  })();
+  })().catch(error => {
+    console.error('[MemberProfile] Profile unavailable:', error);
+    container.textContent = `Member profile unavailable: ${error.message}`;
+  });
   return container;
 };

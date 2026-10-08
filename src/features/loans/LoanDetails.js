@@ -7,34 +7,36 @@ import { savingsService } from '../../services/savingsService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate, formatMoney, formatPercent } from '../../core/utils.js';
 import { renderCardSkeleton, setButtonLoading } from '../../core/uiState.js';
-import { getScheduleRemaining, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
+import { getNairobiDay, getScheduleRemaining, isScheduleInArrears } from '../../core/loanScheduleMetrics.js';
+import { getFinancialTimestamp } from '../../core/financialRecords.js';
+import { createLoanArrearsCalculator } from '../../core/loanArrears.js';
+import { normalizeLoanSchedules } from '../../core/loanInstallments.js';
 import { calculateLoanPenaltyState } from '../../core/loanPenalty.js';
+import { calculateLoanBalanceBreakdown } from '../../core/loanPortfolio.js';
 import { calculateLoanRepaymentBehavior } from '../../core/loanRepaymentBehavior.js';
 import { getReturnTo } from '../../core/navigation.js';
 import { memberCommentService } from '../../services/memberCommentService.js';
-import { allocateRepayment, getRepaymentContractAmount, getSettlementContractAmount } from '../../core/repaymentAllocation.js';
+import { allocateRepayment, getRepaymentContractAmount, getSettlementContractAmount, getLoanLiabilityAmount } from '../../core/repaymentAllocation.js';
 import { openCamera } from '../../components/Camera.js';
 
 export const renderLoanDetails = async (params) => {
   const { id: loanNo } = params;
   const returnTo = getReturnTo(params, '#/loans');
-  const todayInputValue = new Date().toISOString().split('T')[0];
-  const dateInputToDate = (value) => new Date(`${value || todayInputValue}T12:00:00`);
+  const todayInputValue = new Date(Date.now() + 10800000).toISOString().split('T')[0];
+  const dateInputToDate = (value) => new Date(`${value || todayInputValue}T12:00:00+03:00`);
   const dateInputToIso = (value) => dateInputToDate(value).toISOString();
   const isoToDateInput = (value) => {
     if (!value) return todayInputValue;
-    const date = new Date(value);
+    const date = new Date(getFinancialTimestamp(value) + 10800000);
     if (Number.isNaN(date.getTime())) return todayInputValue;
     return date.toISOString().split('T')[0];
   };
   const isInputDateBeforeRecordDate = (inputValue, recordValue) => {
     if (!recordValue) return false;
     const inputDate = dateInputToDate(inputValue);
-    const recordDate = new Date(recordValue);
+    const recordDate = new Date(getFinancialTimestamp(recordValue));
     if (Number.isNaN(inputDate.getTime()) || Number.isNaN(recordDate.getTime())) return false;
-    inputDate.setHours(0, 0, 0, 0);
-    recordDate.setHours(0, 0, 0, 0);
-    return inputDate < recordDate;
+    return getNairobiDay(inputDate) < getNairobiDay(recordDate);
   };
   const container = document.createElement('div');
   container.innerHTML = `
@@ -75,7 +77,7 @@ export const renderLoanDetails = async (params) => {
     (loan.renewal_date || loan.renewed_from || loan.renewed_to) ? loanService.getRenewalsForLoan(loan.id) : Promise.resolve([])
   ]);
 
-  if (scheduleResult.status === 'fulfilled') schedule = scheduleResult.value;
+  if (scheduleResult.status === 'fulfilled') schedule = normalizeLoanSchedules(scheduleResult.value);
   else scheduleLoadError = scheduleResult.reason;
   if (renewalsResult.status === 'fulfilled') renewals = renewalsResult.value;
   if (repaymentResult.status === 'fulfilled') repayments = repaymentResult.value;
@@ -95,12 +97,18 @@ export const renderLoanDetails = async (params) => {
   if (writeOffLoadError) console.warn('[LoanDetails] Could not load write-offs:', writeOffLoadError.message);
   if (savingsLoadError) console.warn('[LoanDetails] Could not load member savings balance:', savingsLoadError.message);
   if (commentsLoadError) console.warn('[LoanDetails] Could not load member comments:', commentsLoadError.message);
+  if (scheduleLoadError || repaymentLoadError || balanceOffLoadError) {
+    container.textContent = 'Loan financial records unavailable. Please retry when the connection is restored.';
+    return container;
+  }
 
   // PocketBase Settings
-  const settings = {
-    penalty_amount: await settingsService.getNumber('penalty_amount', 500),
-    penalty_grace_weeks: await settingsService.getNumber('penalty_grace_weeks', 4)
-  };
+  let rawSettings;
+  try { rawSettings = await settingsService.getAll(); }
+  catch { container.textContent = 'Loan financial settings unavailable. Please retry.'; return container; }
+  const settings = { penalty_amount: rawSettings.penalty_amount === undefined || rawSettings.penalty_amount === '' ? 500 : Number(rawSettings.penalty_amount),
+    penalty_grace_weeks: rawSettings.penalty_grace_weeks === undefined || rawSettings.penalty_grace_weeks === '' ? 4 : Number(rawSettings.penalty_grace_weeks) };
+  if (!Number.isFinite(settings.penalty_amount) || settings.penalty_amount < 0) { container.textContent = 'Loan penalty setting is invalid.'; return container; }
 
   const clientName = loan.expand?.member?.full_name || loan.expand?.group?.name || 'Unknown Client';
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -209,13 +217,7 @@ export const renderLoanDetails = async (params) => {
   };
 
   // Calculate Financials
-  const getLoanLiability = (loanRecord) => {
-    const storedLiability = Number(loanRecord.total_liability) || 0;
-    if (storedLiability > 0) return storedLiability;
-    const principal = Number(loanRecord.approved_amount || loanRecord.amount_applied) || 0;
-    const interest = Number(loanRecord.interest_amount) || 0;
-    return principal + interest;
-  };
+  const getLoanLiability = getLoanLiabilityAmount;
   const totalLiability = getLoanLiability(loan);
   const isWrittenOff = loan.status === 'written_off';
   const isRenewedLoan = Boolean(loan.renewed_from?.id || loan.renewed_from || loan.renewal_summary?.source_loan_id);
@@ -224,7 +226,8 @@ export const renderLoanDetails = async (params) => {
     schedules: schedule,
     repayments,
     settlements: balanceOffs,
-    penaltyAmount: settings.penalty_amount
+    penaltyAmount: settings.penalty_amount,
+    useRecordedSchedulePaid: false
   });
   const totalPaid = repayments.reduce((sum, r) => sum + getRepaymentContractAmount(r), 0);
   const totalBalancedOff = balanceOffs.reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
@@ -232,13 +235,16 @@ export const renderLoanDetails = async (params) => {
   const totalWrittenOff = activeWriteOffs.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
   const principalPaid = repayments.reduce((sum, r) => sum + getRepaymentContractAmount(r), 0)
     + balanceOffs.reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
-  const contractualBalanceBeforeWriteOff = Math.max(0, totalLiability - principalPaid);
-  const balanceBeforeWriteOff = Math.max(0, contractualBalanceBeforeWriteOff + penaltyState.outstandingFine);
+  const balanceOptions = { loan, repayments, settlements: balanceOffs, schedules: schedule, penaltyAmount: settings.penalty_amount };
+  const beforeClosure = calculateLoanBalanceBreakdown({ ...balanceOptions, loan: { ...loan, renewed_to: '', status: isWrittenOff ? 'disbursed' : loan.status } });
+  const currentBalance = calculateLoanBalanceBreakdown(balanceOptions);
+  const contractualBalanceBeforeWriteOff = beforeClosure.contractBalance;
+  const balanceBeforeWriteOff = beforeClosure.outstanding;
   const writeOffInterestRatio = totalLiability > 0 ? (Number(loan.interest_amount) || 0) / totalLiability : 0;
   const writeOffInterestAmount = Math.min(Number(loan.interest_amount) || 0, contractualBalanceBeforeWriteOff * writeOffInterestRatio);
   const writeOffPrincipalAmount = Math.max(0, contractualBalanceBeforeWriteOff - writeOffInterestAmount);
-  const outstandingPrincipal = (isWrittenOff || isRolledOverSource) ? 0 : contractualBalanceBeforeWriteOff;
-  const outstandingBalance = (isWrittenOff || isRolledOverSource) ? 0 : balanceBeforeWriteOff;
+  const outstandingPrincipal = currentBalance.contractBalance;
+  const outstandingBalance = currentBalance.outstanding;
   const percentRepaid = isRolledOverSource ? 0 : totalLiability > 0
     ? Math.min(100, (principalPaid / totalLiability) * 100)
     : (['completed', 'written_off', 'closed'].includes(loan.status) ? 100 : 0);
@@ -1784,7 +1790,9 @@ export const renderLoanDetails = async (params) => {
 
   const updateScheduleUI = () => {
     const start = (schedulePage - 1) * pageSize;
-    const paginated = schedule.slice(start, start + pageSize);
+    const effectiveSchedule = createLoanArrearsCalculator({ loans: [loan], schedules: schedule,
+      repayments, settlements: balanceOffs, penaltyAmount: settings.penalty_amount }).effectiveSchedules;
+    const paginated = effectiveSchedule.slice(start, start + pageSize);
     const tbody = container.querySelector('#loan-schedule-body');
     
     let fineCollectedRemaining = penaltyState.fineCollected;
@@ -2065,20 +2073,10 @@ export const renderLoanDetails = async (params) => {
       }
     }
 
-    let remainingContractPaid = orderedRepayments.reduce(
-      (sum, repayment) => sum + getRepaymentContractAmount(repayment),
-      0
-    ) + activeBalanceOffs.reduce((sum, item) => sum + getSettlementContractAmount(item), 0);
-
-    const orderedSchedule = [...schedule].sort((a, b) => Number(a.installment_no) - Number(b.installment_no));
-    for (const installment of orderedSchedule) {
-      const installmentAmount = Number(installment.amount) || 0;
-      const paid = Math.min(installmentAmount, Math.max(0, remainingContractPaid));
-      remainingContractPaid -= paid;
-      const status = paid >= installmentAmount && installmentAmount > 0
-        ? 'paid'
-        : paid > 0 ? 'partial' : 'pending';
-      await loanService.updateScheduleInstallment(installment.id, { paid, status });
+    const effectiveSchedule = createLoanArrearsCalculator({ loans: [loan], schedules: schedule,
+      repayments: freshRepayments, settlements: freshBalanceOffs, penaltyAmount: settings.penalty_amount }).effectiveSchedules;
+    for (const installment of effectiveSchedule) {
+      await loanService.updateScheduleInstallment(installment.id, { paid: installment.paid, status: installment.status });
     }
 
     const contractPaid = orderedRepayments.reduce(
@@ -2439,7 +2437,7 @@ export const renderLoanDetails = async (params) => {
           fine_amount: fineAmount,
           principal_amount: allocation.principalAmount,
           interest_amount: allocation.interestAmount,
-          date: new Date(`${data.date}T12:00:00`).toISOString(),
+          date: new Date(getFinancialTimestamp(data.date)).toISOString(),
           method: data.method || currentRepayment?.method || 'mpesa',
           reference: data.method === 'cash' ? '' : String(data.reference || '').trim(),
           note: String(data.note || '').trim()
@@ -2506,7 +2504,7 @@ export const renderLoanDetails = async (params) => {
     const autoFinePaid = Math.min(penaltyState.outstandingFine, Math.max(0, amount - manualFineAmount));
     const fineAmount = autoFinePaid + manualFineAmount;
     const principalPaymentAmount = Math.max(0, amount - fineAmount);
-    const paymentDate = new Date(data.date);
+    const paymentDate = new Date(getFinancialTimestamp(data.date));
     const priorContractPaid = repayments.reduce(
       (sum, repaymentRecord) => sum + getRepaymentContractAmount(repaymentRecord),
       0
@@ -2530,7 +2528,7 @@ export const renderLoanDetails = async (params) => {
       fine_amount: fineAmount,
       principal_amount: repaymentAllocation.principalAmount,
       interest_amount: repaymentAllocation.interestAmount,
-      date: new Date(data.date).toISOString(),
+      date: paymentDate.toISOString(),
       method: data.method,
       reference: data.reference,
       note: data.note
@@ -2541,7 +2539,7 @@ export const renderLoanDetails = async (params) => {
     if (userId) repayment.recorded_by = userId;
 
     try {
-      await loanService.recordRepayment(repayment);
+      const savedRepayment = await loanService.recordRepayment(repayment);
       
       const balanceReduction = principalPaymentAmount + autoFinePaid;
       const outstandingAfterPayment = Math.max(0, outstandingBalance - balanceReduction);
@@ -2553,20 +2551,13 @@ export const renderLoanDetails = async (params) => {
         if (window.notify) window.notify.success('Repayment recorded successfully!');
       }
 
-      // Mark schedules as paid locally to avoid refetching complex logic
-      let remaining = principalPaymentAmount;
-      for (const s of schedule) {
-        if (remaining <= 0) break;
-        const installmentRemaining = getScheduleRemaining(s);
-        if (installmentRemaining > 0) {
-          const currentPaid = Number(s.paid) || 0;
-          if (remaining >= installmentRemaining) {
-            await loanService.updateScheduleInstallment(s.id, { status: 'paid', paid: Number(s.amount) || 0 });
-            remaining -= installmentRemaining;
-          } else {
-            await loanService.updateScheduleInstallment(s.id, { status: 'partial', paid: currentPaid + remaining });
-            remaining = 0;
-          }
+      const effectiveSchedule = createLoanArrearsCalculator({ loans: [loan], schedules: schedule,
+        repayments: [...repayments, savedRepayment], settlements: balanceOffs,
+        penaltyAmount: settings.penalty_amount }).effectiveSchedules;
+      for (const installment of effectiveSchedule) {
+        const original = schedule.find(row => row.id === installment.id);
+        if (original.paid !== installment.paid || original.status !== installment.status) {
+          await loanService.updateScheduleInstallment(installment.id, { paid: installment.paid, status: installment.status });
         }
       }
 
@@ -2656,7 +2647,10 @@ export const renderLoanDetails = async (params) => {
     };
   }
 
-  })();
+  })().catch(error => {
+    console.error('[LoanDetails] Profile unavailable:', error);
+    container.textContent = `Loan profile unavailable: ${error.message}`;
+  });
 
   return container;
 };

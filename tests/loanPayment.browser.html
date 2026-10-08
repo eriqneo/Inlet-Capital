@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Arrears payment capture regression</title>
+<pre id="result">RUNNING</pre>
+<script type="module">
+  import { pb } from '/src/services/api.js';
+  import { dataCache } from '/src/services/dataCache.js';
+  import { createLoanArrearsCalculator } from '/src/core/loanArrears.js';
+  import { formatDate } from '/src/core/utils.js';
+  if (window.__INLET_CACHE_TEST__ !== true) throw new Error('Isolated browser test runner required');
+  const NativeDate = Date;
+  const testNow = NativeDate.parse('2026-10-07T21:30:00Z');
+  window.Date = class extends NativeDate {
+    constructor(...args) { super(...(args.length ? args : [testNow])); }
+    static now() { return testNow; }
+  };
+  pb.authStore.save('payment-test', { id: 'admin1', role: 'super_admin' });
+  pb.send = async () => { throw new Error('Live network prohibited'); };
+  const result = document.querySelector('#result');
+  const assert = (value, label) => { if (!value) throw new Error(label); };
+  const wait = async (check, label) => {
+    for (let i = 0; i < 100; i++) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 20)); }
+    throw new Error(`Timed out: ${label}`);
+  };
+  const member = { id: 'm1', full_name: 'Payment Test', status: 'active', reg_no: 'REG-TEST' };
+  const loan = { id: 'l1', member: 'm1', loan_no: 'LN-PAYMENT', status: 'disbursed', period: 6,
+    disbursement_date: '2026-08-01', application_date: '2026-08-01', approved_amount: 15000, amount_applied: 15000,
+    interest_amount: 3000, total_liability: 18000, expand: { member } };
+  const repayments = [{ id: 'r1', loan: 'l1', amount: 3500, fine_amount: 500, date: '2026-09-02' }];
+  const settlements = [{ id: 'b1', loan: 'l1', member: 'm1', amount: 2000, status: 'completed', effective_date: '2026-09-20' }];
+  const schedules = [1, 2].map(number => ({ id: `s${number}`, loan: 'l1', installment_no: number,
+    amount: 3000, paid: 0, status: 'pending', due_date: number === 1 ? '2026-09-01' : '2026-10-01' }));
+  const writes = [], notifications = [];
+  window.notify = { success: message => notifications.push(message), error: message => notifications.push(`ERROR: ${message}`) };
+  pb.collection = name => {
+    const rows = () => name === 'loans' ? [loan] : name === 'members' ? [member] : name === 'loan_repayments' ? repayments
+      : name === 'loan_schedule' ? schedules : name === 'loan_balance_offs' ? settlements
+      : name === 'settings' ? [{ key: 'penalty_amount', value: '500' }] : [];
+    return {
+      getFullList: async () => structuredClone(rows()),
+      getList: async () => ({ items: structuredClone(rows()), totalItems: rows().length, totalPages: 1, page: 1 }),
+      getOne: async id => structuredClone(rows().find(row => row.id === id)),
+      getFirstListItem: async () => structuredClone(name === 'loans' ? loan : { value: '500' }),
+      create: async data => {
+        assert(name === 'loan_repayments', `Unexpected create: ${name}`);
+        const record = { ...data, id: 'new-receipt' };
+        repayments.push(record); writes.push({ name, data: structuredClone(record) });
+        return structuredClone(record);
+      },
+      update: async (id, data) => {
+        assert(name === 'loan_schedule' || name === 'loans', `Unexpected update: ${name}`);
+        const record = rows().find(row => row.id === id);
+        Object.assign(record, data); writes.push({ name, id, data: structuredClone(data) });
+        return structuredClone(record);
+      }
+    };
+  };
+  try {
+    await dataCache.invalidateAll();
+    const { renderLoanDetails } = await import('/src/features/loans/LoanDetails.js');
+    const profile = await renderLoanDetails({ id: 'LN-PAYMENT' });
+    const host = document.createElement('main'); document.body.appendChild(host); host.appendChild(profile);
+    await wait(() => profile.querySelector('#payment-form'), 'payment form');
+    const form = profile.querySelector('#payment-form');
+    assert(form.querySelector('[name="amount"]').value === '', 'Payment amount should start blank');
+    form.querySelector('[name="amount"]').value = '750';
+    form.querySelector('[name="date"]').value = '2026-10-08';
+    const method = form.querySelector('[name="method"]'); method.value = 'cash'; method.dispatchEvent(new Event('change'));
+    await form.onsubmit(new Event('submit', { cancelable: true }));
+    assert(!notifications.some(message => message.startsWith('ERROR:')), notifications.join('; '));
+    const saved = repayments.find(row => row.id === 'new-receipt');
+    assert(saved?.amount === 750 && saved.fine_amount === 500, 'Receipt fine was added to cash or incorrectly allocated');
+    assert(saved.date === '2026-10-07T21:00:00.000Z' && formatDate(saved.date) === '08/10/2026', 'Payment business date drifted across timezones');
+    assert(schedules[0].paid === 3000 && schedules[0].status === 'paid', 'Previously paid first installment was not rebuilt');
+    assert(schedules[1].paid === 2250 && schedules[1].status === 'partial', 'Capture incremented stale paid instead of ledger allocation');
+    const summary = createLoanArrearsCalculator({ loans: [loan], schedules, repayments, settlements,
+      referenceDate: new Date('2026-10-08T12:00:00+03:00'), penaltyAmount: 500 }).summarize();
+    assert(summary.total === 750 && summary.outstanding === 12750, 'Captured payment did not reconcile arrears and OLB');
+    await wait(() => host.textContent.includes('12,750.00'), 'refreshed loan balance');
+    assert(writes.filter(row => row.name === 'loan_repayments').length === 1, 'Payment duplicated');
+    result.textContent = 'PASS: actual payment form saves one receipt of 750 including fine 500, allocates contract 250, rebuilds stale schedule counters with prior balance-off, and refreshes arrears 750 / OLB 12750 (mocked PocketBase)';
+  } catch (error) { result.textContent = `FAIL: ${error.stack}`; }
+</script>

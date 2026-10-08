@@ -1,6 +1,7 @@
 import { groupService } from '../../services/groupService.js';
+import { calculateSavingsSummary, selectSavingsRecords } from '../../core/savingsMetrics.js';
 import { renderPagination } from '../../components/Pagination.js';
-import { debounce } from '../../services/dataCache.js';
+import { debounce, observeCachedView } from '../../services/dataCache.js';
 import { pb } from '../../services/api.js';
 import { setButtonLoading, showDelayedLoading, renderDatabaseLoaderIcon, DATABASE_LOADING_LABEL } from '../../core/uiState.js';
 import { authService } from '../../services/authService.js';
@@ -108,10 +109,7 @@ export const renderGroupList = async () => {
   const canManageLifecycle = authService.hasRole('super_admin');
 
   const relationFilter = (field, ids) => ids.map(id => `${field}="${id}"`).join(' || ');
-  const moneyTotal = (records) => records.reduce((sum, record) => {
-    const amount = Number(record.amount) || 0;
-    return record.type === 'deposit' ? sum + amount : sum - amount;
-  }, 0);
+  const moneyTotal = (records) => calculateSavingsSummary(records).net;
   const escapeFilterValue = (value) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
     '&': '&amp;',
@@ -186,7 +184,7 @@ export const renderGroupList = async () => {
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px;">
           <div style="background: var(--bg-light); padding: 12px; border-radius: 8px;">
             <div class="text-xs text-muted">Members</div>
-            <div class="font-semibold">${g.dynamic_member_count || 0}</div>
+            <div class="font-semibold">${g.dynamic_member_count === null ? 'Checking...' : (Number.isFinite(g.dynamic_member_count) ? g.dynamic_member_count : 'Unavailable')}</div>
           </div>
           <div style="background: var(--bg-light); padding: 12px; border-radius: 8px;">
             <div class="text-xs text-muted">Meeting Day</div>
@@ -196,7 +194,7 @@ export const renderGroupList = async () => {
 
         <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-color); padding-top: 12px;">
           <span class="text-sm text-muted">Total Savings</span>
-          <span class="font-semibold" style="color: var(--success);">KES ${formatMoney(g.realtime_savings)}</span>
+          <span class="font-semibold" style="color: var(--success);">${g.realtime_savings === null ? 'Checking...' : (Number.isFinite(g.realtime_savings) ? `KES ${formatMoney(g.realtime_savings)}` : 'Unavailable')}</span>
         </div>
       </div>
     `).join('');
@@ -337,6 +335,7 @@ export const renderGroupList = async () => {
 
   const loadGroups = async () => {
     const thisRequest = ++requestId;
+    let hydrationRevision = 0;
     const cancelLoading = showDelayedLoading(() => {
       if (thisRequest !== requestId) return;
       grid.innerHTML = `
@@ -351,13 +350,14 @@ export const renderGroupList = async () => {
 
     const hydrateGroupPage = async (groupResult) => {
       if (thisRequest !== requestId) return;
+      const revision = ++hydrationRevision;
       cancelLoading();
       totalItems = groupResult.totalItems;
       const pageGroups = groupResult.items;
       groups = pageGroups.map(g => ({
         ...g,
-        dynamic_member_count: g.dynamic_member_count ?? g.member_count ?? 0,
-        realtime_savings: g.realtime_savings ?? g.total_savings ?? 0
+        dynamic_member_count: null,
+        realtime_savings: null
       }));
       renderCards();
 
@@ -380,12 +380,14 @@ export const renderGroupList = async () => {
         });
       }
       
-      if (thisRequest !== requestId) return;
+      if (thisRequest !== requestId || revision !== hydrationRevision || container.__disposed) return;
       groups = pageGroups.map(g => {
         const groupMembers = membersList.filter(m => m.group === g.id);
         const memberIds = new Set(groupMembers.map(m => m.id));
         
-        const groupSavingsTransactions = savingsList.filter(s => s.group === g.id || memberIds.has(s.member));
+        const groupSavingsTransactions = selectSavingsRecords(savingsList.filter(s => !s.member || memberIds.has(s.member)), {
+          members: groupMembers, group: g.id
+        });
         const realtime_savings = moneyTotal(groupSavingsTransactions);
 
         return { ...g, dynamic_member_count: groupMembers.length, realtime_savings };
@@ -406,7 +408,13 @@ export const renderGroupList = async () => {
         sort: 'name'
       };
       const groupResult = await groupService.listCached(query, freshResult => {
-        hydrateGroupPage(freshResult).catch(err => console.warn('[GroupList] Cached refresh hydration failed:', err));
+        const attempt = hydrationRevision + 1;
+        hydrateGroupPage(freshResult).catch(err => {
+          if (thisRequest !== requestId || attempt !== hydrationRevision || container.__disposed) return;
+          console.warn('[GroupList] Cached refresh hydration failed:', err);
+          groups = groups.map(group => ({ ...group, dynamic_member_count: undefined, realtime_savings: undefined }));
+          renderCards();
+        });
       });
       await hydrateGroupPage(groupResult);
     } catch (err) {
@@ -437,9 +445,12 @@ export const renderGroupList = async () => {
   // Real-time updates
   container.__subscriptionPromise = Promise.all([
     pb.collection('groups').subscribe('*', handleUpdate()),
-    pb.collection('members').subscribe('*', handleUpdate()),
-    pb.collection('savings').subscribe('*', handleUpdate())
+    pb.collection('members').subscribe('*', handleUpdate())
   ]);
+  container.__subscriptions = [
+    () => debouncedRefresh.cancel(),
+    observeCachedView(['savings:', 'members:', 'groups:', 'group_summary:'], loadGroups, { updates: [] })
+  ];
 
   return container;
 };

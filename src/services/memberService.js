@@ -1,4 +1,5 @@
 import { pb } from './api.js';
+import { savingsService } from './savingsService.js';
 import { dataCache } from './dataCache.js';
 import {
   filterMembersForCurrentOfficer,
@@ -254,22 +255,7 @@ export const memberService = {
   },
 
   async getSavingsBalance(memberId) {
-    // We will calculate this dynamically from savings_transactions
-    // For now, if collection is not ready, return 0 or mock
-    try {
-      const deposits = await pb.collection('savings_transactions').getFullList({
-        filter: `member = "${memberId}" && type = "deposit" && is_reversed = false`,
-      });
-      const withdrawals = await pb.collection('savings_transactions').getFullList({
-        filter: `member = "${memberId}" && type = "withdrawal" && is_reversed = false`,
-      });
-      const totalIn = deposits.reduce((sum, t) => sum + t.amount, 0);
-      const totalOut = withdrawals.reduce((sum, t) => sum + t.amount, 0);
-      return totalIn - totalOut;
-    } catch (e) {
-      console.warn("Savings transactions not available yet, returning 0 for balance.", e);
-      return 0;
-    }
+    return savingsService.getMemberBalance(memberId);
   },
 
   subscribeToChanges(callback) {

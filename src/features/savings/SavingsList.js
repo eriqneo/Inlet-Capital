@@ -4,12 +4,12 @@ import { groupService } from '../../services/groupService.js';
 import { authService } from '../../services/authService.js';
 import { renderPagination } from '../../components/Pagination.js';
 import { formatDate, formatMoney } from '../../core/utils.js';
-import { dataCache } from '../../services/dataCache.js';
+import { dataCache, observeCachedView } from '../../services/dataCache.js';
 import { renderTableSkeletonRows, showDelayedLoading, setButtonLoading } from '../../core/uiState.js';
 import { withReturnTo } from '../../core/navigation.js';
 import { canUseOfficerFilter, createOfficerScope, loadOfficerOptions, matchesOfficer, populateOfficerSelect } from '../../core/officerScope.js';
 import { filterPortfolioFinancialRecords, getPortfolioMemberIds } from '../../core/memberLifecycle.js';
-import { calculateSavingsSummary, getSavingsTransactionType } from '../../core/savingsMetrics.js';
+import { calculateSavingsSummary, getSavingsTransactionType, selectSavingsRecords } from '../../core/savingsMetrics.js';
 
 export const renderSavingsList = async () => {
   const container = document.createElement('div');
@@ -23,6 +23,7 @@ export const renderSavingsList = async () => {
   let dateTo = '';
   let members = [];
   let groups = [];
+  let scopeLoadError = null;
   let latestTransactions = [];
   const canManageSavings = ['super_admin', 'admin'].includes(authService.getUser()?.role);
   
@@ -40,7 +41,7 @@ export const renderSavingsList = async () => {
 
     <div id="savings-summary-cards" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 16px;">
       <div class="card" style="background: var(--bg-light); border-left: 4px solid var(--success);">
-        <div class="text-xs text-muted">Total Savings Net</div>
+        <div class="text-xs text-muted" id="savings-total-label">Total Savings Balance</div>
         <div class="text-xl font-semibold text-success" id="savings-net-total">KES 0</div>
         <div class="text-xs" id="savings-movement-total" style="margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap;">
           <span style="color: var(--success); font-weight: 700;">DEP 0</span>
@@ -265,14 +266,6 @@ export const renderSavingsList = async () => {
   const getTransactionGroupId = (transaction) => getRelationId(transaction?.group) || transaction?.expand?.group?.id || '';
   const getGroupMembers = (groupId) => members.filter(member => member.group === groupId || member.expand?.group?.id === groupId);
   const isAssignableGroupSaving = (transaction) => Boolean(getTransactionGroupId(transaction) && !getTransactionMemberId(transaction) && !transaction.is_reversed);
-  const toStartOfDayIso = (value) => value ? new Date(`${value}T00:00:00`).toISOString() : '';
-  const toEndOfDayIso = (value) => value ? new Date(`${value}T23:59:59.999`).toISOString() : '';
-  const getDateFilter = () => {
-    const filters = [];
-    if (dateFrom) filters.push(`date>="${toStartOfDayIso(dateFrom)}"`);
-    if (dateTo) filters.push(`date<="${toEndOfDayIso(dateTo)}"`);
-    return filters.join(' && ');
-  };
 
   const getTransactionTargetName = (transaction) => (
     transaction.expand?.member?.full_name
@@ -287,7 +280,6 @@ export const renderSavingsList = async () => {
     }
 
     const assignable = items.filter(isAssignableGroupSaving);
-    const autoFixable = assignable.filter(transaction => getGroupMembers(getTransactionGroupId(transaction)).length === 1);
     if (assignable.length === 0) {
       reconcileBanner.innerHTML = '';
       return;
@@ -295,45 +287,17 @@ export const renderSavingsList = async () => {
 
     reconcileBanner.innerHTML = `
       <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-        <span class="badge badge-warning" style="font-size: 0.7rem;">${assignable.length} group savings need member assignment</span>
-        ${autoFixable.length > 0 ? `<button type="button" class="btn btn-outline btn-sm" id="auto-fix-group-savings-btn">Auto-fix ${autoFixable.length}</button>` : ''}
+        <span class="badge badge-outline" style="font-size: 0.7rem;">${assignable.length} group-account transactions</span>
       </div>
     `;
 
-    const autoFixBtn = reconcileBanner.querySelector('#auto-fix-group-savings-btn');
-    if (autoFixBtn) {
-      autoFixBtn.onclick = async () => {
-        const confirmed = window.confirmDialog ? await window.confirmDialog({
-          title: 'Auto-fix group member savings?',
-          message: `Assign ${autoFixable.length} group-account savings transaction(s) to the only member in each group. This will make Individual Performance and Group reports tally correctly.`,
-          confirmText: 'Auto-fix',
-          type: 'info'
-        }) : confirm(`Auto-fix ${autoFixable.length} group savings?`);
-        if (!confirmed) return;
-
-        const restoreButton = setButtonLoading(autoFixBtn, 'Fixing...');
-        try {
-          for (const transaction of autoFixable) {
-            const groupId = getTransactionGroupId(transaction);
-            const [member] = getGroupMembers(groupId);
-            await savingsService.update(transaction.id, { member: member.id, group: groupId });
-          }
-          if (window.notify) window.notify.success('Group member savings reconciled.');
-          await dataCache.invalidatePrefix('savings:');
-          await updateUI();
-        } catch (err) {
-          if (window.notify) window.notify.error('Failed to reconcile savings: ' + (err.message || 'Please try again.'));
-        } finally {
-          restoreButton();
-        }
-      };
-    }
   };
 
   const renderSavingsSummary = (items) => {
     const { deposits, withdrawals, net, count } = calculateSavingsSummary(items);
 
     savingsNetTotal.textContent = `KES ${formatMoney(net)}`;
+    container.querySelector('#savings-total-label').textContent = dateFrom || dateTo ? 'Net Savings Movement' : 'Total Savings Balance';
     savingsMovementTotal.innerHTML = `
       <span style="color: var(--success); font-weight: 700;">DEP ${formatMoney(deposits)}</span>
       <span style="color: var(--danger); font-weight: 700;">WIT ${formatMoney(withdrawals)}</span>
@@ -341,25 +305,9 @@ export const renderSavingsList = async () => {
     savingsEntryTotal.textContent = count.toLocaleString();
   };
 
-  const isTransactionInSelectedDateRange = (transaction) => {
-    if (!dateFrom && !dateTo) return true;
-    const value = transaction?.date || transaction?.created;
-    if (!value) return false;
-    const timestamp = new Date(value).getTime();
-    if (!Number.isFinite(timestamp)) return false;
-    if (dateFrom && timestamp < new Date(`${dateFrom}T00:00:00`).getTime()) return false;
-    if (dateTo && timestamp > new Date(`${dateTo}T23:59:59.999`).getTime()) return false;
-    return true;
-  };
-
   const getSummaryRecords = (items) => {
     const portfolioRecords = filterPortfolioFinancialRecords(items, getPortfolioMemberIds(members));
-    return filterTransactionsByOfficer(portfolioRecords.filter(isTransactionInSelectedDateRange));
-  };
-
-  const refreshSavingsSummary = async () => {
-    const financialRecords = await savingsService.getFinancialRecordsCached();
-    renderSavingsSummary(getSummaryRecords(financialRecords));
+    return filterTransactionsByOfficer(selectSavingsRecords(portfolioRecords, { members, from: dateFrom, to: dateTo }));
   };
 
   const sortTransactionsAlphabetically = (items) => [...items].sort((a, b) => {
@@ -392,7 +340,7 @@ export const renderSavingsList = async () => {
 
       return `
       <tr>
-        <td class="text-sm">${formatDate(t.date)}</td>
+        <td class="text-sm">${formatDate(t.date || t.created)}</td>
         <td>
           <div class="font-semibold">${targetName}</div>
           <div class="text-xs text-muted">${targetId} | ${targetType}</div>
@@ -423,7 +371,7 @@ export const renderSavingsList = async () => {
       paginationWrapper.innerHTML = '';
     });
     try {
-      const dateFilter = getDateFilter();
+      if (scopeLoadError) throw scopeLoadError;
       const renderResult = (result) => {
         if (thisRequest !== requestId) return;
         cancelLoading();
@@ -441,48 +389,31 @@ export const renderSavingsList = async () => {
         if (pagination) paginationWrapper.appendChild(pagination);
       };
       
-      if (alphaSort !== 'default' || officerFilter !== 'all') {
-        const allTransactions = await savingsService.getFullListCached({
-          filter: dateFilter,
-          sort: '-date',
-          cacheKey: 'savings:list:alpha:expanded:v1'
-        });
-        const officerTransactions = filterTransactionsByOfficer(allTransactions);
-        const sortedTransactions = alphaSort === 'default'
-          ? officerTransactions
-          : sortTransactionsAlphabetically(officerTransactions);
-        latestTransactions = sortedTransactions;
-        await refreshSavingsSummary();
-        renderReconcileBanner(sortedTransactions);
-        const start = (currentPage - 1) * pageSize;
-        renderResult({
-          items: sortedTransactions.slice(start, start + pageSize),
-          totalItems: sortedTransactions.length
-        });
-        return;
-      }
-
-      let result;
-      try {
-        const query = { page: currentPage, perPage: pageSize, filter: dateFilter };
-        result = await savingsService.getAllCached(query, freshResult => renderResult(freshResult));
-      } catch (err) {
-        console.warn('[SavingsList] Expanded transaction load failed, retrying basic query:', err);
-        const query = { page: currentPage, perPage: pageSize, filter: dateFilter };
-        result = await savingsService.getAllBasicCached(query, freshResult => renderResult(freshResult));
-      }
-
-      renderResult(result);
-      const allForBanner = await savingsService.getFullListCached({
-        filter: dateFilter,
-        sort: '-date',
-        cacheKey: 'savings:reconcile:expanded:v1'
-      });
-      latestTransactions = allForBanner;
-      await refreshSavingsSummary();
-      renderReconcileBanner(allForBanner);
+      const records = await savingsService.getFinancialRecordsCached();
+      if (thisRequest !== requestId) return;
+      const membersById = new Map(members.map(member => [member.id, member]));
+      const groupsById = new Map(groups.map(group => [group.id, group]));
+      const selected = getSummaryRecords(records).map(record => ({
+        ...record,
+        expand: {
+          ...record.expand,
+          member: membersById.get(getTransactionMemberId(record)) || record.expand?.member,
+          group: groupsById.get(getTransactionGroupId(record)) || record.expand?.group
+        }
+      }));
+      renderSavingsSummary(selected);
+      latestTransactions = alphaSort === 'default' ? selected : sortTransactionsAlphabetically(selected);
+      renderReconcileBanner(selected);
+      currentPage = Math.min(currentPage, Math.max(1, Math.ceil(selected.length / pageSize)));
+      const start = (currentPage - 1) * pageSize;
+      renderResult({ items: latestTransactions.slice(start, start + pageSize), totalItems: selected.length });
     } catch (e) {
       cancelLoading();
+      if (thisRequest !== requestId) return;
+      savingsNetTotal.textContent = 'Unavailable';
+      savingsMovementTotal.textContent = '';
+      savingsEntryTotal.textContent = '-';
+      paginationWrapper.innerHTML = '';
       console.error('[SavingsList] Failed to load transactions:', e);
       tableBody.innerHTML = `<tr><td colspan="5" class="text-center text-danger" style="padding: 40px;">Failed to load transactions. ${e.message || ''}</td></tr>`;
     }
@@ -549,8 +480,6 @@ export const renderSavingsList = async () => {
     dateTo = dateToInput.value;
     if (dateFrom && dateTo && dateFrom > dateTo) {
       if (window.notify) window.notify.error('From date cannot be after To date.');
-      dateToInput.value = '';
-      dateTo = '';
     }
     currentPage = 1;
     updateUI();
@@ -573,6 +502,7 @@ export const renderSavingsList = async () => {
       groupService.getAll()
     ]);
   } catch (err) {
+    scopeLoadError = err;
     console.warn('[SavingsList] Could not preload members/groups for reconciliation:', err.message);
   }
 
@@ -589,11 +519,13 @@ export const renderSavingsList = async () => {
   updateUI();
 
   // Real-time updates
-  container.__subscriptionPromise = savingsService.subscribeToChanges(async () => {
-    await dataCache.invalidatePrefix('savings:');
-    updateUI();
-  })
-    .then(unsub => [unsub]);
+  container.__subscriptions = [observeCachedView(['savings:', 'members:', 'groups:all:'], async () => {
+    try {
+      [members, groups] = await Promise.all([memberService.getAll(), groupService.getAll()]);
+      scopeLoadError = null;
+    } catch (error) { scopeLoadError = error; }
+    await updateUI();
+  })];
 
   return container;
 };
